@@ -46,7 +46,8 @@
     const PADDLE_SPEED    = 350;   // px / second
     const BALL_SPEED_INIT = 300;   // px / second (magnitude)
     const BALL_SPEED_MAX  = 700;   // px / second
-    const BALL_SPEED_INC  = 25;    // speed added on each paddle hit
+    const BALL_SPEED_INC  = 25;    // |vx| added on each paddle hit
+    const MIN_VY          = 40;    // minimum |vy| so ball never travels perfectly horizontal
     const AI_LERP         = 4.5;   // AI lerp factor (higher = faster)
     const SCORE_WIN       = 7;     // first to this wins
     const DIVIDER_DASH    = 20;    // centre-line dash length
@@ -140,6 +141,49 @@
     }
 
     /**
+     * Swept-position helper: compute the interpolation factor t ∈ [0,1] at
+     * which the ball's leading horizontal edge first crossed the paddle's
+     * facing edge during this frame.
+     *
+     * vx < 0 (moving left):  leading edge = ball.x, target = paddle right face (bx+bw)
+     * vx > 0 (moving right): leading edge = ball right edge = ball.x + BALL_SIZE,
+     *                         equivalently ball.x target = bx − BALL_SIZE
+     *
+     * Returns 1 when the crossing did not occur within [0,1].
+     */
+    function sweepT(px, cx, bx, bw, vx) {
+      const edgeX = vx < 0 ? bx + bw : bx - BALL_SIZE;
+      const dx    = cx - px;
+      if (Math.abs(dx) < 1e-10) return 1;
+      const t = (edgeX - px) / dx;
+      return (t >= 0 && t <= 1) ? t : 1;
+    }
+
+    /**
+     * Full swept paddle collision check.
+     * Uses swept edge crossing first; falls back to AABB overlap.
+     *
+     * Returns { hit: boolean, t: number } where t is used to interpolate hitY.
+     */
+    function checkPaddleHit(px, py, cx, cy, vx, pad) {
+      // Swept crossing
+      const t = sweepT(px, cx, pad.x, pad.w, vx);
+      if (t < 1) {
+        const hitY = py + (cy - py) * t;
+        if (hitY + BALL_SIZE > pad.y && hitY < pad.y + pad.h) {
+          return { hit: true, t };
+        }
+      }
+
+      // AABB fallback
+      if (aabbOverlap(cx, cy, BALL_SIZE, BALL_SIZE, pad.x, pad.y, pad.w, pad.h)) {
+        return { hit: true, t: 1 };
+      }
+
+      return { hit: false, t: 1 };
+    }
+
+    /**
      * Reset the ball to the centre and launch it in a random direction,
      * away from whichever side just scored (dirSign: +1 = toward AI, -1 = toward player).
      */
@@ -150,6 +194,10 @@
       const angle = rand(-Math.PI / 4, Math.PI / 4);
       ball.vx = dirSign * BALL_SPEED_INIT * Math.cos(angle);
       ball.vy = BALL_SPEED_INIT * Math.sin(angle);
+      // Apply minimum |vy| guard on serve so ball never starts horizontal
+      if (Math.abs(ball.vy) < MIN_VY) {
+        ball.vy = ball.vy >= 0 ? MIN_VY : -MIN_VY;
+      }
     }
 
     /**
@@ -194,7 +242,7 @@
 
       // ── Phase: playing ───────────────────────────────────────────────────
 
-      // Player paddle movement
+      // Player paddle movement — clamp to canvas bounds each frame
       if (keys['KeyW'] || keys['ArrowUp']) {
         playerPaddle.y -= PADDLE_SPEED * dt;
       }
@@ -203,64 +251,79 @@
       }
       playerPaddle.y = clamp(playerPaddle.y, 0, CANVAS_H - PADDLE_H);
 
-      // AI paddle movement — linear interpolation toward the ball's centre
+      // AI paddle movement — linear interpolation toward the ball's centre,
+      // clamped to canvas bounds each frame
       const ballCentreY = ball.y + BALL_SIZE / 2;
       const aiCentreY   = aiPaddle.y + PADDLE_H / 2;
       const aiDiff      = ballCentreY - aiCentreY;
-      // Lerp: move a fraction of the gap each second, capped by PADDLE_SPEED
-      const aiMove = clamp(aiDiff * AI_LERP * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
+      const aiMove      = clamp(aiDiff * AI_LERP * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
       aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - PADDLE_H);
+
+      // Record previous position for swept-collision interpolation
+      const prevX = ball.x;
+      const prevY = ball.y;
 
       // Move ball
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
 
       // ── Ball vs top / bottom walls ────────────────────────────────────────
+      // Negate vy on contact; clamp position.
       if (ball.y <= 0) {
         ball.y  = 0;
-        ball.vy = Math.abs(ball.vy);
+        ball.vy = -ball.vy;
       } else if (ball.y + BALL_SIZE >= CANVAS_H) {
         ball.y  = CANVAS_H - BALL_SIZE;
-        ball.vy = -Math.abs(ball.vy);
+        ball.vy = -ball.vy;
       }
 
-      // ── Ball vs player paddle ─────────────────────────────────────────────
-      if (
-        ball.vx < 0 &&
-        aabbOverlap(ball.x, ball.y, ball.w, ball.h,
-                    playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h)
-      ) {
-        ball.x  = playerPaddle.x + playerPaddle.w;
-        // Compute deflection angle based on where the ball hit the paddle
-        const relY   = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
-        const norm   = relY / (PADDLE_H / 2);           // -1 … +1
-        const angle  = norm * (Math.PI / 4);             // max ±45°
-        const speed  = clamp(
-          Math.hypot(ball.vx, ball.vy) + BALL_SPEED_INC,
-          BALL_SPEED_INIT,
-          BALL_SPEED_MAX
-        );
-        ball.vx = speed * Math.cos(angle);
-        ball.vy = speed * Math.sin(angle);
+      // ── Ball vs player paddle (vector-swept AABB) ─────────────────────────
+      if (ball.vx < 0) {
+        const { hit, t } = checkPaddleHit(prevX, prevY, ball.x, ball.y, ball.vx, playerPaddle);
+        if (hit) {
+          // Interpolate back to the contact y using the swept or current t
+          const hitY = prevY + (ball.y - prevY) * t;
+
+          // Nudge ball outside the paddle rect (no tunneling)
+          ball.x = playerPaddle.x + playerPaddle.w;
+
+          // Negate vx and increase its magnitude by BALL_SPEED_INC, capped at BALL_SPEED_MAX
+          const newVxMag = clamp(Math.abs(ball.vx) + BALL_SPEED_INC, BALL_SPEED_INIT, BALL_SPEED_MAX);
+          ball.vx = newVxMag;   // positive → moving right
+
+          // Adjust vy proportionally to off-centre offset: ±0.5 of current |vy|
+          const ballCY   = hitY + BALL_SIZE / 2;
+          const paddleCY = playerPaddle.y + PADDLE_H / 2;
+          const norm     = clamp((ballCY - paddleCY) / (PADDLE_H / 2), -1, 1);
+          ball.vy += norm * 0.5 * Math.abs(ball.vy);
+        }
       }
 
-      // ── Ball vs AI paddle ─────────────────────────────────────────────────
-      if (
-        ball.vx > 0 &&
-        aabbOverlap(ball.x, ball.y, ball.w, ball.h,
-                    aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h)
-      ) {
-        ball.x  = aiPaddle.x - BALL_SIZE;
-        const relY   = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
-        const norm   = relY / (PADDLE_H / 2);
-        const angle  = norm * (Math.PI / 4);
-        const speed  = clamp(
-          Math.hypot(ball.vx, ball.vy) + BALL_SPEED_INC,
-          BALL_SPEED_INIT,
-          BALL_SPEED_MAX
-        );
-        ball.vx = -(speed * Math.cos(angle));
-        ball.vy =   speed * Math.sin(angle);
+      // ── Ball vs AI paddle (vector-swept AABB) ─────────────────────────────
+      if (ball.vx > 0) {
+        const { hit, t } = checkPaddleHit(prevX, prevY, ball.x, ball.y, ball.vx, aiPaddle);
+        if (hit) {
+          const hitY = prevY + (ball.y - prevY) * t;
+
+          // Nudge ball outside the paddle rect
+          ball.x = aiPaddle.x - BALL_SIZE;
+
+          // Negate vx and increase its magnitude
+          const newVxMag = clamp(Math.abs(ball.vx) + BALL_SPEED_INC, BALL_SPEED_INIT, BALL_SPEED_MAX);
+          ball.vx = -newVxMag;  // negative → moving left
+
+          // Adjust vy proportional to off-centre offset
+          const ballCY   = hitY + BALL_SIZE / 2;
+          const paddleCY = aiPaddle.y + PADDLE_H / 2;
+          const norm     = clamp((ballCY - paddleCY) / (PADDLE_H / 2), -1, 1);
+          ball.vy += norm * 0.5 * Math.abs(ball.vy);
+        }
+      }
+
+      // ── Minimum |vy| guard ────────────────────────────────────────────────
+      // Ensure the ball never travels perfectly horizontally.
+      if (Math.abs(ball.vy) < MIN_VY) {
+        ball.vy = ball.vy >= 0 ? MIN_VY : -MIN_VY;
       }
 
       // ── Ball exits left → AI scores ───────────────────────────────────────

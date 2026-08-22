@@ -6,6 +6,7 @@ const {
   BALL_SIZE,
   PADDLE_SPEED,
   BALL_SPEED_INIT, BALL_SPEED_MAX, BALL_SPEED_INC,
+  MIN_VY,
   AI_LERP,
   SCORE_WIN,
   makeBall,
@@ -15,6 +16,7 @@ const {
   rand,
   clamp,
   aabbOverlap,
+  sweepT,
   movePlayerPaddle,
   moveAiPaddle,
   updateBall,
@@ -96,6 +98,36 @@ describe('aabbOverlap', () => {
 
   test('one pixel overlap is detected', () => {
     expect(aabbOverlap(0, 0, 11, 10, 10, 0, 10, 10)).toBe(true);
+  });
+});
+
+// ── sweepT ────────────────────────────────────────────────────────────────
+
+describe('sweepT', () => {
+  test('returns t=0.5 when ball crosses paddle face exactly halfway through frame', () => {
+    // Ball moving left, previous x = 60, current x = 40 (paddle right face at 50)
+    // paddle.x=38, paddle.w=12 → right face at 50
+    const t = sweepT(60, 40, 38, 12, -1);
+    expect(t).toBeCloseTo(0.5);
+  });
+
+  test('returns t=1 when no horizontal movement', () => {
+    const t = sweepT(50, 50, 38, 12, -1);
+    expect(t).toBe(1);
+  });
+
+  test('ball moving right: detects sweep against left face of paddle', () => {
+    // Ball moving right: prev=340, curr=370; paddle left face = 358 (bx=358, bw=12)
+    // Leading edge of ball (right side) hits bx at ball.x = bx - BALL_SIZE = 358 - 12 = 346
+    // t = (346 - 340) / (370 - 340) = 6/30 = 0.2
+    const t = sweepT(340, 370, 358, 12, 1);
+    expect(t).toBeCloseTo(0.2);
+  });
+
+  test('returns 1 when contact point is outside [0,1]', () => {
+    // Ball moving left but paddle is far away — t would be > 1
+    const t = sweepT(200, 210, 38, 12, -1); // moving right, not toward player paddle
+    expect(t).toBe(1);
   });
 });
 
@@ -292,7 +324,7 @@ describe('moveAiPaddle', () => {
 // ── updateBall — wall bounces ─────────────────────────────────────────────
 
 describe('updateBall — wall bounces', () => {
-  test('bounces off the top wall', () => {
+  test('bounces off the top wall (vy negated)', () => {
     const ball   = makeBall(1, 0);
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
@@ -307,7 +339,7 @@ describe('updateBall — wall bounces', () => {
     expect(ball.vy).toBeGreaterThan(0); // should now be heading down
   });
 
-  test('bounces off the bottom wall', () => {
+  test('bounces off the bottom wall (vy negated)', () => {
     const ball   = makeBall(1, 0);
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
@@ -338,9 +370,9 @@ describe('updateBall — wall bounces', () => {
   });
 });
 
-// ── updateBall — paddle collisions ────────────────────────────────────────
+// ── updateBall — paddle collisions (vector-swept) ─────────────────────────
 
-describe('updateBall — player paddle collision', () => {
+describe('updateBall — player paddle collision (vector-swept)', () => {
   function makeCollisionSetup() {
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
@@ -351,7 +383,7 @@ describe('updateBall — player paddle collision', () => {
       x:  player.x + player.w - 2,   // slightly inside paddle
       y:  player.y + PADDLE_H / 2 - BALL_SIZE / 2,
       vx: -BALL_SPEED_INIT,
-      vy: 0,
+      vy: 50,                          // non-zero vy for vy-adjust tests
       w:  BALL_SIZE,
       h:  BALL_SIZE,
     };
@@ -364,30 +396,84 @@ describe('updateBall — player paddle collision', () => {
     expect(ball.vx).toBeGreaterThan(0);
   });
 
-  test('ball is repositioned to the right of the player paddle', () => {
+  test('ball is repositioned to the right of the player paddle (no tunneling)', () => {
     const { ball, player, ai, game } = makeCollisionSetup();
     updateBall(ball, player, ai, game, 1 / 60);
     expect(ball.x).toBeGreaterThanOrEqual(player.x + player.w);
   });
 
-  test('ball speed increases after paddle hit', () => {
+  test('|vx| increases by BALL_SPEED_INC after paddle hit', () => {
     const { ball, player, ai, game } = makeCollisionSetup();
-    const speedBefore = Math.hypot(ball.vx, ball.vy);
+    const vxMagBefore = Math.abs(ball.vx);
     updateBall(ball, player, ai, game, 1 / 60);
-    const speedAfter = Math.hypot(ball.vx, ball.vy);
-    expect(speedAfter).toBeGreaterThan(speedBefore);
+    const vxMagAfter = Math.abs(ball.vx);
+    expect(vxMagAfter).toBeCloseTo(vxMagBefore + BALL_SPEED_INC, 1);
   });
 
-  test('ball speed is capped at BALL_SPEED_MAX', () => {
+  test('|vx| is capped at BALL_SPEED_MAX', () => {
     const { ball, player, ai, game } = makeCollisionSetup();
     ball.vx = -(BALL_SPEED_MAX + 500); // way above max
     updateBall(ball, player, ai, game, 1 / 60);
-    const speed = Math.hypot(ball.vx, ball.vy);
-    expect(speed).toBeLessThanOrEqual(BALL_SPEED_MAX + 0.01);
+    expect(Math.abs(ball.vx)).toBeLessThanOrEqual(BALL_SPEED_MAX + 0.01);
+  });
+
+  test('centre hit: vy is adjusted by ±0.5 of its magnitude', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    // Ball hits exactly at centre → norm = 0 → vy unchanged
+    const ball = {
+      x:  player.x + player.w - 2,
+      y:  player.y + PADDLE_H / 2 - BALL_SIZE / 2,  // centre
+      vx: -BALL_SPEED_INIT,
+      vy: 100,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+    const vyBefore = ball.vy;
+    updateBall(ball, player, ai, game, 1 / 60);
+    // norm ≈ 0 → vy adjustment ≈ 0 (within a small tolerance due to swept interpolation)
+    expect(Math.abs(ball.vy - vyBefore)).toBeLessThan(vyBefore * 0.6);
+  });
+
+  test('top-edge hit: vy is decreased (norm < 0)', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    // Ball hits top quarter of paddle → norm < 0 → vy decreases
+    const ball = {
+      x:  player.x + player.w - 2,
+      y:  player.y,                // top of paddle
+      vx: -BALL_SPEED_INIT,
+      vy: 100,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+    const vyBefore = ball.vy;
+    updateBall(ball, player, ai, game, 1 / 60);
+    expect(ball.vy).toBeLessThan(vyBefore);
+  });
+
+  test('bottom-edge hit: vy is increased (norm > 0)', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    // Ball hits bottom of paddle → norm > 0 → vy increases
+    const ball = {
+      x:  player.x + player.w - 2,
+      y:  player.y + PADDLE_H - BALL_SIZE,  // bottom of paddle
+      vx: -BALL_SPEED_INIT,
+      vy: 100,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+    const vyBefore = ball.vy;
+    updateBall(ball, player, ai, game, 1 / 60);
+    expect(ball.vy).toBeGreaterThan(vyBefore);
   });
 });
 
-describe('updateBall — AI paddle collision', () => {
+describe('updateBall — AI paddle collision (vector-swept)', () => {
   function makeCollisionSetup() {
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
@@ -397,7 +483,7 @@ describe('updateBall — AI paddle collision', () => {
       x:  ai.x - BALL_SIZE + 2,      // slightly inside AI paddle
       y:  ai.y + PADDLE_H / 2 - BALL_SIZE / 2,
       vx: BALL_SPEED_INIT,
-      vy: 0,
+      vy: 50,
       w:  BALL_SIZE,
       h:  BALL_SIZE,
     };
@@ -410,9 +496,134 @@ describe('updateBall — AI paddle collision', () => {
     expect(ball.vx).toBeLessThan(0);
   });
 
-  test('ball is repositioned to the left of the AI paddle', () => {
+  test('ball is repositioned to the left of the AI paddle (no tunneling)', () => {
     const { ball, player, ai, game } = makeCollisionSetup();
     updateBall(ball, player, ai, game, 1 / 60);
+    expect(ball.x + BALL_SIZE).toBeLessThanOrEqual(ai.x + 0.01);
+  });
+
+  test('|vx| increases by BALL_SPEED_INC after AI paddle hit', () => {
+    const { ball, player, ai, game } = makeCollisionSetup();
+    const vxMagBefore = Math.abs(ball.vx);
+    updateBall(ball, player, ai, game, 1 / 60);
+    const vxMagAfter = Math.abs(ball.vx);
+    expect(vxMagAfter).toBeCloseTo(vxMagBefore + BALL_SPEED_INC, 1);
+  });
+});
+
+// ── updateBall — minimum |vy| guard ───────────────────────────────────────
+
+describe('updateBall — minimum |vy| guard', () => {
+  test('|vy| is raised to MIN_VY when ball would travel nearly horizontally', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const ball   = {
+      x:  CANVAS_W / 2,
+      y:  CANVAS_H / 2,
+      vx: BALL_SPEED_INIT,
+      vy: 1,               // tiny vy
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+    updateBall(ball, player, ai, game, 1 / 60);
+    expect(Math.abs(ball.vy)).toBeGreaterThanOrEqual(MIN_VY);
+  });
+
+  test('|vy| is not altered when it is already above MIN_VY', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const ball   = {
+      x:  CANVAS_W / 2,
+      y:  CANVAS_H / 2,
+      vx: BALL_SPEED_INIT,
+      vy: MIN_VY * 3,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+    const vyBefore = ball.vy;
+    updateBall(ball, player, ai, game, 1 / 60);
+    // vy may have changed due to movement, but was not clamped to MIN_VY
+    expect(Math.abs(ball.vy)).toBeGreaterThanOrEqual(MIN_VY);
+    expect(Math.abs(ball.vy)).not.toBeCloseTo(MIN_VY, 0);
+  });
+
+  test('negative vy below -MIN_VY is preserved as-is (not raised)', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const ball   = {
+      x:  CANVAS_W / 2,
+      y:  CANVAS_H / 2,
+      vx: BALL_SPEED_INIT,
+      vy: -MIN_VY * 2,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+    updateBall(ball, player, ai, game, 1 / 60);
+    expect(Math.abs(ball.vy)).toBeGreaterThanOrEqual(MIN_VY);
+  });
+
+  test('vy=0 is raised to +MIN_VY (positive sign preserved)', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const ball   = {
+      x:  CANVAS_W / 2,
+      y:  CANVAS_H / 2,
+      vx: BALL_SPEED_INIT,
+      vy: 0,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+    updateBall(ball, player, ai, game, 1 / 60);
+    expect(ball.vy).toBe(MIN_VY);
+  });
+});
+
+// ── updateBall — swept collision anti-tunneling ────────────────────────────
+
+describe('updateBall — swept collision prevents tunneling', () => {
+  test('very fast ball does not pass through player paddle in one frame', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+
+    // Place ball just to the right of the player paddle, moving left at extreme speed
+    const ball = {
+      x:  player.x + player.w + 1,
+      y:  player.y + PADDLE_H / 2 - BALL_SIZE / 2,
+      vx: -BALL_SPEED_MAX * 10,   // extreme speed that would tunnel through
+      vy: MIN_VY,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+
+    updateBall(ball, player, ai, game, 1 / 60);
+
+    // Ball must NOT have passed through the left side of the paddle
+    expect(ball.vx).toBeGreaterThan(0);  // bounced
+    expect(ball.x).toBeGreaterThanOrEqual(player.x + player.w); // nudged outside
+  });
+
+  test('very fast ball does not pass through AI paddle in one frame', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+
+    const ball = {
+      x:  ai.x - BALL_SIZE - 1,
+      y:  ai.y + PADDLE_H / 2 - BALL_SIZE / 2,
+      vx: BALL_SPEED_MAX * 10,   // extreme speed
+      vy: MIN_VY,
+      w:  BALL_SIZE,
+      h:  BALL_SIZE,
+    };
+
+    updateBall(ball, player, ai, game, 1 / 60);
+
+    expect(ball.vx).toBeLessThan(0);  // bounced
     expect(ball.x + BALL_SIZE).toBeLessThanOrEqual(ai.x + 0.01);
   });
 });
@@ -428,7 +639,7 @@ describe('updateBall — scoring', () => {
       x: -BALL_SIZE - 5,   // already off the left edge
       y: CANVAS_H / 2,
       vx: -100,
-      vy: 0,
+      vy: MIN_VY,
       w: BALL_SIZE,
       h: BALL_SIZE,
     };
@@ -446,7 +657,7 @@ describe('updateBall — scoring', () => {
       x: CANVAS_W + 5,     // already off the right edge
       y: CANVAS_H / 2,
       vx: 100,
-      vy: 0,
+      vy: MIN_VY,
       w: BALL_SIZE,
       h: BALL_SIZE,
     };
@@ -463,7 +674,7 @@ describe('updateBall — scoring', () => {
     const ball   = {
       x: -BALL_SIZE - 5,
       y: CANVAS_H / 2,
-      vx: -100, vy: 0,
+      vx: -100, vy: MIN_VY,
       w: BALL_SIZE, h: BALL_SIZE,
     };
 
@@ -480,7 +691,7 @@ describe('updateBall — scoring', () => {
     const ball   = {
       x: -BALL_SIZE - 5,
       y: CANVAS_H / 2,
-      vx: -100, vy: 0,
+      vx: -100, vy: MIN_VY,
       w: BALL_SIZE, h: BALL_SIZE,
     };
 
@@ -498,7 +709,7 @@ describe('updateBall — scoring', () => {
     const ball   = {
       x: CANVAS_W + 5,
       y: CANVAS_H / 2,
-      vx: 100, vy: 0,
+      vx: 100, vy: MIN_VY,
       w: BALL_SIZE, h: BALL_SIZE,
     };
 
@@ -562,6 +773,14 @@ describe('constants', () => {
   test('AI_LERP is positive', () => {
     expect(AI_LERP).toBeGreaterThan(0);
   });
+
+  test('MIN_VY is positive', () => {
+    expect(MIN_VY).toBeGreaterThan(0);
+  });
+
+  test('MIN_VY is less than BALL_SPEED_INIT', () => {
+    expect(MIN_VY).toBeLessThan(BALL_SPEED_INIT);
+  });
 });
 
 // ── index.html sanity checks ───────────────────────────────────────────────
@@ -615,5 +834,13 @@ describe('index.html', () => {
     expect(html).toMatch(/Input/);
     expect(html).toMatch(/Update/);
     expect(html).toMatch(/Render/);
+  });
+
+  test('references MIN_VY constant or minimum vy guard', () => {
+    expect(html).toMatch(/MIN_VY|min.*vy|vy.*min/i);
+  });
+
+  test('references swept or prevX/prevY for anti-tunneling', () => {
+    expect(html).toMatch(/prevX|prevY|swept|sweepT/i);
   });
 });
