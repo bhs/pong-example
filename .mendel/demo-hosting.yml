@@ -1,0 +1,6 @@
+version: 1
+required_secrets:
+  - FLY_API_TOKEN
+deploy_script: deploy.sh
+teardown_script: teardown.sh
+url_from: stdout
