@@ -37,6 +37,173 @@
   <script>
     'use strict';
 
+    // ── MockBackend ───────────────────────────────────────────────────────────
+    //
+    // In-memory mock backend that mimics a REST API with async methods.
+    // All data lives in module-scope Maps/arrays and persists for the lifetime
+    // of the browser tab.  Passwords are hashed with the Web Crypto API.
+    // The "token" is a base64-encoded user ID — no JWT library needed.
+    //
+    // API surface (mirrors a real fetch()-based API so swapping in a real
+    // backend only requires updating this class, not the game or UI code):
+    //
+    //   register(email, password)         → { ok, error? }
+    //   login(email, password)            → { ok, token?, error? }
+    //   getScores()                       → { ok, scores: [{email, score, date}] }
+    //   postScore(token, score)           → { ok, error? }
+
+    class MockBackend {
+      constructor() {
+        // Map<email, { id: number, email: string, passwordHash: ArrayBuffer }>
+        this._users  = new Map();
+        // Array<{ userId: number, email: string, score: number, date: string }>
+        this._scores = [];
+        this._nextId = 1;
+      }
+
+      // ── Internal helpers ────────────────────────────────────────────────────
+
+      /**
+       * Hash a UTF-8 password string with SHA-256 via the Web Crypto API.
+       * Returns a Promise<ArrayBuffer>.
+       */
+      async _hashPassword(password) {
+        const encoded = new TextEncoder().encode(password);
+        return crypto.subtle.digest('SHA-256', encoded);
+      }
+
+      /**
+       * Constant-time-ish comparison of two ArrayBuffers (avoids early-exit).
+       */
+      _buffersEqual(a, b) {
+        if (a.byteLength !== b.byteLength) return false;
+        const va = new Uint8Array(a);
+        const vb = new Uint8Array(b);
+        let diff = 0;
+        for (let i = 0; i < va.length; i++) {
+          diff |= va[i] ^ vb[i];
+        }
+        return diff === 0;
+      }
+
+      /**
+       * Encode a numeric user ID as a base64 string to use as a token.
+       * Format: base64(userId + ':' + email) — opaque to callers.
+       */
+      _makeToken(userId, email) {
+        const raw = `${userId}:${email}`;
+        return btoa(raw);
+      }
+
+      /**
+       * Decode a token back to { userId, email }, or null if malformed.
+       */
+      _decodeToken(token) {
+        try {
+          const raw   = atob(token);
+          const colon = raw.indexOf(':');
+          if (colon === -1) return null;
+          const userId = parseInt(raw.slice(0, colon), 10);
+          const email  = raw.slice(colon + 1);
+          return { userId, email };
+        } catch (_) {
+          return null;
+        }
+      }
+
+      // ── Public API ──────────────────────────────────────────────────────────
+
+      /**
+       * Register a new user.
+       * Resolves with { ok: true } or { ok: false, error: string }.
+       */
+      async register(email, password) {
+        if (!email || !password) {
+          return { ok: false, error: 'Email and password are required.' };
+        }
+        if (this._users.has(email)) {
+          return { ok: false, error: 'An account with that email already exists.' };
+        }
+        const passwordHash = await this._hashPassword(password);
+        const id = this._nextId++;
+        this._users.set(email, { id, email, passwordHash });
+        return { ok: true };
+      }
+
+      /**
+       * Log in an existing user.
+       * Resolves with { ok: true, token: string } or { ok: false, error: string }.
+       */
+      async login(email, password) {
+        if (!email || !password) {
+          return { ok: false, error: 'Email and password are required.' };
+        }
+        const user = this._users.get(email);
+        if (!user) {
+          return { ok: false, error: 'Invalid email or password.' };
+        }
+        const hash = await this._hashPassword(password);
+        if (!this._buffersEqual(hash, user.passwordHash)) {
+          return { ok: false, error: 'Invalid email or password.' };
+        }
+        const token = this._makeToken(user.id, user.email);
+        return { ok: true, token };
+      }
+
+      /**
+       * Fetch the global leaderboard (all scores, newest first, top 10).
+       * Resolves with { ok: true, scores: Array<{email, score, date}> }.
+       */
+      async getScores() {
+        const sorted = this._scores
+          .slice()
+          .sort((a, b) => b.score - a.score || new Date(b.date) - new Date(a.date))
+          .slice(0, 10)
+          .map(({ email, score, date }) => ({ email, score, date }));
+        return { ok: true, scores: sorted };
+      }
+
+      /**
+       * Submit a score for the authenticated user.
+       * token: the token returned by login().
+       * score: numeric score to record.
+       * Resolves with { ok: true } or { ok: false, error: string }.
+       */
+      async postScore(token, score) {
+        if (!token) {
+          return { ok: false, error: 'Not authenticated.' };
+        }
+        const decoded = this._decodeToken(token);
+        if (!decoded) {
+          return { ok: false, error: 'Invalid token.' };
+        }
+        const { email } = decoded;
+        if (!this._users.has(email)) {
+          return { ok: false, error: 'User not found.' };
+        }
+        this._scores.push({
+          userId: decoded.userId,
+          email,
+          score: Number(score),
+          date: new Date().toISOString(),
+        });
+        return { ok: true };
+      }
+    }
+
+    // Single module-level backend instance — persists for the tab's lifetime.
+    const backend = new MockBackend();
+
+    // ── Auth state ────────────────────────────────────────────────────────────
+    //
+    // Holds the current session token and email after login.
+    // null when the user is not logged in (guest mode — can play but cannot save).
+
+    const auth = {
+      token: null,
+      email: null,
+    };
+
     // ── Constants ──────────────────────────────────────────────────────────────
     const CANVAS_W          = 800;
     const CANVAS_H          = 600;
@@ -61,10 +228,10 @@
     canvas.width  = CANVAS_W;
     canvas.height = CANVAS_H;
 
-    // ── Inject pulsing button animation style ─────────────────────────────────
+    // ── Inject overlay and auth styles ────────────────────────────────────────
     //
-    // A <style> tag is injected once into <head> so the 'Play Again' button can
-    // use a CSS keyframe animation without inline JS timers.
+    // A <style> tag is injected once into <head> so overlays can use CSS
+    // keyframe animations without inline JS timers.
 
     (function injectOverlayStyles() {
       const style = document.createElement('style');
@@ -75,7 +242,10 @@
           50%  { transform: scale(1.06); box-shadow: 0 0 18px 6px rgba(255,255,255,0.2); }
           100% { transform: scale(1);    box-shadow: 0 0 0   0   rgba(255,255,255,0.4); }
         }
-        #pong-overlay {
+
+        /* ── Shared overlay backdrop ── */
+        #pong-overlay,
+        #pong-auth-overlay {
           position: fixed;
           inset: 0;
           z-index: 10;
@@ -83,11 +253,13 @@
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          background: rgba(0, 0, 0, 0.72);
+          background: rgba(0, 0, 0, 0.82);
           backdrop-filter: blur(2px);
-          gap: 18px;
+          gap: 14px;
           font-family: monospace;
         }
+
+        /* ── Game-over overlay ── */
         #pong-overlay h1 {
           font-size: clamp(2rem, 6vw, 3.5rem);
           color: #fff;
@@ -106,8 +278,55 @@
           letter-spacing: 0.05em;
           margin-top: 4px;
         }
+        #pong-overlay .leaderboard {
+          min-width: 260px;
+          max-width: 340px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 6px;
+          padding: 12px 16px;
+          margin-top: 4px;
+        }
+        #pong-overlay .leaderboard h2 {
+          font-size: 0.8rem;
+          color: rgba(255,255,255,0.5);
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          margin-bottom: 8px;
+          text-align: center;
+        }
+        #pong-overlay .leaderboard ol {
+          list-style: decimal inside;
+          padding: 0;
+        }
+        #pong-overlay .leaderboard li {
+          font-size: 0.85rem;
+          color: rgba(255,255,255,0.8);
+          padding: 3px 0;
+          display: flex;
+          justify-content: space-between;
+          gap: 12px;
+        }
+        #pong-overlay .leaderboard li .lb-email {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          flex: 1;
+          color: rgba(255,255,255,0.55);
+        }
+        #pong-overlay .leaderboard li .lb-score {
+          font-weight: bold;
+          color: #ffe066;
+          flex-shrink: 0;
+        }
+        #pong-overlay .score-status {
+          font-size: 0.8rem;
+          color: rgba(255,255,255,0.4);
+          letter-spacing: 0.05em;
+          text-align: center;
+        }
         #pong-play-again {
-          margin-top: 8px;
+          margin-top: 4px;
           padding: 14px 40px;
           font-family: monospace;
           font-size: 1.1rem;
@@ -126,9 +345,298 @@
           background: #ffe066;
           outline: none;
         }
+
+        /* ── Auth overlay ── */
+        #pong-auth-overlay h1 {
+          font-size: clamp(1.6rem, 4vw, 2.4rem);
+          color: #fff;
+          letter-spacing: 0.06em;
+          text-shadow: 0 0 20px rgba(255,255,255,0.4);
+          text-align: center;
+          margin-bottom: 4px;
+        }
+        #pong-auth-overlay .auth-subtitle {
+          font-size: 0.85rem;
+          color: rgba(255,255,255,0.4);
+          letter-spacing: 0.06em;
+          text-align: center;
+        }
+        .auth-form {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          width: min(320px, 90vw);
+          margin-top: 4px;
+        }
+        .auth-form input[type="email"],
+        .auth-form input[type="password"] {
+          padding: 10px 12px;
+          font-family: monospace;
+          font-size: 0.95rem;
+          background: rgba(255,255,255,0.08);
+          border: 1px solid rgba(255,255,255,0.25);
+          border-radius: 4px;
+          color: #fff;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        .auth-form input:focus {
+          border-color: rgba(255,255,255,0.6);
+        }
+        .auth-form input::placeholder {
+          color: rgba(255,255,255,0.3);
+        }
+        .auth-btn-row {
+          display: flex;
+          gap: 8px;
+          margin-top: 4px;
+        }
+        .auth-btn {
+          flex: 1;
+          padding: 11px 0;
+          font-family: monospace;
+          font-size: 0.95rem;
+          font-weight: bold;
+          letter-spacing: 0.08em;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: background 0.15s, color 0.15s, opacity 0.15s;
+        }
+        .auth-btn:disabled {
+          opacity: 0.45;
+          cursor: default;
+        }
+        .auth-btn-primary {
+          background: #fff;
+          color: #000;
+        }
+        .auth-btn-primary:hover:not(:disabled),
+        .auth-btn-primary:focus:not(:disabled) {
+          background: #ffe066;
+          outline: none;
+        }
+        .auth-btn-secondary {
+          background: rgba(255,255,255,0.1);
+          color: rgba(255,255,255,0.75);
+          border: 1px solid rgba(255,255,255,0.2);
+        }
+        .auth-btn-secondary:hover:not(:disabled),
+        .auth-btn-secondary:focus:not(:disabled) {
+          background: rgba(255,255,255,0.2);
+          outline: none;
+        }
+        .auth-error {
+          font-size: 0.82rem;
+          color: #ff6b6b;
+          text-align: center;
+          min-height: 1.1em;
+          letter-spacing: 0.03em;
+        }
+        .auth-skip {
+          font-size: 0.8rem;
+          color: rgba(255,255,255,0.3);
+          cursor: pointer;
+          background: none;
+          border: none;
+          font-family: monospace;
+          letter-spacing: 0.05em;
+          text-decoration: underline;
+          padding: 0;
+          transition: color 0.15s;
+        }
+        .auth-skip:hover {
+          color: rgba(255,255,255,0.6);
+        }
+        .auth-user-badge {
+          position: fixed;
+          top: 10px;
+          right: 14px;
+          z-index: 5;
+          font-family: monospace;
+          font-size: 0.75rem;
+          color: rgba(255,255,255,0.35);
+          letter-spacing: 0.04em;
+        }
       `;
       document.head.appendChild(style);
     })();
+
+    // ── Auth UI ───────────────────────────────────────────────────────────────
+    //
+    // Full-screen overlay shown before the first game.  The player can register,
+    // log in, or skip (guest mode).  Guest mode allows play but disables score
+    // submission.  Wired exclusively through MockBackend — swap the backend
+    // instance to connect to a real server with zero game-code changes.
+
+    /**
+     * Show the auth overlay.  Resolves once the user has logged in, registered,
+     * or clicked "Play as Guest".
+     * Returns a Promise that resolves when the overlay is dismissed.
+     */
+    function showAuthOverlay() {
+      return new Promise((resolve) => {
+        removeAuthOverlay();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'pong-auth-overlay';
+
+        // Title
+        const h1 = document.createElement('h1');
+        h1.textContent = 'PONG';
+        overlay.appendChild(h1);
+
+        const subtitle = document.createElement('p');
+        subtitle.className = 'auth-subtitle';
+        subtitle.textContent = 'Log in or register to save your scores';
+        overlay.appendChild(subtitle);
+
+        // Form
+        const form = document.createElement('div');
+        form.className = 'auth-form';
+
+        const emailInput = document.createElement('input');
+        emailInput.type        = 'email';
+        emailInput.placeholder = 'Email';
+        emailInput.autocomplete = 'email';
+        form.appendChild(emailInput);
+
+        const passwordInput = document.createElement('input');
+        passwordInput.type        = 'password';
+        passwordInput.placeholder = 'Password';
+        passwordInput.autocomplete = 'current-password';
+        form.appendChild(passwordInput);
+
+        // Error message
+        const errorEl = document.createElement('p');
+        errorEl.className = 'auth-error';
+        form.appendChild(errorEl);
+
+        // Buttons row
+        const btnRow = document.createElement('div');
+        btnRow.className = 'auth-btn-row';
+
+        const loginBtn = document.createElement('button');
+        loginBtn.className = 'auth-btn auth-btn-primary';
+        loginBtn.textContent = 'Log In';
+
+        const registerBtn = document.createElement('button');
+        registerBtn.className = 'auth-btn auth-btn-secondary';
+        registerBtn.textContent = 'Register';
+
+        btnRow.appendChild(loginBtn);
+        btnRow.appendChild(registerBtn);
+        form.appendChild(btnRow);
+
+        overlay.appendChild(form);
+
+        // Skip / guest mode
+        const skipBtn = document.createElement('button');
+        skipBtn.className = 'auth-skip';
+        skipBtn.textContent = 'Play as Guest (scores not saved)';
+        overlay.appendChild(skipBtn);
+
+        document.body.appendChild(overlay);
+        emailInput.focus();
+
+        // ── Shared helpers ──────────────────────────────────────────────────
+
+        function setLoading(loading) {
+          loginBtn.disabled    = loading;
+          registerBtn.disabled = loading;
+          skipBtn.disabled     = loading;
+          emailInput.disabled  = loading;
+          passwordInput.disabled = loading;
+        }
+
+        function showError(msg) {
+          errorEl.textContent = msg;
+        }
+
+        function dismiss(token, email) {
+          auth.token = token || null;
+          auth.email = email || null;
+          removeAuthOverlay();
+          updateUserBadge();
+          resolve();
+        }
+
+        // ── Login ───────────────────────────────────────────────────────────
+
+        async function handleLogin() {
+          showError('');
+          setLoading(true);
+          const result = await backend.login(
+            emailInput.value.trim(),
+            passwordInput.value
+          );
+          setLoading(false);
+          if (result.ok) {
+            dismiss(result.token, emailInput.value.trim());
+          } else {
+            showError(result.error);
+          }
+        }
+
+        // ── Register ────────────────────────────────────────────────────────
+
+        async function handleRegister() {
+          showError('');
+          setLoading(true);
+          const email    = emailInput.value.trim();
+          const password = passwordInput.value;
+          const regResult = await backend.register(email, password);
+          if (!regResult.ok) {
+            setLoading(false);
+            showError(regResult.error);
+            return;
+          }
+          // Auto-login after successful registration
+          const loginResult = await backend.login(email, password);
+          setLoading(false);
+          if (loginResult.ok) {
+            dismiss(loginResult.token, email);
+          } else {
+            showError(loginResult.error);
+          }
+        }
+
+        // ── Event bindings ──────────────────────────────────────────────────
+
+        loginBtn.addEventListener('click', handleLogin);
+        registerBtn.addEventListener('click', handleRegister);
+        skipBtn.addEventListener('click', () => dismiss(null, null));
+
+        // Submit on Enter key
+        function handleKey(e) {
+          if (e.key === 'Enter') handleLogin();
+        }
+        emailInput.addEventListener('keydown', handleKey);
+        passwordInput.addEventListener('keydown', handleKey);
+      });
+    }
+
+    /**
+     * Remove the auth overlay if it exists.
+     */
+    function removeAuthOverlay() {
+      const el = document.getElementById('pong-auth-overlay');
+      if (el) el.remove();
+    }
+
+    /**
+     * Update (or create) the small "logged in as …" badge in the top-right corner.
+     */
+    function updateUserBadge() {
+      let badge = document.getElementById('pong-user-badge');
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.id = 'pong-user-badge';
+        badge.className = 'auth-user-badge';
+        document.body.appendChild(badge);
+      }
+      badge.textContent = auth.email ? `▶ ${auth.email}` : '';
+    }
 
     // ── State ─────────────────────────────────────────────────────────────────
     //
@@ -291,13 +799,14 @@
 
     /**
      * Build and show the full-screen game-over overlay.
-     * Attaches a 'Play Again' button that calls startNewGame() on click.
+     * Submits the player's score (if authenticated) then fetches and renders
+     * the leaderboard.
      *
      * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
      * @param {number} playerScore - Final player score
      * @param {number} aiScore     - Final AI score
      */
-    function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
+    async function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
       // Remove any pre-existing overlay (defensive guard)
       removeGameOverOverlay();
 
@@ -314,6 +823,21 @@
       scoreEl.className = 'final-score';
       scoreEl.textContent = `Final score  ${playerScore} – ${aiScore}`;
       overlay.appendChild(scoreEl);
+
+      // Score submission status
+      const statusEl = document.createElement('p');
+      statusEl.className = 'score-status';
+      overlay.appendChild(statusEl);
+
+      // Leaderboard placeholder
+      const lbEl = document.createElement('div');
+      lbEl.className = 'leaderboard';
+      const lbTitle = document.createElement('h2');
+      lbTitle.textContent = 'Leaderboard';
+      lbEl.appendChild(lbTitle);
+      const lbList = document.createElement('ol');
+      lbEl.appendChild(lbList);
+      overlay.appendChild(lbEl);
 
       // Play Again button
       const btn = document.createElement('button');
@@ -332,6 +856,51 @@
 
       // Focus the button immediately so keyboard users can activate it
       btn.focus();
+
+      // ── Score submission ──────────────────────────────────────────────────
+      // Call postScore exactly as we would with a real fetch()-based backend.
+
+      if (auth.token && game.winner === 'player') {
+        statusEl.textContent = 'Saving score…';
+        const postResult = await backend.postScore(auth.token, playerScore);
+        if (postResult.ok) {
+          statusEl.textContent = `Score saved! (${auth.email})`;
+        } else {
+          statusEl.textContent = `Could not save score: ${postResult.error}`;
+        }
+      } else if (!auth.token) {
+        statusEl.textContent = 'Log in to save your score.';
+      }
+
+      // ── Leaderboard ───────────────────────────────────────────────────────
+      // Fetch scores exactly as we would from a real REST endpoint.
+
+      const scoresResult = await backend.getScores();
+      lbList.innerHTML = '';
+      if (scoresResult.ok && scoresResult.scores.length > 0) {
+        scoresResult.scores.forEach(({ email, score }) => {
+          const li = document.createElement('li');
+
+          const emailSpan = document.createElement('span');
+          emailSpan.className = 'lb-email';
+          emailSpan.textContent = email;
+
+          const scoreSpan = document.createElement('span');
+          scoreSpan.className = 'lb-score';
+          scoreSpan.textContent = score;
+
+          li.appendChild(emailSpan);
+          li.appendChild(scoreSpan);
+          lbList.appendChild(li);
+        });
+      } else {
+        const empty = document.createElement('li');
+        empty.style.color = 'rgba(255,255,255,0.3)';
+        empty.style.listStyle = 'none';
+        empty.style.textAlign = 'center';
+        empty.textContent = 'No scores yet.';
+        lbList.appendChild(empty);
+      }
     }
 
     /**
@@ -571,6 +1140,7 @@
         // Pause the loop and present the DOM overlay
         rafId = null;
         const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
+        // showGameOverOverlay is async (score submission + leaderboard fetch)
         showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score);
         return; // do NOT schedule next frame
       }
@@ -578,8 +1148,14 @@
       rafId = requestAnimationFrame(loop);
     }
 
-    // Kick off the animation loop
-    rafId = requestAnimationFrame(loop);
+    // ── Bootstrap ─────────────────────────────────────────────────────────────
+    //
+    // Show the auth overlay first; start the game loop once it is dismissed.
+
+    showAuthOverlay().then(() => {
+      updateUserBadge();
+      rafId = requestAnimationFrame(loop);
+    });
   </script>
 </body>
 </html>
