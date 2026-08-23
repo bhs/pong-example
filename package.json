@@ -1,13 +1,18 @@
 {
   "name": "game-canvas-scaffold",
   "version": "1.0.0",
-  "description": "Single-file HTML5 canvas Pong game",
+  "description": "Single-file HTML5 canvas Pong game with ephemeral backend API",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "jest --forceExit"
   },
   "jest": {
     "testEnvironment": "node",
     "testMatch": ["**/__tests__/**/*.test.js"]
+  },
+  "dependencies": {
+    "express": "^4.18.2"
   },
   "devDependencies": {
     "jest": "^29.7.0"
