@@ -1,0 +1,5 @@
+{
+  "up_instructions": "The schema is applied automatically on server startup via db.exec() in server.js. No manual migration step is needed. Tables created: users (id, email, password_hash, created_at) and high_scores (id, user_id FK, score, created_at).",
+  "down_instructions": "To revert: drop tables high_scores and users from the SQLite database file. Example: sqlite3 data/pong.db 'DROP TABLE IF EXISTS high_scores; DROP TABLE IF EXISTS users;'",
+  "notes": "Schema is defined inline in server.js using better-sqlite3 db.exec(). The CREATE TABLE IF NOT EXISTS pattern makes it idempotent. The data directory is created automatically if it does not exist."
+}

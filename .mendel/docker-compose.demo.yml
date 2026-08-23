@@ -4,8 +4,12 @@ services:
       context: ..
     ports:
       - "3000"
+    environment:
+      PORT: "3000"
+      JWT_SECRET: "pong-demo-secret-change-in-prod"
+      DB_PATH: "/app/data/pong.db"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 15

@@ -1,0 +1,38 @@
+# fly.toml — Fly.io application configuration
+# Deploy with: fly launch  (first time)  or  fly deploy  (subsequent)
+
+app = "pong-express-jwt"
+primary_region = "iad"
+
+[build]
+  # Uses the project Dockerfile automatically
+
+[env]
+  PORT = "3000"
+  # Set JWT_SECRET via: fly secrets set JWT_SECRET=<your-secret>
+  # Set DB_PATH via:    fly secrets set DB_PATH=/data/pong.db
+
+[http_service]
+  internal_port = 3000
+  force_https   = true
+  auto_stop_machines  = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type       = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+[[vm]]
+  memory   = "256mb"
+  cpu_kind = "shared"
+  cpus     = 1
+
+# Health check route (Express /health endpoint)
+[[http_service.checks]]
+  grace_period = "10s"
+  interval     = "30s"
+  method       = "GET"
+  path         = "/health"
+  timeout      = "5s"

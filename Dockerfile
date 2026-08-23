@@ -1,13 +1,24 @@
 FROM node:20-alpine
 
+# Install native build tools required by better-sqlite3 (and bcrypt)
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies first (cached layer)
 COPY package.json ./
 RUN npm install
 
-# Copy source files
+# Copy the rest of the source
 COPY . .
 
-# Default command serves the static file; tests override this via exec
-CMD ["node", "-e", "const http=require('http'),fs=require('fs'),path=require('path'); http.createServer((req,res)=>{const f=path.join('/app','index.html');res.writeHead(200,{'Content-Type':'text/html'});fs.createReadStream(f).pipe(res)}).listen(3000,()=>console.log('Serving on :3000'))"]
+# Ensure the data directory exists for the SQLite database
+RUN mkdir -p /app/data
+
+EXPOSE 3000
+
+# Health-check: wget is available on alpine
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+  CMD wget -q --spider http://localhost:3000/health || exit 1
+
+CMD ["node", "server.js"]

@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pong</title>
+  <style>
+    /* ── Reset & Layout ─────────────────────────────────────────────────────── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #111;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      font-family: monospace;
+    }
+
+    canvas {
+      display: block;
+      background: #000;
+      /* Crisp pixel rendering for retro look */
+      image-rendering: pixelated;
+    }
+
+    /* ── Auth panel ─────────────────────────────────────────────────────────── */
+    #auth-panel {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      z-index: 20;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 6px;
+      font-family: monospace;
+    }
+
+    #auth-panel button {
+      padding: 5px 14px;
+      font-family: monospace;
+      font-size: 0.8rem;
+      font-weight: bold;
+      letter-spacing: 0.05em;
+      color: #000;
+      background: #fff;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    #auth-panel button:hover { background: #ffe066; }
+
+    #auth-status {
+      font-size: 0.75rem;
+      color: rgba(255,255,255,0.55);
+      letter-spacing: 0.04em;
+      text-align: right;
+    }
+
+    /* ── Auth modal ─────────────────────────────────────────────────────────── */
+    #auth-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      background: rgba(0,0,0,0.8);
+      align-items: center;
+      justify-content: center;
+    }
+
+    #auth-modal.open { display: flex; }
+
+    #auth-modal .modal-box {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 28px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 280px;
+      font-family: monospace;
+    }
+
+    #auth-modal h2 {
+      color: #fff;
+      font-size: 1.1rem;
+      letter-spacing: 0.08em;
+      text-align: center;
+    }
+
+    #auth-modal input {
+      padding: 8px 10px;
+      background: #111;
+      border: 1px solid #444;
+      border-radius: 3px;
+      color: #fff;
+      font-family: monospace;
+      font-size: 0.9rem;
+    }
+
+    #auth-modal .error-msg {
+      color: #ff6666;
+      font-size: 0.78rem;
+      min-height: 1em;
+      text-align: center;
+    }
+
+    #auth-modal .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    #auth-modal .modal-actions button {
+      padding: 7px 18px;
+      font-family: monospace;
+      font-size: 0.85rem;
+      font-weight: bold;
+      color: #000;
+      background: #fff;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    #auth-modal .modal-actions button:hover { background: #ffe066; }
+
+    #auth-modal .modal-actions button.cancel {
+      background: #333;
+      color: #fff;
+    }
+
+    #auth-modal .modal-actions button.cancel:hover { background: #555; }
+
+    /* ── Leaderboard panel ────────────────────────────────────────────────── */
+    #leaderboard-panel {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 20;
+      font-family: monospace;
+      color: rgba(255,255,255,0.55);
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      line-height: 1.6;
+      max-width: 180px;
+    }
+
+    #leaderboard-panel h3 {
+      color: rgba(255,255,255,0.75);
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      margin-bottom: 4px;
+    }
+
+    #leaderboard-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    #leaderboard-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    #leaderboard-list .lb-score {
+      color: rgba(255,255,255,0.85);
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <!-- Auth panel (top-right) -->
+  <div id="auth-panel">
+    <div id="auth-status">Not signed in</div>
+    <button id="btn-open-auth">Sign in / Register</button>
+    <button id="btn-logout" style="display:none">Sign out</button>
+  </div>
+
+  <!-- Leaderboard (top-left) -->
+  <div id="leaderboard-panel">
+    <h3>TOP 10</h3>
+    <ol id="leaderboard-list"></ol>
+  </div>
+
+  <!-- Auth modal -->
+  <div id="auth-modal" role="dialog" aria-modal="true" aria-label="Sign in or Register">
+    <div class="modal-box">
+      <h2 id="auth-modal-title">Sign in</h2>
+      <input type="email"    id="auth-email"    placeholder="Email"    autocomplete="email" />
+      <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password" />
+      <div class="error-msg" id="auth-error"></div>
+      <div class="modal-actions">
+        <button id="btn-login">Login</button>
+        <button id="btn-register">Register</button>
+        <button class="cancel" id="btn-cancel-auth">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="gameCanvas"></canvas>
+
+  <script>
+    'use strict';
+
+    // ── Constants ──────────────────────────────────────────────────────────────
+    const CANVAS_W          = 800;
+    const CANVAS_H          = 600;
+    const PADDLE_W          = 12;
+    const PADDLE_H          = 80;
+    const BALL_SIZE         = 12;
+    const PADDLE_SPEED      = 350;   // px / second
+    const BALL_SPEED_INIT   = 300;   // px / second (magnitude)
+    const BALL_SPEED_MAX    = 700;   // px / second
+    const BALL_SPEED_MUL    = 1.05;  // speed multiplier on each paddle hit
+    const AI_LERP           = 4.5;   // AI lerp factor (higher = faster)
+    const AI_LERP_RALLY_INC = 0.15;  // AI lerp increase per rally hit
+    const MAX_DEFLECT_ANGLE = Math.PI * 75 / 180; // 75° max deflection
+    const SCORE_WIN         = 7;     // first to this wins
+    const DIVIDER_DASH      = 20;    // centre-line dash length
+    const DIVIDER_GAP       = 10;    // centre-line gap length
+    const FLASH_FRAMES      = 3;     // frames of tinted flash on score
+
+    // ── Canvas setup ──────────────────────────────────────────────────────────
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
+    canvas.width  = CANVAS_W;
+    canvas.height = CANVAS_H;
+
+    // ── Inject pulsing button animation style ─────────────────────────────────
+    //
+    // A <style> tag is injected once into <head> so the 'Play Again' button can
+    // use a CSS keyframe animation without inline JS timers.
+
+    (function injectOverlayStyles() {
+      const style = document.createElement('style');
+      style.id = 'pong-overlay-styles';
+      style.textContent = `
+        @keyframes pongPulse {
+          0%   { transform: scale(1);    box-shadow: 0 0 0   0   rgba(255,255,255,0.4); }
+          50%  { transform: scale(1.06); box-shadow: 0 0 18px 6px rgba(255,255,255,0.2); }
+          100% { transform: scale(1);    box-shadow: 0 0 0   0   rgba(255,255,255,0.4); }
+        }
+        #pong-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 10;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.72);
+          backdrop-filter: blur(2px);
+          gap: 18px;
+          font-family: monospace;
+        }
+        #pong-overlay h1 {
+          font-size: clamp(2rem, 6vw, 3.5rem);
+          color: #fff;
+          letter-spacing: 0.06em;
+          text-shadow: 0 0 24px rgba(255,255,255,0.5);
+          text-align: center;
+        }
+        #pong-overlay .final-score {
+          font-size: clamp(1rem, 3vw, 1.5rem);
+          color: rgba(255,255,255,0.75);
+          letter-spacing: 0.08em;
+        }
+        #pong-overlay .hint {
+          font-size: 0.85rem;
+          color: rgba(255,255,255,0.4);
+          letter-spacing: 0.05em;
+          margin-top: 4px;
+        }
+        #pong-play-again {
+          margin-top: 8px;
+          padding: 14px 40px;
+          font-family: monospace;
+          font-size: 1.1rem;
+          font-weight: bold;
+          letter-spacing: 0.1em;
+          color: #000;
+          background: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          animation: pongPulse 1.6s ease-in-out infinite;
+          transition: background 0.15s, color 0.15s;
+        }
+        #pong-play-again:hover,
+        #pong-play-again:focus {
+          background: #ffe066;
+          outline: none;
+        }
+      `;
+      document.head.appendChild(style);
+    })();
+
+    // ── State ─────────────────────────────────────────────────────────────────
+    //
+    // All mutable game state lives in plain objects at module scope.
+    // Ball velocity is stored as a speed scalar + angle in radians so that
+    // deflection and reflection logic operates directly on the angle.
+    // vx / vy are kept in sync via syncBallVelocity() for collision maths.
+    //
+    // resetBall() re-initialises the ball each point; resetGame() resets scores.
+
+    const ball = {
+      x:     CANVAS_W / 2 - BALL_SIZE / 2,
+      y:     CANVAS_H / 2 - BALL_SIZE / 2,
+      speed: 0,
+      angle: 0,
+      vx:    0,
+      vy:    0,
+      w:     BALL_SIZE,
+      h:     BALL_SIZE,
+    };
+
+    // Left paddle — controlled by the player (W / S or Arrow-Up / Arrow-Down)
+    const playerPaddle = {
+      x: 30,
+      y: CANVAS_H / 2 - PADDLE_H / 2,
+      w: PADDLE_W,
+      h: PADDLE_H,
+      score: 0,
+    };
+
+    // Right paddle — controlled by the AI
+    const aiPaddle = {
+      x: CANVAS_W - 30 - PADDLE_W,
+      y: CANVAS_H / 2 - PADDLE_H / 2,
+      w: PADDLE_W,
+      h: PADDLE_H,
+      score: 0,
+    };
+
+    // gameState can be: 'playing' | 'scored' | 'gameover'
+    // (replaces the original 'won' phase; the overlay handles that display layer)
+    const game = {
+      phase:      'scored',   // start in 'scored' so the ball resets at t=0
+      winner:     null,       // 'player' | 'ai' | null
+      pauseTimer: 1.2,        // seconds to wait before serving next ball
+    };
+
+    // Rally state — tracks consecutive paddle hits for difficulty escalation
+    // and the short score-flash effect.
+    const rally = {
+      rallyCount:  0,   // hits since last score; resets each point
+      flashFrames: 0,   // counts down from FLASH_FRAMES to 0 after scoring
+    };
+
+    // requestAnimationFrame handle — kept so the loop can be paused on gameover.
+    let rafId = null;
+
+    // ── Input ─────────────────────────────────────────────────────────────────
+    //
+    // Boolean map of currently-held keys.  Checked each frame in update().
+
+    const keys = {};
+
+    window.addEventListener('keydown', (e) => {
+      keys[e.code] = true;
+      // Prevent page scrolling for arrow keys
+      if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
+        e.preventDefault();
+      }
+      // Space triggers restart when overlay is visible (accessibility shortcut)
+      if (e.code === 'Space' && game.phase === 'gameover') {
+        startNewGame();
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      keys[e.code] = false;
+    });
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns a random float in [min, max).
+     */
+    function rand(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    /**
+     * Clamp value v between lo and hi (inclusive).
+     */
+    function clamp(v, lo, hi) {
+      return Math.max(lo, Math.min(hi, v));
+    }
+
+    /**
+     * Axis-aligned bounding-box overlap test.
+     */
+    function aabbOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+      return ax < bx + bw && ax + aw > bx &&
+             ay < by + bh && ay + ah > by;
+    }
+
+    /**
+     * Synchronise ball.vx / ball.vy from ball.speed and ball.angle.
+     * Call after any mutation of speed or angle.
+     */
+    function syncBallVelocity(b) {
+      b.vx = b.speed * Math.cos(b.angle);
+      b.vy = b.speed * Math.sin(b.angle);
+    }
+
+    /**
+     * Compute the deflection angle from the ball's relative hit position on a
+     * paddle face.  relY is positive when the ball hit below paddle centre.
+     * Returns a value in [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE].
+     */
+    function deflectAngle(relY) {
+      const norm = clamp(relY / (PADDLE_H / 2), -1, 1);
+      return norm * MAX_DEFLECT_ANGLE;
+    }
+
+    /**
+     * Reset the ball to the centre and launch it in a random direction,
+     * away from whichever side just scored (dirSign: +1 = toward AI, -1 = toward player).
+     * Resets the rally counter.
+     */
+    function resetBall(dirSign) {
+      ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
+      ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
+      ball.speed = BALL_SPEED_INIT;
+      rally.rallyCount = 0;
+
+      const baseAngle  = rand(-Math.PI / 4, Math.PI / 4);
+      // dirSign >= 0 → launch right; < 0 → launch left (mirror across y-axis)
+      ball.angle = dirSign >= 0 ? baseAngle : Math.PI - baseAngle;
+      syncBallVelocity(ball);
+    }
+
+    /**
+     * Reset both paddles and scores; start fresh.
+     */
+    function resetGame() {
+      playerPaddle.y = CANVAS_H / 2 - PADDLE_H / 2;
+      aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
+      playerPaddle.score = 0;
+      aiPaddle.score     = 0;
+      game.winner     = null;
+      game.phase      = 'scored';
+      game.pauseTimer = 1.5;
+      rally.rallyCount  = 0;
+      rally.flashFrames = 0;
+    }
+
+    // ── DOM Overlay ───────────────────────────────────────────────────────────
+    //
+    // The game-over overlay is a full-screen semi-transparent div injected
+    // into the document via JS DOM APIs.  It is removed (not hidden) on restart
+    // so a clean element is created each game-over.
+
+    /**
+     * Build and show the full-screen game-over overlay.
+     * Attaches a 'Play Again' button that calls startNewGame() on click.
+     *
+     * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
+     * @param {number} playerScore - Final player score
+     * @param {number} aiScore     - Final AI score
+     */
+    function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
+      // Remove any pre-existing overlay (defensive guard)
+      removeGameOverOverlay();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-overlay';
+
+      // Winner headline
+      const h1 = document.createElement('h1');
+      h1.textContent = winnerLabel;
+      overlay.appendChild(h1);
+
+      // Final score line
+      const scoreEl = document.createElement('p');
+      scoreEl.className = 'final-score';
+      scoreEl.textContent = `Final score  ${playerScore} – ${aiScore}`;
+      overlay.appendChild(scoreEl);
+
+      // Play Again button
+      const btn = document.createElement('button');
+      btn.id = 'pong-play-again';
+      btn.textContent = 'Play Again';
+      btn.addEventListener('click', startNewGame);
+      overlay.appendChild(btn);
+
+      // Keyboard hint
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = 'or press Space';
+      overlay.appendChild(hint);
+
+      document.body.appendChild(overlay);
+
+      // Focus the button immediately so keyboard users can activate it
+      btn.focus();
+
+      // If user is signed in, submit the score
+      if (game.winner === 'player') {
+        submitScore(playerScore);
+      }
+    }
+
+    /**
+     * Remove the game-over overlay from the DOM if it exists.
+     */
+    function removeGameOverOverlay() {
+      const existing = document.getElementById('pong-overlay');
+      if (existing) existing.remove();
+    }
+
+    /**
+     * Tear down the current overlay, reset all state, and restart the animation loop.
+     * Called by the 'Play Again' button click and the Space keyboard shortcut.
+     */
+    function startNewGame() {
+      removeGameOverOverlay();
+      resetGame();
+      // Clear the key map so a held-Space doesn't immediately trigger movement
+      Object.keys(keys).forEach((k) => { keys[k] = false; });
+      // Cancel any stale RAF handle before starting a new loop
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      lastTime = null;
+      rafId = requestAnimationFrame(loop);
+    }
+
+    // ── Update ────────────────────────────────────────────────────────────────
+    //
+    // All simulation is driven by delta-time (dt, in seconds) so the game
+    // runs at the same speed regardless of frame rate.
+
+    function update(dt) {
+      // ── Phase: gameover ──────────────────────────────────────────────────────
+      // The RAF loop is paused when gameover; nothing to update.
+      if (game.phase === 'gameover') return;
+
+      // ── Phase: scored (brief pause before next serve) ────────────────────
+      if (game.phase === 'scored') {
+        // Tick down the flash effect (set when a score just happened)
+        if (rally.flashFrames > 0) rally.flashFrames -= 1;
+
+        game.pauseTimer -= dt;
+        if (game.pauseTimer <= 0) {
+          // Serve toward the player who just conceded (or random on first serve)
+          const dir = aiPaddle.score > playerPaddle.score ? -1 : 1;
+          resetBall(dir);
+          game.phase = 'playing';
+        }
+        return;
+      }
+
+      // ── Phase: playing ───────────────────────────────────────────────────
+
+      // Player paddle movement — boolean key map, clamped to canvas bounds
+      if (keys['KeyW'] || keys['ArrowUp']) {
+        playerPaddle.y -= PADDLE_SPEED * dt;
+      }
+      if (keys['KeyS'] || keys['ArrowDown']) {
+        playerPaddle.y += PADDLE_SPEED * dt;
+      }
+      playerPaddle.y = clamp(playerPaddle.y, 0, CANVAS_H - PADDLE_H);
+
+      // AI paddle movement — lerp toward ball centre; lerp speed increases
+      // slightly each rally hit (difficulty escalation).
+      const ballCentreY   = ball.y + BALL_SIZE / 2;
+      const aiCentreY     = aiPaddle.y + PADDLE_H / 2;
+      const aiDiff        = ballCentreY - aiCentreY;
+      const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
+      const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
+      aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - PADDLE_H);
+
+      // Move ball
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+
+      // ── Ball vs top / bottom walls ────────────────────────────────────────
+      // Reflect the angle across the horizontal axis (negate it).
+      if (ball.y <= 0) {
+        ball.y     = 0;
+        ball.angle = -ball.angle;
+        syncBallVelocity(ball);
+      } else if (ball.y + BALL_SIZE >= CANVAS_H) {
+        ball.y     = CANVAS_H - BALL_SIZE;
+        ball.angle = -ball.angle;
+        syncBallVelocity(ball);
+      }
+
+      // ── Ball vs player paddle ─────────────────────────────────────────────
+      if (
+        ball.vx < 0 &&
+        aabbOverlap(ball.x, ball.y, ball.w, ball.h,
+                    playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h)
+      ) {
+        ball.x  = playerPaddle.x + playerPaddle.w;
+        // Deflection angle: centre hit → shallow; edge hit → steep (up to ±75°).
+        // The resulting angle is in the right-travelling hemisphere.
+        const relY  = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
+        ball.angle  = deflectAngle(relY);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        syncBallVelocity(ball);
+        rally.rallyCount += 1;
+      }
+
+      // ── Ball vs AI paddle ─────────────────────────────────────────────────
+      if (
+        ball.vx > 0 &&
+        aabbOverlap(ball.x, ball.y, ball.w, ball.h,
+                    aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h)
+      ) {
+        ball.x  = aiPaddle.x - BALL_SIZE;
+        const relY  = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
+        // π - deflectAngle puts the ball in the left-travelling hemisphere.
+        ball.angle  = Math.PI - deflectAngle(relY);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        syncBallVelocity(ball);
+        rally.rallyCount += 1;
+      }
+
+      // ── Ball exits left → AI scores ───────────────────────────────────────
+      if (ball.x + BALL_SIZE < 0) {
+        aiPaddle.score += 1;
+        rally.flashFrames = FLASH_FRAMES;
+        rally.rallyCount  = 0;
+        if (aiPaddle.score >= SCORE_WIN) {
+          game.phase  = 'gameover';
+          game.winner = 'ai';
+        } else {
+          game.phase      = 'scored';
+          game.pauseTimer = 1.2;
+        }
+      }
+
+      // ── Ball exits right → player scores ─────────────────────────────────
+      if (ball.x > CANVAS_W) {
+        playerPaddle.score += 1;
+        rally.flashFrames = FLASH_FRAMES;
+        rally.rallyCount  = 0;
+        if (playerPaddle.score >= SCORE_WIN) {
+          game.phase  = 'gameover';
+          game.winner = 'player';
+        } else {
+          game.phase      = 'scored';
+          game.pauseTimer = 1.2;
+        }
+      }
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────
+    //
+    // Each frame: clear the canvas then redraw all primitives from scratch.
+    // The live score is rendered via fillText each frame (canvas-integrated).
+    // When rally.flashFrames > 0 a tinted overlay is drawn to give visual
+    // feedback that a point was just scored.
+
+    function render() {
+      // Clear to black
+      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+      // Score flash: tinted background for a few frames after scoring
+      if (rally.flashFrames > 0) {
+        // Fade from solid tint toward transparent as frames count down
+        const alpha = rally.flashFrames / FLASH_FRAMES * 0.35;
+        ctx.fillStyle = `rgba(255, 220, 0, ${alpha})`;
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+      }
+
+      // Centre dashed divider
+      ctx.setLineDash([DIVIDER_DASH, DIVIDER_GAP]);
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(CANVAS_W / 2, 0);
+      ctx.lineTo(CANVAS_W / 2, CANVAS_H);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // ── Live scores rendered on canvas each frame ─────────────────────────
+      // Scores are drawn with fillText so they integrate seamlessly with gameplay.
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 48px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(playerPaddle.score, CANVAS_W / 4, 20);
+      ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
+
+      // Player paddle
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
+
+      // AI paddle
+      ctx.fillRect(aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h);
+
+      // Ball (only when playing)
+      if (game.phase === 'playing') {
+        ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
+      }
+
+      // 'Get ready…' hint during the inter-point pause
+      if (game.phase === 'scored') {
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.font = '22px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Get ready…', CANVAS_W / 2, CANVAS_H / 2);
+      }
+
+      // When gameover, the canvas shows the final frozen frame so that the
+      // semi-transparent HTML overlay renders above a recognisable game state.
+    }
+
+    // ── Game loop ─────────────────────────────────────────────────────────────
+    //
+    // Uses requestAnimationFrame; the timestamp argument is equivalent to
+    // performance.now() and is used to compute delta-time (dt, in seconds).
+    // Delta-time is capped at 100 ms to avoid large jumps after tab switches.
+    //
+    // When game.phase becomes 'gameover' the loop stops scheduling itself and
+    // shows the HTML overlay instead.
+
+    let lastTime = null;
+
+    function loop(timestamp) {
+      if (lastTime === null) {
+        lastTime = timestamp;
+      }
+      const dt = Math.min((timestamp - lastTime) / 1000, 0.1);  // seconds, capped
+      lastTime = timestamp;
+
+      update(dt);
+      render();
+
+      if (game.phase === 'gameover') {
+        // Pause the loop and present the DOM overlay
+        rafId = null;
+        const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
+        showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score);
+        return; // do NOT schedule next frame
+      }
+
+      rafId = requestAnimationFrame(loop);
+    }
+
+    // Kick off the animation loop
+    rafId = requestAnimationFrame(loop);
+
+    // ── Auth & API integration ────────────────────────────────────────────────
+    //
+    // JWT is stored in localStorage for session persistence.
+    // All API calls use plain fetch() to relative paths.
+
+    // Auth state
+    let authToken = localStorage.getItem('pong_jwt') || null;
+    let authEmail = localStorage.getItem('pong_email') || null;
+
+    // DOM refs
+    const authStatusEl   = document.getElementById('auth-status');
+    const btnOpenAuth    = document.getElementById('btn-open-auth');
+    const btnLogout      = document.getElementById('btn-logout');
+    const authModal      = document.getElementById('auth-modal');
+    const authEmailInput = document.getElementById('auth-email');
+    const authPwInput    = document.getElementById('auth-password');
+    const authError      = document.getElementById('auth-error');
+    const btnLogin       = document.getElementById('btn-login');
+    const btnRegister    = document.getElementById('btn-register');
+    const btnCancel      = document.getElementById('btn-cancel-auth');
+    const lbList         = document.getElementById('leaderboard-list');
+
+    /** Update UI to reflect current auth state. */
+    function updateAuthUI() {
+      if (authToken) {
+        authStatusEl.textContent = authEmail ? `Signed in as ${authEmail}` : 'Signed in';
+        btnOpenAuth.style.display = 'none';
+        btnLogout.style.display   = '';
+      } else {
+        authStatusEl.textContent  = 'Not signed in';
+        btnOpenAuth.style.display = '';
+        btnLogout.style.display   = 'none';
+      }
+    }
+
+    /** Persist JWT to localStorage. */
+    function saveAuth(token, email) {
+      authToken = token;
+      authEmail = email;
+      localStorage.setItem('pong_jwt',   token);
+      localStorage.setItem('pong_email', email);
+      updateAuthUI();
+    }
+
+    /** Clear JWT from localStorage. */
+    function clearAuth() {
+      authToken = null;
+      authEmail = null;
+      localStorage.removeItem('pong_jwt');
+      localStorage.removeItem('pong_email');
+      updateAuthUI();
+    }
+
+    /** Open the auth modal. */
+    function openAuthModal() {
+      authEmailInput.value = '';
+      authPwInput.value    = '';
+      authError.textContent = '';
+      authModal.classList.add('open');
+      authEmailInput.focus();
+    }
+
+    /** Close the auth modal. */
+    function closeAuthModal() {
+      authModal.classList.remove('open');
+    }
+
+    /** Show an error inside the auth modal. */
+    function showAuthError(msg) {
+      authError.textContent = msg;
+    }
+
+    /**
+     * Call POST /api/auth/register or /api/auth/login.
+     * @param {'register'|'login'} action
+     */
+    async function doAuth(action) {
+      const email    = authEmailInput.value.trim();
+      const password = authPwInput.value;
+
+      if (!email || !password) {
+        showAuthError('Please enter email and password.');
+        return;
+      }
+
+      const endpoint = action === 'register'
+        ? '/api/auth/register'
+        : '/api/auth/login';
+
+      try {
+        const res  = await fetch(endpoint, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          showAuthError(data.error || 'Authentication failed.');
+          return;
+        }
+
+        saveAuth(data.token, email);
+        closeAuthModal();
+        fetchLeaderboard();
+      } catch {
+        showAuthError('Network error. Please try again.');
+      }
+    }
+
+    /**
+     * Submit the player's winning score to POST /api/scores.
+     * Silently fails if the user is not authenticated.
+     */
+    async function submitScore(score) {
+      if (!authToken) return;
+      try {
+        await fetch('/api/scores', {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ score }),
+        });
+        // Refresh leaderboard after submitting
+        fetchLeaderboard();
+      } catch {
+        // Silent failure — score submission is non-critical
+      }
+    }
+
+    /**
+     * Fetch and render the top-10 leaderboard from GET /api/scores/leaderboard.
+     */
+    async function fetchLeaderboard() {
+      try {
+        const res  = await fetch('/api/scores/leaderboard');
+        const rows = await res.json();
+
+        lbList.innerHTML = '';
+        rows.forEach((row, i) => {
+          const li = document.createElement('li');
+          const label = document.createElement('span');
+          label.textContent = `${i + 1}. ${row.email.split('@')[0]}`;
+          const score = document.createElement('span');
+          score.className = 'lb-score';
+          score.textContent = row.score;
+          li.appendChild(label);
+          li.appendChild(score);
+          lbList.appendChild(li);
+        });
+      } catch {
+        // Silent failure — leaderboard is non-critical
+      }
+    }
+
+    // ── Event listeners ───────────────────────────────────────────────────────
+    btnOpenAuth.addEventListener('click', openAuthModal);
+    btnCancel.addEventListener('click',   closeAuthModal);
+    btnLogout.addEventListener('click', () => {
+      clearAuth();
+      fetchLeaderboard();
+    });
+
+    btnLogin.addEventListener('click',    () => doAuth('login'));
+    btnRegister.addEventListener('click', () => doAuth('register'));
+
+    // Allow pressing Enter in the password field to submit
+    authPwInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doAuth('login');
+    });
+
+    // Close modal on backdrop click
+    authModal.addEventListener('click', (e) => {
+      if (e.target === authModal) closeAuthModal();
+    });
+
+    // ── Initialise ────────────────────────────────────────────────────────────
+    updateAuthUI();
+    fetchLeaderboard();
+
+  </script>
+</body>
+</html>

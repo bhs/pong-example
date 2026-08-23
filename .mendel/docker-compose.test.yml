@@ -2,3 +2,12 @@ services:
   app:
     build:
       context: ..
+    environment:
+      PORT: "3000"
+      JWT_SECRET: "test-secret-for-mendel-docker"
+      DB_PATH: "/app/data/pong.db"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
