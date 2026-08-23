@@ -54,6 +54,7 @@
     const DIVIDER_DASH      = 20;    // centre-line dash length
     const DIVIDER_GAP       = 10;    // centre-line gap length
     const FLASH_FRAMES      = 3;     // frames of tinted flash on score
+    const PAUSE_FRAMES      = 60;    // frames of pause after scoring before next serve
 
     // ── Canvas setup ──────────────────────────────────────────────────────────
     const canvas = document.getElementById('gameCanvas');
@@ -68,6 +69,7 @@
     // deflection and reflection logic operates directly on the angle.
     // vx / vy are kept in sync via syncBallVelocity() for collision maths.
     //
+    // score holds the canonical scoreboard: { player, ai }.
     // resetBall() re-initialises the ball each point; resetGame() resets scores.
 
     const ball = {
@@ -87,7 +89,6 @@
       y: CANVAS_H / 2 - PADDLE_H / 2,
       w: PADDLE_W,
       h: PADDLE_H,
-      score: 0,
     };
 
     // Right paddle — controlled by the AI
@@ -96,14 +97,19 @@
       y: CANVAS_H / 2 - PADDLE_H / 2,
       w: PADDLE_W,
       h: PADDLE_H,
-      score: 0,
     };
 
-    // Phase can be: 'playing' | 'scored' | 'won'
+    // Scoreboard — tracks points for each side
+    const score = {
+      player: 0,
+      ai:     0,
+    };
+
+    // Phase can be: 'playing' | 'scored' | 'gameover'
     const game = {
       phase:      'scored',   // start in 'scored' so the ball resets at t=0
       winner:     null,       // 'player' | 'ai' | null
-      pauseTimer: 1.2,        // seconds to wait before serving next ball
+      pauseFrames: PAUSE_FRAMES, // frames to wait before serving next ball
     };
 
     // Rally state — tracks consecutive paddle hits for difficulty escalation
@@ -121,9 +127,13 @@
 
     window.addEventListener('keydown', (e) => {
       keys[e.code] = true;
-      // Prevent page scrolling for arrow keys
+      // Prevent page scrolling for arrow keys and space
       if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
         e.preventDefault();
+      }
+      // Space restarts from gameover screen
+      if (e.code === 'Space' && game.phase === 'gameover') {
+        resetGame();
       }
     });
 
@@ -192,32 +202,29 @@
     }
 
     /**
-     * Reset both paddles and scores; start fresh.
+     * Reset all state for a fresh game (called when Space is pressed on gameover).
      */
     function resetGame() {
       playerPaddle.y = CANVAS_H / 2 - PADDLE_H / 2;
       aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
-      playerPaddle.score = 0;
-      aiPaddle.score     = 0;
+      score.player   = 0;
+      score.ai       = 0;
       game.winner     = null;
       game.phase      = 'scored';
-      game.pauseTimer = 1.5;
+      game.pauseFrames = PAUSE_FRAMES;
       rally.rallyCount  = 0;
       rally.flashFrames = 0;
     }
 
     // ── Update ────────────────────────────────────────────────────────────────
     //
-    // All simulation is driven by delta-time (dt, in seconds) so the game
-    // runs at the same speed regardless of frame rate.
+    // All simulation is driven per-frame.  Scoring pauses use a frame counter
+    // (PAUSE_FRAMES) rather than delta-time so the pause length is consistent.
 
     function update(dt) {
-      // ── Phase: won ──────────────────────────────────────────────────────────
-      if (game.phase === 'won') {
-        // Any key restarts the game
-        if (Object.values(keys).some(Boolean)) {
-          resetGame();
-        }
+      // ── Phase: gameover ──────────────────────────────────────────────────
+      // Space key is handled in the keydown listener; nothing else to do here.
+      if (game.phase === 'gameover') {
         return;
       }
 
@@ -226,10 +233,10 @@
         // Tick down the flash effect (set when a score just happened)
         if (rally.flashFrames > 0) rally.flashFrames -= 1;
 
-        game.pauseTimer -= dt;
-        if (game.pauseTimer <= 0) {
+        game.pauseFrames -= 1;
+        if (game.pauseFrames <= 0) {
           // Serve toward the player who just conceded (or random on first serve)
-          const dir = aiPaddle.score > playerPaddle.score ? -1 : 1;
+          const dir = score.ai > score.player ? -1 : 1;
           resetBall(dir);
           game.phase = 'playing';
         }
@@ -305,29 +312,29 @@
 
       // ── Ball exits left → AI scores ───────────────────────────────────────
       if (ball.x + BALL_SIZE < 0) {
-        aiPaddle.score += 1;
+        score.ai += 1;
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
-        if (aiPaddle.score >= SCORE_WIN) {
-          game.phase  = 'won';
+        if (score.ai >= SCORE_WIN) {
+          game.phase  = 'gameover';
           game.winner = 'ai';
         } else {
-          game.phase      = 'scored';
-          game.pauseTimer = 1.2;
+          game.phase       = 'scored';
+          game.pauseFrames = PAUSE_FRAMES;
         }
       }
 
       // ── Ball exits right → player scores ─────────────────────────────────
       if (ball.x > CANVAS_W) {
-        playerPaddle.score += 1;
+        score.player += 1;
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
-        if (playerPaddle.score >= SCORE_WIN) {
-          game.phase  = 'won';
+        if (score.player >= SCORE_WIN) {
+          game.phase  = 'gameover';
           game.winner = 'player';
         } else {
-          game.phase      = 'scored';
-          game.pauseTimer = 1.2;
+          game.phase       = 'scored';
+          game.pauseFrames = PAUSE_FRAMES;
         }
       }
     }
@@ -335,8 +342,8 @@
     // ── Render ────────────────────────────────────────────────────────────────
     //
     // Each frame: clear the canvas then redraw all primitives from scratch.
-    // When rally.flashFrames > 0 a tinted overlay is drawn to give visual
-    // feedback that a point was just scored.
+    // When rally.flashFrames > 0 a tinted overlay signals a point was scored.
+    // When game.phase === 'gameover' a full-canvas overlay is drawn instead.
 
     function render() {
       // Clear to black
@@ -362,13 +369,15 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Scores
+      // ── Score display ─────────────────────────────────────────────────────
+      // Rendered each frame via fillText with a large monospace font, centred
+      // near the top of each half.
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 48px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(playerPaddle.score, CANVAS_W / 4, 20);
-      ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
+      ctx.fillText(score.player, CANVAS_W / 4, 20);
+      ctx.fillText(score.ai, (CANVAS_W / 4) * 3, 20);
 
       // Player paddle
       ctx.fillStyle = '#fff';
@@ -382,7 +391,7 @@
         ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
       }
 
-      // Overlay messages
+      // 'Get ready' hint during inter-point pause
       if (game.phase === 'scored') {
         ctx.fillStyle = 'rgba(255,255,255,0.25)';
         ctx.font = '22px monospace';
@@ -391,17 +400,32 @@
         ctx.fillText('Get ready…', CANVAS_W / 2, CANVAS_H / 2);
       }
 
-      if (game.phase === 'won') {
-        const msg = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
+      // ── Game-over overlay ─────────────────────────────────────────────────
+      // Drawn entirely in the canvas draw pass: semi-transparent dim layer,
+      // winner announcement, final score, and restart prompt.
+      if (game.phase === 'gameover') {
+        // Dim the background
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+        // Winner announcement
+        const winnerLabel = game.winner === 'player' ? 'You Win! 🎉' : 'AI Wins!';
         ctx.fillStyle = '#fff';
-        ctx.font = 'bold 56px monospace';
+        ctx.font = 'bold 64px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(msg, CANVAS_W / 2, CANVAS_H / 2 - 40);
+        ctx.fillText(winnerLabel, CANVAS_W / 2, CANVAS_H / 2 - 70);
 
+        // Final score
+        const finalScore = `${score.player}  –  ${score.ai}`;
+        ctx.font = 'bold 36px monospace';
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.fillText(finalScore, CANVAS_W / 2, CANVAS_H / 2);
+
+        // Restart prompt
         ctx.font = '22px monospace';
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.fillText('Press any key to play again', CANVAS_W / 2, CANVAS_H / 2 + 30);
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillText('Press Space to Restart', CANVAS_W / 2, CANVAS_H / 2 + 70);
       }
     }
 

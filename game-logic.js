@@ -15,6 +15,7 @@ const AI_LERP_RALLY_INC = 0.15;   // added to AI lerp per rally hit (difficulty 
 const MAX_DEFLECT_ANGLE = Math.PI * 75 / 180;  // 75° max deflection at paddle edge
 const SCORE_WIN         = 7;      // first to this wins
 const FLASH_FRAMES      = 3;      // number of frames for score-flash effect
+const PAUSE_FRAMES      = 60;     // frames of inter-point pause before next serve
 
 /**
  * Returns a random float in [min, max).
@@ -77,7 +78,6 @@ function makePlayerPaddle() {
     y: CANVAS_H / 2 - PADDLE_H / 2,
     w: PADDLE_W,
     h: PADDLE_H,
-    score: 0,
   };
 }
 
@@ -90,18 +90,31 @@ function makeAiPaddle() {
     y: CANVAS_H / 2 - PADDLE_H / 2,
     w: PADDLE_W,
     h: PADDLE_H,
-    score: 0,
+  };
+}
+
+/**
+ * Create a fresh scoreboard object.
+ * Scores are tracked separately from paddle objects so they can be read
+ * independently and reset atomically.
+ */
+function makeScore() {
+  return {
+    player: 0,
+    ai:     0,
   };
 }
 
 /**
  * Create a fresh game-phase state object.
+ * phase can be: 'playing' | 'scored' | 'gameover'
+ * pauseFrames counts down per-frame during the 'scored' inter-point pause.
  */
 function makeGame() {
   return {
-    phase:      'scored',
-    winner:     null,
-    pauseTimer: 1.2,
+    phase:       'scored',
+    winner:      null,
+    pauseFrames: PAUSE_FRAMES,
   };
 }
 
@@ -217,15 +230,17 @@ function syncBallVelocity(ball) {
  *
  * When a point is scored, rally.rallyCount resets to 0 and
  * rally.flashFrames is set to FLASH_FRAMES for the screen-flash effect.
+ * game.phase transitions to 'scored' or 'gameover' as appropriate.
  *
  * @param {object} ball          - mutable ball state
- * @param {object} playerPaddle  - mutable player paddle state
- * @param {object} aiPaddle      - mutable AI paddle state
+ * @param {object} playerPaddle  - mutable player paddle state (no score field)
+ * @param {object} aiPaddle      - mutable AI paddle state (no score field)
+ * @param {object} score         - mutable score object { player, ai }
  * @param {object} game          - mutable game phase state
  * @param {number} dt            - delta-time in seconds
  * @param {object} [rally]       - mutable rally state (optional; created if omitted)
  */
-function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
+function updateBall(ball, playerPaddle, aiPaddle, score, game, dt, rally) {
   if (!rally) rally = makeRally();
 
   ball.x += ball.vx * dt;
@@ -273,40 +288,40 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
 
   // ── Ball exits left → AI scores ───────────────────────────────────────────
   if (ball.x + BALL_SIZE < 0) {
-    aiPaddle.score += 1;
+    score.ai += 1;
     rally.rallyCount  = 0;
     rally.flashFrames = FLASH_FRAMES;
-    if (aiPaddle.score >= SCORE_WIN) {
-      game.phase  = 'won';
+    if (score.ai >= SCORE_WIN) {
+      game.phase  = 'gameover';
       game.winner = 'ai';
     } else {
-      game.phase      = 'scored';
-      game.pauseTimer = 1.2;
+      game.phase       = 'scored';
+      game.pauseFrames = PAUSE_FRAMES;
     }
   }
 
   // ── Ball exits right → player scores ─────────────────────────────────────
   if (ball.x > CANVAS_W) {
-    playerPaddle.score += 1;
+    score.player += 1;
     rally.rallyCount  = 0;
     rally.flashFrames = FLASH_FRAMES;
-    if (playerPaddle.score >= SCORE_WIN) {
-      game.phase  = 'won';
+    if (score.player >= SCORE_WIN) {
+      game.phase  = 'gameover';
       game.winner = 'player';
     } else {
-      game.phase      = 'scored';
-      game.pauseTimer = 1.2;
+      game.phase       = 'scored';
+      game.pauseFrames = PAUSE_FRAMES;
     }
   }
 }
 
 /**
- * Tick the scored-phase pause timer.
+ * Tick the scored-phase pause frame counter by one frame.
  * Returns true when the pause has expired (caller should serve the ball).
  */
-function tickPause(game, dt) {
-  game.pauseTimer -= dt;
-  return game.pauseTimer <= 0;
+function tickPause(game) {
+  game.pauseFrames -= 1;
+  return game.pauseFrames <= 0;
 }
 
 module.exports = {
@@ -320,11 +335,13 @@ module.exports = {
   MAX_DEFLECT_ANGLE,
   SCORE_WIN,
   FLASH_FRAMES,
+  PAUSE_FRAMES,
 
   // Factory functions
   makeBall,
   makePlayerPaddle,
   makeAiPaddle,
+  makeScore,
   makeGame,
   makeRally,
 
