@@ -5,29 +5,37 @@ const {
   PADDLE_W, PADDLE_H,
   BALL_SIZE,
   PADDLE_SPEED,
-  BALL_SPEED_INIT, BALL_SPEED_MAX, BALL_SPEED_INC,
-  AI_LERP,
+  BALL_SPEED_INIT, BALL_SPEED_MAX, BALL_SPEED_MUL,
+  AI_LERP, AI_LERP_RALLY_INC,
+  MAX_DEFLECT_ANGLE,
   SCORE_WIN,
+  FLASH_FRAMES,
   makeBall,
   makePlayerPaddle,
   makeAiPaddle,
   makeGame,
+  makeRally,
   rand,
   clamp,
   aabbOverlap,
+  reflectAngleVertical,
+  deflectAngle,
+  incrementSpeed,
+  syncBallVelocity,
   movePlayerPaddle,
   moveAiPaddle,
   updateBall,
   tickPause,
+  tickFlash,
 } = require('../game-logic');
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /** Run updateBall for `steps` frames of `dt` seconds. */
-function runFrames(ball, player, ai, game, dt, steps) {
+function runFrames(ball, player, ai, game, dt, steps, rally) {
   for (let i = 0; i < steps; i++) {
     if (game.phase !== 'playing') break;
-    updateBall(ball, player, ai, game, dt);
+    updateBall(ball, player, ai, game, dt, rally);
   }
 }
 
@@ -99,6 +107,84 @@ describe('aabbOverlap', () => {
   });
 });
 
+// ── reflectAngleVertical ──────────────────────────────────────────────────
+
+describe('reflectAngleVertical', () => {
+  test('negates a positive angle', () => {
+    expect(reflectAngleVertical(Math.PI / 4)).toBeCloseTo(-Math.PI / 4);
+  });
+
+  test('negates a negative angle', () => {
+    expect(reflectAngleVertical(-Math.PI / 6)).toBeCloseTo(Math.PI / 6);
+  });
+
+  test('zero angle stays zero', () => {
+    expect(reflectAngleVertical(0)).toBeCloseTo(0);
+  });
+});
+
+// ── deflectAngle ──────────────────────────────────────────────────────────
+
+describe('deflectAngle', () => {
+  test('centre hit (relY=0) produces zero deflection', () => {
+    expect(deflectAngle(0)).toBeCloseTo(0);
+  });
+
+  test('top-edge hit (relY = -PADDLE_H/2) produces -MAX_DEFLECT_ANGLE', () => {
+    expect(deflectAngle(-PADDLE_H / 2)).toBeCloseTo(-MAX_DEFLECT_ANGLE);
+  });
+
+  test('bottom-edge hit (relY = +PADDLE_H/2) produces +MAX_DEFLECT_ANGLE', () => {
+    expect(deflectAngle(PADDLE_H / 2)).toBeCloseTo(MAX_DEFLECT_ANGLE);
+  });
+
+  test('deflection is clamped for hits beyond paddle edge', () => {
+    expect(Math.abs(deflectAngle(PADDLE_H * 2))).toBeCloseTo(MAX_DEFLECT_ANGLE);
+  });
+
+  test('MAX_DEFLECT_ANGLE is 75 degrees', () => {
+    expect(MAX_DEFLECT_ANGLE).toBeCloseTo(Math.PI * 75 / 180);
+  });
+});
+
+// ── incrementSpeed ────────────────────────────────────────────────────────
+
+describe('incrementSpeed', () => {
+  test('multiplies speed by BALL_SPEED_MUL', () => {
+    expect(incrementSpeed(300)).toBeCloseTo(300 * BALL_SPEED_MUL);
+  });
+
+  test('clamps result to BALL_SPEED_MAX', () => {
+    expect(incrementSpeed(BALL_SPEED_MAX)).toBeCloseTo(BALL_SPEED_MAX);
+    expect(incrementSpeed(BALL_SPEED_MAX * 10)).toBeCloseTo(BALL_SPEED_MAX);
+  });
+
+  test('result is never below BALL_SPEED_INIT', () => {
+    expect(incrementSpeed(0)).toBeCloseTo(BALL_SPEED_INIT);
+  });
+
+  test('BALL_SPEED_MUL is 1.05', () => {
+    expect(BALL_SPEED_MUL).toBeCloseTo(1.05);
+  });
+});
+
+// ── syncBallVelocity ──────────────────────────────────────────────────────
+
+describe('syncBallVelocity', () => {
+  test('sets vx and vy from speed and angle', () => {
+    const b = { speed: 300, angle: Math.PI / 4, vx: 0, vy: 0, x: 0, y: 0, w: 12, h: 12 };
+    syncBallVelocity(b);
+    expect(b.vx).toBeCloseTo(300 * Math.cos(Math.PI / 4));
+    expect(b.vy).toBeCloseTo(300 * Math.sin(Math.PI / 4));
+  });
+
+  test('magnitude of resulting velocity equals speed', () => {
+    const b = { speed: 450, angle: 1.2, vx: 0, vy: 0, x: 0, y: 0, w: 12, h: 12 };
+    syncBallVelocity(b);
+    expect(Math.hypot(b.vx, b.vy)).toBeCloseTo(450);
+  });
+});
+
 // ── makeBall ──────────────────────────────────────────────────────────────
 
 describe('makeBall', () => {
@@ -110,8 +196,8 @@ describe('makeBall', () => {
 
   test('launches with correct initial speed magnitude', () => {
     const b = makeBall(1, 0);
-    const speed = Math.hypot(b.vx, b.vy);
-    expect(speed).toBeCloseTo(BALL_SPEED_INIT);
+    expect(b.speed).toBeCloseTo(BALL_SPEED_INIT);
+    expect(Math.hypot(b.vx, b.vy)).toBeCloseTo(BALL_SPEED_INIT);
   });
 
   test('dirSign=+1 launches ball to the right (toward AI)', () => {
@@ -128,6 +214,18 @@ describe('makeBall', () => {
     const b = makeBall(1, 0);
     expect(b.w).toBe(BALL_SIZE);
     expect(b.h).toBe(BALL_SIZE);
+  });
+
+  test('ball exposes speed and angle properties', () => {
+    const b = makeBall(1, Math.PI / 6);
+    expect(typeof b.speed).toBe('number');
+    expect(typeof b.angle).toBe('number');
+  });
+
+  test('vx and vy are consistent with speed and angle', () => {
+    const b = makeBall(1, Math.PI / 6);
+    expect(b.vx).toBeCloseTo(b.speed * Math.cos(b.angle));
+    expect(b.vy).toBeCloseTo(b.speed * Math.sin(b.angle));
   });
 });
 
@@ -169,6 +267,49 @@ describe('makeGame', () => {
     expect(g.phase).toBe('scored');
     expect(g.winner).toBeNull();
     expect(g.pauseTimer).toBeGreaterThan(0);
+  });
+});
+
+// ── makeRally ─────────────────────────────────────────────────────────────
+
+describe('makeRally', () => {
+  test('initialises with zero rallyCount and flashFrames', () => {
+    const r = makeRally();
+    expect(r.rallyCount).toBe(0);
+    expect(r.flashFrames).toBe(0);
+  });
+});
+
+// ── tickFlash ─────────────────────────────────────────────────────────────
+
+describe('tickFlash', () => {
+  test('returns false when flashFrames is 0', () => {
+    const r = makeRally();
+    expect(tickFlash(r)).toBe(false);
+  });
+
+  test('returns true while flashFrames > 0', () => {
+    const r = makeRally();
+    r.flashFrames = FLASH_FRAMES;
+    expect(tickFlash(r)).toBe(true);
+  });
+
+  test('decrements flashFrames each call', () => {
+    const r = makeRally();
+    r.flashFrames = 3;
+    tickFlash(r);
+    expect(r.flashFrames).toBe(2);
+  });
+
+  test('returns false once counter reaches 0', () => {
+    const r = makeRally();
+    r.flashFrames = 1;
+    tickFlash(r); // flashFrames goes to 0, returns true (was 1 before dec → returns true)
+    expect(tickFlash(r)).toBe(false); // now 0, returns false
+  });
+
+  test('FLASH_FRAMES constant is positive', () => {
+    expect(FLASH_FRAMES).toBeGreaterThan(0);
   });
 });
 
@@ -287,36 +428,60 @@ describe('moveAiPaddle', () => {
     moveAiPaddle(ai, ball, 1);
     expect(ai.y).toBeLessThanOrEqual(CANVAS_H - PADDLE_H);
   });
+
+  test('moves faster with higher rallyCount (difficulty escalation)', () => {
+    const ai1  = makeAiPaddle();
+    const ai2  = makeAiPaddle();
+    const ball = makeBall(1, 0);
+    // Position AI and ball close enough that the lerp diff * dt is NOT capped,
+    // so the rallyCount-based lerp increase actually changes the result.
+    // diff = 10 px, DT = 1/60s
+    // move0  = 10 * 4.5  * (1/60) ≈ 0.75   (well below PADDLE_SPEED * DT ≈ 5.8)
+    // move10 = 10 * 6.0  * (1/60) ≈ 1.0
+    ai1.y  = CANVAS_H / 2 - PADDLE_H / 2 - 10;  // paddle 10 px above its normal position
+    ai2.y  = ai1.y;
+    ball.y = CANVAS_H / 2 - BALL_SIZE / 2;       // ball at centre (paddle centre - 10 below)
+    const before = ai1.y;
+    moveAiPaddle(ai1, ball, DT, 0);   // no escalation
+    moveAiPaddle(ai2, ball, DT, 10);  // 10 rally hits → faster lerp
+    expect(ai2.y - before).toBeGreaterThan(ai1.y - before);
+  });
+
+  test('AI_LERP_RALLY_INC is positive', () => {
+    expect(AI_LERP_RALLY_INC).toBeGreaterThan(0);
+  });
 });
 
 // ── updateBall — wall bounces ─────────────────────────────────────────────
 
 describe('updateBall — wall bounces', () => {
-  test('bounces off the top wall', () => {
+  test('bounces off the top wall (vy flips positive)', () => {
     const ball   = makeBall(1, 0);
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
 
-    ball.x  = CANVAS_W / 2;
-    ball.y  = 1;
-    ball.vx = 0;
-    ball.vy = -200;           // heading up
+    ball.x     = CANVAS_W / 2;
+    ball.y     = 1;
+    ball.speed = 200;
+    ball.angle = -Math.PI / 4;   // heading up-right
+    syncBallVelocity(ball);
 
     updateBall(ball, player, ai, game, 1 / 60);
     expect(ball.vy).toBeGreaterThan(0); // should now be heading down
   });
 
-  test('bounces off the bottom wall', () => {
+  test('bounces off the bottom wall (vy flips negative)', () => {
     const ball   = makeBall(1, 0);
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
 
-    ball.x  = CANVAS_W / 2;
-    ball.y  = CANVAS_H - BALL_SIZE - 1;
-    ball.vx = 0;
-    ball.vy = 200;            // heading down
+    ball.x     = CANVAS_W / 2;
+    ball.y     = CANVAS_H - BALL_SIZE - 1;
+    ball.speed = 200;
+    ball.angle = Math.PI / 4;    // heading down-right
+    syncBallVelocity(ball);
 
     updateBall(ball, player, ai, game, 1 / 60);
     expect(ball.vy).toBeLessThan(0);
@@ -328,13 +493,31 @@ describe('updateBall — wall bounces', () => {
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
 
-    ball.x  = CANVAS_W / 2;
-    ball.y  = -10;            // already past the wall
-    ball.vx = 0;
-    ball.vy = -500;
+    ball.x     = CANVAS_W / 2;
+    ball.y     = -10;            // already past the wall
+    ball.speed = 500;
+    ball.angle = -Math.PI / 4;
+    syncBallVelocity(ball);
 
     updateBall(ball, player, ai, game, 1 / 60);
     expect(ball.y).toBeGreaterThanOrEqual(0);
+  });
+
+  test('wall bounce preserves ball speed magnitude', () => {
+    const ball   = makeBall(1, 0);
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+
+    ball.x     = CANVAS_W / 2;
+    ball.y     = 1;
+    ball.speed = 350;
+    ball.angle = -Math.PI / 4;
+    syncBallVelocity(ball);
+    const speedBefore = ball.speed;
+
+    updateBall(ball, player, ai, game, 1 / 60);
+    expect(ball.speed).toBeCloseTo(speedBefore);
   });
 });
 
@@ -345,45 +528,78 @@ describe('updateBall — player paddle collision', () => {
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
 
     // Place ball directly overlapping the player paddle, moving left
     const ball = {
-      x:  player.x + player.w - 2,   // slightly inside paddle
-      y:  player.y + PADDLE_H / 2 - BALL_SIZE / 2,
-      vx: -BALL_SPEED_INIT,
-      vy: 0,
-      w:  BALL_SIZE,
-      h:  BALL_SIZE,
+      x:     player.x + player.w - 2,   // slightly inside paddle
+      y:     player.y + PADDLE_H / 2 - BALL_SIZE / 2,
+      speed: BALL_SPEED_INIT,
+      angle: Math.PI,                    // heading left
+      vx:    -BALL_SPEED_INIT,
+      vy:    0,
+      w:     BALL_SIZE,
+      h:     BALL_SIZE,
     };
-    return { ball, player, ai, game };
+    return { ball, player, ai, game, rally };
   }
 
   test('ball vx reverses to positive after hitting player paddle', () => {
-    const { ball, player, ai, game } = makeCollisionSetup();
-    updateBall(ball, player, ai, game, 1 / 60);
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(ball.vx).toBeGreaterThan(0);
   });
 
   test('ball is repositioned to the right of the player paddle', () => {
-    const { ball, player, ai, game } = makeCollisionSetup();
-    updateBall(ball, player, ai, game, 1 / 60);
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(ball.x).toBeGreaterThanOrEqual(player.x + player.w);
   });
 
-  test('ball speed increases after paddle hit', () => {
-    const { ball, player, ai, game } = makeCollisionSetup();
-    const speedBefore = Math.hypot(ball.vx, ball.vy);
-    updateBall(ball, player, ai, game, 1 / 60);
-    const speedAfter = Math.hypot(ball.vx, ball.vy);
-    expect(speedAfter).toBeGreaterThan(speedBefore);
+  test('ball speed increases after paddle hit (multiplied by BALL_SPEED_MUL)', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    const speedBefore = ball.speed;
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(ball.speed).toBeCloseTo(speedBefore * BALL_SPEED_MUL);
   });
 
   test('ball speed is capped at BALL_SPEED_MAX', () => {
-    const { ball, player, ai, game } = makeCollisionSetup();
-    ball.vx = -(BALL_SPEED_MAX + 500); // way above max
-    updateBall(ball, player, ai, game, 1 / 60);
-    const speed = Math.hypot(ball.vx, ball.vy);
-    expect(speed).toBeLessThanOrEqual(BALL_SPEED_MAX + 0.01);
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    ball.speed = BALL_SPEED_MAX + 500;   // way above max
+    ball.vx    = -(BALL_SPEED_MAX + 500);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(ball.speed).toBeLessThanOrEqual(BALL_SPEED_MAX + 0.01);
+    expect(Math.hypot(ball.vx, ball.vy)).toBeLessThanOrEqual(BALL_SPEED_MAX + 0.01);
+  });
+
+  test('centre hit produces a near-zero vertical component', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    // Ball centre is at paddle centre → deflectAngle(0) = 0
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(Math.abs(ball.vy)).toBeLessThan(10);
+  });
+
+  test('edge hit produces steep deflection (close to MAX_DEFLECT_ANGLE)', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    // Move ball to top edge of paddle
+    ball.y = player.y;
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    const deflect = Math.abs(Math.atan2(ball.vy, ball.vx));
+    expect(deflect).toBeGreaterThan(Math.PI * 60 / 180); // at least 60°
+  });
+
+  test('rally count increments on paddle hit', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    expect(rally.rallyCount).toBe(0);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.rallyCount).toBe(1);
+  });
+
+  test('deflection angle after player paddle hit is within [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE]', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    const angle = Math.atan2(ball.vy, ball.vx);
+    expect(Math.abs(angle)).toBeLessThanOrEqual(MAX_DEFLECT_ANGLE + 0.001);
   });
 });
 
@@ -392,28 +608,109 @@ describe('updateBall — AI paddle collision', () => {
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
 
     const ball = {
-      x:  ai.x - BALL_SIZE + 2,      // slightly inside AI paddle
-      y:  ai.y + PADDLE_H / 2 - BALL_SIZE / 2,
-      vx: BALL_SPEED_INIT,
-      vy: 0,
-      w:  BALL_SIZE,
-      h:  BALL_SIZE,
+      x:     ai.x - BALL_SIZE + 2,      // slightly inside AI paddle
+      y:     ai.y + PADDLE_H / 2 - BALL_SIZE / 2,
+      speed: BALL_SPEED_INIT,
+      angle: 0,                          // heading right
+      vx:    BALL_SPEED_INIT,
+      vy:    0,
+      w:     BALL_SIZE,
+      h:     BALL_SIZE,
     };
-    return { ball, player, ai, game };
+    return { ball, player, ai, game, rally };
   }
 
   test('ball vx reverses to negative after hitting AI paddle', () => {
-    const { ball, player, ai, game } = makeCollisionSetup();
-    updateBall(ball, player, ai, game, 1 / 60);
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(ball.vx).toBeLessThan(0);
   });
 
   test('ball is repositioned to the left of the AI paddle', () => {
-    const { ball, player, ai, game } = makeCollisionSetup();
-    updateBall(ball, player, ai, game, 1 / 60);
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(ball.x + BALL_SIZE).toBeLessThanOrEqual(ai.x + 0.01);
+  });
+
+  test('ball speed increases on AI paddle hit', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    const speedBefore = ball.speed;
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(ball.speed).toBeCloseTo(speedBefore * BALL_SPEED_MUL);
+  });
+
+  test('rally count increments on AI paddle hit', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.rallyCount).toBe(1);
+  });
+
+  test('centre AI hit returns ball roughly horizontally leftward', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    // deflectAngle(0) = 0 → angle = Math.PI → vx ≈ -speed, vy ≈ 0
+    expect(ball.vx).toBeLessThan(0);
+    expect(Math.abs(ball.vy)).toBeLessThan(10);
+  });
+});
+
+// ── updateBall — angle-based reflection ───────────────────────────────────
+
+describe('updateBall — angle-based reflection', () => {
+  test('angle is stored on ball and synced to vx/vy', () => {
+    const ball   = makeBall(1, 0);
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+
+    expect(typeof ball.angle).toBe('number');
+    expect(ball.vx).toBeCloseTo(ball.speed * Math.cos(ball.angle));
+    expect(ball.vy).toBeCloseTo(ball.speed * Math.sin(ball.angle));
+  });
+
+  test('after top-wall bounce angle is reflected (vertical component flipped)', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const ball   = {
+      x: CANVAS_W / 2, y: 1,
+      speed: 300, angle: -Math.PI / 4,
+      vx: 300 * Math.cos(-Math.PI / 4),
+      vy: 300 * Math.sin(-Math.PI / 4),
+      w: BALL_SIZE, h: BALL_SIZE,
+    };
+    const angleBefore = ball.angle;
+    updateBall(ball, player, ai, game, 1 / 60);
+    expect(ball.angle).toBeCloseTo(-angleBefore);
+  });
+
+  test('speed multiplier applies on each successive paddle hit', () => {
+    // Simulate two successive paddle hits and verify compounding speed
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
+
+    // Hit player paddle once
+    const ball1 = {
+      x: player.x + player.w - 2,
+      y: player.y + PADDLE_H / 2 - BALL_SIZE / 2,
+      speed: BALL_SPEED_INIT, angle: Math.PI,
+      vx: -BALL_SPEED_INIT, vy: 0,
+      w: BALL_SIZE, h: BALL_SIZE,
+    };
+    updateBall(ball1, player, ai, game, 1 / 60, rally);
+    const afterFirst = ball1.speed;
+    expect(afterFirst).toBeCloseTo(BALL_SPEED_INIT * BALL_SPEED_MUL);
+
+    // Hit AI paddle once (simulate by setting up new position)
+    ball1.x = ai.x - BALL_SIZE + 2;
+    ball1.angle = 0; ball1.vx = afterFirst; ball1.vy = 0;
+    updateBall(ball1, player, ai, game, 1 / 60, rally);
+    expect(ball1.speed).toBeCloseTo(BALL_SPEED_INIT * BALL_SPEED_MUL * BALL_SPEED_MUL);
   });
 });
 
@@ -424,16 +721,16 @@ describe('updateBall — scoring', () => {
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
     const ball   = {
       x: -BALL_SIZE - 5,   // already off the left edge
       y: CANVAS_H / 2,
-      vx: -100,
-      vy: 0,
-      w: BALL_SIZE,
-      h: BALL_SIZE,
+      speed: 100, angle: Math.PI,
+      vx: -100, vy: 0,
+      w: BALL_SIZE, h: BALL_SIZE,
     };
 
-    updateBall(ball, player, ai, game, 1 / 60);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(ai.score).toBe(1);
     expect(player.score).toBe(0);
   });
@@ -442,16 +739,16 @@ describe('updateBall — scoring', () => {
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
     const ball   = {
       x: CANVAS_W + 5,     // already off the right edge
       y: CANVAS_H / 2,
-      vx: 100,
-      vy: 0,
-      w: BALL_SIZE,
-      h: BALL_SIZE,
+      speed: 100, angle: 0,
+      vx: 100, vy: 0,
+      w: BALL_SIZE, h: BALL_SIZE,
     };
 
-    updateBall(ball, player, ai, game, 1 / 60);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(player.score).toBe(1);
     expect(ai.score).toBe(0);
   });
@@ -460,14 +757,16 @@ describe('updateBall — scoring', () => {
     const player = makePlayerPaddle();
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
     const ball   = {
       x: -BALL_SIZE - 5,
       y: CANVAS_H / 2,
+      speed: 100, angle: Math.PI,
       vx: -100, vy: 0,
       w: BALL_SIZE, h: BALL_SIZE,
     };
 
-    updateBall(ball, player, ai, game, 1 / 60);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(game.phase).toBe('scored');
     expect(game.winner).toBeNull();
   });
@@ -477,14 +776,16 @@ describe('updateBall — scoring', () => {
     const ai     = makeAiPaddle();
     ai.score     = SCORE_WIN - 1;          // one away from winning
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
     const ball   = {
       x: -BALL_SIZE - 5,
       y: CANVAS_H / 2,
+      speed: 100, angle: Math.PI,
       vx: -100, vy: 0,
       w: BALL_SIZE, h: BALL_SIZE,
     };
 
-    updateBall(ball, player, ai, game, 1 / 60);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(ai.score).toBe(SCORE_WIN);
     expect(game.phase).toBe('won');
     expect(game.winner).toBe('ai');
@@ -495,17 +796,54 @@ describe('updateBall — scoring', () => {
     player.score = SCORE_WIN - 1;
     const ai     = makeAiPaddle();
     const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
     const ball   = {
       x: CANVAS_W + 5,
       y: CANVAS_H / 2,
+      speed: 100, angle: 0,
       vx: 100, vy: 0,
       w: BALL_SIZE, h: BALL_SIZE,
     };
 
-    updateBall(ball, player, ai, game, 1 / 60);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(player.score).toBe(SCORE_WIN);
     expect(game.phase).toBe('won');
     expect(game.winner).toBe('player');
+  });
+
+  test('scoring resets rallyCount to 0', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
+    rally.rallyCount = 5;
+    const ball   = {
+      x: -BALL_SIZE - 5,
+      y: CANVAS_H / 2,
+      speed: 100, angle: Math.PI,
+      vx: -100, vy: 0,
+      w: BALL_SIZE, h: BALL_SIZE,
+    };
+
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.rallyCount).toBe(0);
+  });
+
+  test('scoring sets flashFrames to FLASH_FRAMES', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
+    const ball   = {
+      x: -BALL_SIZE - 5,
+      y: CANVAS_H / 2,
+      speed: 100, angle: Math.PI,
+      vx: -100, vy: 0,
+      w: BALL_SIZE, h: BALL_SIZE,
+    };
+
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.flashFrames).toBe(FLASH_FRAMES);
   });
 });
 
@@ -562,6 +900,19 @@ describe('constants', () => {
   test('AI_LERP is positive', () => {
     expect(AI_LERP).toBeGreaterThan(0);
   });
+
+  test('BALL_SPEED_MUL is greater than 1', () => {
+    expect(BALL_SPEED_MUL).toBeGreaterThan(1);
+  });
+
+  test('MAX_DEFLECT_ANGLE is less than 90 degrees', () => {
+    expect(MAX_DEFLECT_ANGLE).toBeLessThan(Math.PI / 2);
+  });
+
+  test('FLASH_FRAMES is a positive integer', () => {
+    expect(FLASH_FRAMES).toBeGreaterThan(0);
+    expect(Number.isInteger(FLASH_FRAMES)).toBe(true);
+  });
 });
 
 // ── index.html sanity checks ───────────────────────────────────────────────
@@ -615,5 +966,35 @@ describe('index.html', () => {
     expect(html).toMatch(/Input/);
     expect(html).toMatch(/Update/);
     expect(html).toMatch(/Render/);
+  });
+
+  test('uses angle-based ball velocity (angle and speed properties)', () => {
+    expect(html).toMatch(/ball\.angle/);
+    expect(html).toMatch(/ball\.speed/);
+  });
+
+  test('uses syncBallVelocity or equivalent (Math.cos/Math.sin for vx/vy)', () => {
+    expect(html).toMatch(/Math\.cos/);
+    expect(html).toMatch(/Math\.sin/);
+  });
+
+  test('references BALL_SPEED_MUL for speed multiplier', () => {
+    expect(html).toMatch(/BALL_SPEED_MUL/);
+  });
+
+  test('references MAX_DEFLECT_ANGLE for deflection', () => {
+    expect(html).toMatch(/MAX_DEFLECT_ANGLE/);
+  });
+
+  test('references rally.flashFrames for score flash effect', () => {
+    expect(html).toMatch(/flashFrames/);
+  });
+
+  test('references rally.rallyCount for difficulty escalation', () => {
+    expect(html).toMatch(/rallyCount/);
+  });
+
+  test('references AI_LERP_RALLY_INC for difficulty escalation', () => {
+    expect(html).toMatch(/AI_LERP_RALLY_INC/);
   });
 });

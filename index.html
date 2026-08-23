@@ -38,19 +38,22 @@
     'use strict';
 
     // ── Constants ──────────────────────────────────────────────────────────────
-    const CANVAS_W        = 800;
-    const CANVAS_H        = 600;
-    const PADDLE_W        = 12;
-    const PADDLE_H        = 80;
-    const BALL_SIZE       = 12;
-    const PADDLE_SPEED    = 350;   // px / second
-    const BALL_SPEED_INIT = 300;   // px / second (magnitude)
-    const BALL_SPEED_MAX  = 700;   // px / second
-    const BALL_SPEED_INC  = 25;    // speed added on each paddle hit
-    const AI_LERP         = 4.5;   // AI lerp factor (higher = faster)
-    const SCORE_WIN       = 7;     // first to this wins
-    const DIVIDER_DASH    = 20;    // centre-line dash length
-    const DIVIDER_GAP     = 10;    // centre-line gap length
+    const CANVAS_W          = 800;
+    const CANVAS_H          = 600;
+    const PADDLE_W          = 12;
+    const PADDLE_H          = 80;
+    const BALL_SIZE         = 12;
+    const PADDLE_SPEED      = 350;   // px / second
+    const BALL_SPEED_INIT   = 300;   // px / second (magnitude)
+    const BALL_SPEED_MAX    = 700;   // px / second
+    const BALL_SPEED_MUL    = 1.05;  // speed multiplier on each paddle hit
+    const AI_LERP           = 4.5;   // AI lerp factor (higher = faster)
+    const AI_LERP_RALLY_INC = 0.15;  // AI lerp increase per rally hit
+    const MAX_DEFLECT_ANGLE = Math.PI * 75 / 180; // 75° max deflection
+    const SCORE_WIN         = 7;     // first to this wins
+    const DIVIDER_DASH      = 20;    // centre-line dash length
+    const DIVIDER_GAP       = 10;    // centre-line gap length
+    const FLASH_FRAMES      = 3;     // frames of tinted flash on score
 
     // ── Canvas setup ──────────────────────────────────────────────────────────
     const canvas = document.getElementById('gameCanvas');
@@ -61,15 +64,21 @@
     // ── State ─────────────────────────────────────────────────────────────────
     //
     // All mutable game state lives in plain objects at module scope.
+    // Ball velocity is stored as a speed scalar + angle in radians so that
+    // deflection and reflection logic operates directly on the angle.
+    // vx / vy are kept in sync via syncBallVelocity() for collision maths.
+    //
     // resetBall() re-initialises the ball each point; resetGame() resets scores.
 
     const ball = {
-      x:  CANVAS_W / 2,
-      y:  CANVAS_H / 2,
-      vx: 0,
-      vy: 0,
-      w:  BALL_SIZE,
-      h:  BALL_SIZE,
+      x:     CANVAS_W / 2 - BALL_SIZE / 2,
+      y:     CANVAS_H / 2 - BALL_SIZE / 2,
+      speed: 0,
+      angle: 0,
+      vx:    0,
+      vy:    0,
+      w:     BALL_SIZE,
+      h:     BALL_SIZE,
     };
 
     // Left paddle — controlled by the player (W / S or Arrow-Up / Arrow-Down)
@@ -95,6 +104,13 @@
       phase:      'scored',   // start in 'scored' so the ball resets at t=0
       winner:     null,       // 'player' | 'ai' | null
       pauseTimer: 1.2,        // seconds to wait before serving next ball
+    };
+
+    // Rally state — tracks consecutive paddle hits for difficulty escalation
+    // and the short score-flash effect.
+    const rally = {
+      rallyCount:  0,   // hits since last score; resets each point
+      flashFrames: 0,   // counts down from FLASH_FRAMES to 0 after scoring
     };
 
     // ── Input ─────────────────────────────────────────────────────────────────
@@ -140,16 +156,39 @@
     }
 
     /**
+     * Synchronise ball.vx / ball.vy from ball.speed and ball.angle.
+     * Call after any mutation of speed or angle.
+     */
+    function syncBallVelocity(b) {
+      b.vx = b.speed * Math.cos(b.angle);
+      b.vy = b.speed * Math.sin(b.angle);
+    }
+
+    /**
+     * Compute the deflection angle from the ball's relative hit position on a
+     * paddle face.  relY is positive when the ball hit below paddle centre.
+     * Returns a value in [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE].
+     */
+    function deflectAngle(relY) {
+      const norm = clamp(relY / (PADDLE_H / 2), -1, 1);
+      return norm * MAX_DEFLECT_ANGLE;
+    }
+
+    /**
      * Reset the ball to the centre and launch it in a random direction,
      * away from whichever side just scored (dirSign: +1 = toward AI, -1 = toward player).
+     * Resets the rally counter.
      */
     function resetBall(dirSign) {
-      ball.x  = CANVAS_W / 2 - BALL_SIZE / 2;
-      ball.y  = CANVAS_H / 2 - BALL_SIZE / 2;
-      // Horizontal component always toward the player who just lost the point
-      const angle = rand(-Math.PI / 4, Math.PI / 4);
-      ball.vx = dirSign * BALL_SPEED_INIT * Math.cos(angle);
-      ball.vy = BALL_SPEED_INIT * Math.sin(angle);
+      ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
+      ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
+      ball.speed = BALL_SPEED_INIT;
+      rally.rallyCount = 0;
+
+      const baseAngle  = rand(-Math.PI / 4, Math.PI / 4);
+      // dirSign >= 0 → launch right; < 0 → launch left (mirror across y-axis)
+      ball.angle = dirSign >= 0 ? baseAngle : Math.PI - baseAngle;
+      syncBallVelocity(ball);
     }
 
     /**
@@ -163,6 +202,8 @@
       game.winner     = null;
       game.phase      = 'scored';
       game.pauseTimer = 1.5;
+      rally.rallyCount  = 0;
+      rally.flashFrames = 0;
     }
 
     // ── Update ────────────────────────────────────────────────────────────────
@@ -182,6 +223,9 @@
 
       // ── Phase: scored (brief pause before next serve) ────────────────────
       if (game.phase === 'scored') {
+        // Tick down the flash effect (set when a score just happened)
+        if (rally.flashFrames > 0) rally.flashFrames -= 1;
+
         game.pauseTimer -= dt;
         if (game.pauseTimer <= 0) {
           // Serve toward the player who just conceded (or random on first serve)
@@ -194,7 +238,7 @@
 
       // ── Phase: playing ───────────────────────────────────────────────────
 
-      // Player paddle movement
+      // Player paddle movement — boolean key map, clamped to canvas bounds
       if (keys['KeyW'] || keys['ArrowUp']) {
         playerPaddle.y -= PADDLE_SPEED * dt;
       }
@@ -203,12 +247,13 @@
       }
       playerPaddle.y = clamp(playerPaddle.y, 0, CANVAS_H - PADDLE_H);
 
-      // AI paddle movement — linear interpolation toward the ball's centre
-      const ballCentreY = ball.y + BALL_SIZE / 2;
-      const aiCentreY   = aiPaddle.y + PADDLE_H / 2;
-      const aiDiff      = ballCentreY - aiCentreY;
-      // Lerp: move a fraction of the gap each second, capped by PADDLE_SPEED
-      const aiMove = clamp(aiDiff * AI_LERP * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
+      // AI paddle movement — lerp toward ball centre; lerp speed increases
+      // slightly each rally hit (difficulty escalation).
+      const ballCentreY   = ball.y + BALL_SIZE / 2;
+      const aiCentreY     = aiPaddle.y + PADDLE_H / 2;
+      const aiDiff        = ballCentreY - aiCentreY;
+      const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
+      const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
       aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - PADDLE_H);
 
       // Move ball
@@ -216,12 +261,15 @@
       ball.y += ball.vy * dt;
 
       // ── Ball vs top / bottom walls ────────────────────────────────────────
+      // Reflect the angle across the horizontal axis (negate it).
       if (ball.y <= 0) {
-        ball.y  = 0;
-        ball.vy = Math.abs(ball.vy);
+        ball.y     = 0;
+        ball.angle = -ball.angle;
+        syncBallVelocity(ball);
       } else if (ball.y + BALL_SIZE >= CANVAS_H) {
-        ball.y  = CANVAS_H - BALL_SIZE;
-        ball.vy = -Math.abs(ball.vy);
+        ball.y     = CANVAS_H - BALL_SIZE;
+        ball.angle = -ball.angle;
+        syncBallVelocity(ball);
       }
 
       // ── Ball vs player paddle ─────────────────────────────────────────────
@@ -231,17 +279,13 @@
                     playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h)
       ) {
         ball.x  = playerPaddle.x + playerPaddle.w;
-        // Compute deflection angle based on where the ball hit the paddle
-        const relY   = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
-        const norm   = relY / (PADDLE_H / 2);           // -1 … +1
-        const angle  = norm * (Math.PI / 4);             // max ±45°
-        const speed  = clamp(
-          Math.hypot(ball.vx, ball.vy) + BALL_SPEED_INC,
-          BALL_SPEED_INIT,
-          BALL_SPEED_MAX
-        );
-        ball.vx = speed * Math.cos(angle);
-        ball.vy = speed * Math.sin(angle);
+        // Deflection angle: centre hit → shallow; edge hit → steep (up to ±75°).
+        // The resulting angle is in the right-travelling hemisphere.
+        const relY  = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
+        ball.angle  = deflectAngle(relY);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        syncBallVelocity(ball);
+        rally.rallyCount += 1;
       }
 
       // ── Ball vs AI paddle ─────────────────────────────────────────────────
@@ -251,21 +295,19 @@
                     aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h)
       ) {
         ball.x  = aiPaddle.x - BALL_SIZE;
-        const relY   = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
-        const norm   = relY / (PADDLE_H / 2);
-        const angle  = norm * (Math.PI / 4);
-        const speed  = clamp(
-          Math.hypot(ball.vx, ball.vy) + BALL_SPEED_INC,
-          BALL_SPEED_INIT,
-          BALL_SPEED_MAX
-        );
-        ball.vx = -(speed * Math.cos(angle));
-        ball.vy =   speed * Math.sin(angle);
+        const relY  = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
+        // π - deflectAngle puts the ball in the left-travelling hemisphere.
+        ball.angle  = Math.PI - deflectAngle(relY);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        syncBallVelocity(ball);
+        rally.rallyCount += 1;
       }
 
       // ── Ball exits left → AI scores ───────────────────────────────────────
       if (ball.x + BALL_SIZE < 0) {
         aiPaddle.score += 1;
+        rally.flashFrames = FLASH_FRAMES;
+        rally.rallyCount  = 0;
         if (aiPaddle.score >= SCORE_WIN) {
           game.phase  = 'won';
           game.winner = 'ai';
@@ -278,6 +320,8 @@
       // ── Ball exits right → player scores ─────────────────────────────────
       if (ball.x > CANVAS_W) {
         playerPaddle.score += 1;
+        rally.flashFrames = FLASH_FRAMES;
+        rally.rallyCount  = 0;
         if (playerPaddle.score >= SCORE_WIN) {
           game.phase  = 'won';
           game.winner = 'player';
@@ -291,12 +335,22 @@
     // ── Render ────────────────────────────────────────────────────────────────
     //
     // Each frame: clear the canvas then redraw all primitives from scratch.
+    // When rally.flashFrames > 0 a tinted overlay is drawn to give visual
+    // feedback that a point was just scored.
 
     function render() {
-      // Clear
+      // Clear to black
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+      // Score flash: tinted background for a few frames after scoring
+      if (rally.flashFrames > 0) {
+        // Fade from solid tint toward transparent as frames count down
+        const alpha = rally.flashFrames / FLASH_FRAMES * 0.35;
+        ctx.fillStyle = `rgba(255, 220, 0, ${alpha})`;
+        ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+      }
 
       // Centre dashed divider
       ctx.setLineDash([DIVIDER_DASH, DIVIDER_GAP]);
@@ -353,7 +407,8 @@
 
     // ── Game loop ─────────────────────────────────────────────────────────────
     //
-    // Uses requestAnimationFrame with performance.now() timestamps.
+    // Uses requestAnimationFrame; the timestamp argument is equivalent to
+    // performance.now() and is used to compute delta-time (dt, in seconds).
     // Delta-time is capped at 100 ms to avoid large jumps after tab switches.
 
     let lastTime = null;
