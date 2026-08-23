@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Pong</title>
+
+  <!-- Supabase JS SDK (CDN) ─────────────────────────────────────────────── -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+
   <style>
     /* ── Reset & Layout ─────────────────────────────────────────────────────── */
     *, *::before, *::after {
@@ -36,6 +40,38 @@
 
   <script>
     'use strict';
+
+    // ── Supabase Configuration ─────────────────────────────────────────────────
+    //
+    // SUPABASE_URL and SUPABASE_ANON_KEY are the public-safe values exposed in
+    // every Supabase project.  Row Level Security policies on high_scores ensure
+    // users can only write their own rows despite the key being public.
+    //
+    // These values are intentionally hardcoded anon keys (not secrets).
+    // Replace with your actual project URL and anon key.
+
+    const SUPABASE_URL      = window.__SUPABASE_URL__      || 'https://your-project.supabase.co';
+    const SUPABASE_ANON_KEY = window.__SUPABASE_ANON_KEY__ || 'your-anon-key';
+
+    const supabase = window.supabase
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+      : null;
+
+    // ── Auth State ────────────────────────────────────────────────────────────
+    let currentUser = null;
+
+    if (supabase) {
+      // Restore session on load and keep currentUser in sync.
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        currentUser = session ? session.user : null;
+        updateAuthUI();
+      });
+
+      supabase.auth.onAuthStateChange((_event, session) => {
+        currentUser = session ? session.user : null;
+        updateAuthUI();
+      });
+    }
 
     // ── Constants ──────────────────────────────────────────────────────────────
     const CANVAS_W          = 800;
@@ -75,7 +111,10 @@
           50%  { transform: scale(1.06); box-shadow: 0 0 18px 6px rgba(255,255,255,0.2); }
           100% { transform: scale(1);    box-shadow: 0 0 0   0   rgba(255,255,255,0.4); }
         }
-        #pong-overlay {
+
+        /* ── Shared overlay base ──────────────────────────────────────────── */
+        #pong-overlay,
+        #pong-auth-overlay {
           position: fixed;
           inset: 0;
           z-index: 10;
@@ -83,11 +122,13 @@
           flex-direction: column;
           align-items: center;
           justify-content: center;
-          background: rgba(0, 0, 0, 0.72);
-          backdrop-filter: blur(2px);
-          gap: 18px;
+          background: rgba(0, 0, 0, 0.82);
+          backdrop-filter: blur(3px);
+          gap: 14px;
           font-family: monospace;
         }
+
+        /* ── Game-over overlay ────────────────────────────────────────────── */
         #pong-overlay h1 {
           font-size: clamp(2rem, 6vw, 3.5rem);
           color: #fff;
@@ -126,9 +167,401 @@
           background: #ffe066;
           outline: none;
         }
+
+        /* ── Leaderboard ──────────────────────────────────────────────────── */
+        #pong-leaderboard {
+          min-width: 220px;
+          max-width: 320px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 6px;
+          padding: 12px 18px;
+          color: #fff;
+          font-size: 0.85rem;
+          letter-spacing: 0.04em;
+        }
+        #pong-leaderboard h2 {
+          font-size: 0.9rem;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          color: rgba(255,255,255,0.6);
+          margin-bottom: 8px;
+          text-align: center;
+        }
+        #pong-leaderboard ol {
+          list-style: none;
+          padding: 0;
+          margin: 0;
+        }
+        #pong-leaderboard li {
+          display: flex;
+          justify-content: space-between;
+          padding: 3px 0;
+          border-bottom: 1px solid rgba(255,255,255,0.07);
+          color: rgba(255,255,255,0.8);
+        }
+        #pong-leaderboard li:last-child { border-bottom: none; }
+        #pong-leaderboard li.current-user {
+          color: #ffe066;
+          font-weight: bold;
+        }
+        #pong-leaderboard .lb-rank   { width: 28px; color: rgba(255,255,255,0.4); }
+        #pong-leaderboard .lb-email  { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #pong-leaderboard .lb-score  { margin-left: 12px; font-weight: bold; }
+        #pong-leaderboard .lb-empty  { color: rgba(255,255,255,0.35); text-align: center; padding: 6px 0; }
+
+        /* ── Score-saved notice ───────────────────────────────────────────── */
+        #pong-score-notice {
+          font-size: 0.8rem;
+          color: #ffe066;
+          letter-spacing: 0.04em;
+          min-height: 1.2em;
+          text-align: center;
+        }
+
+        /* ── Auth overlay ─────────────────────────────────────────────────── */
+        #pong-auth-overlay h2 {
+          font-size: 1.6rem;
+          color: #fff;
+          letter-spacing: 0.08em;
+          text-shadow: 0 0 20px rgba(255,255,255,0.4);
+        }
+        #pong-auth-overlay .auth-subtitle {
+          font-size: 0.82rem;
+          color: rgba(255,255,255,0.45);
+          letter-spacing: 0.05em;
+        }
+        .auth-form {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          width: 260px;
+        }
+        .auth-form input {
+          padding: 10px 14px;
+          font-family: monospace;
+          font-size: 0.95rem;
+          background: rgba(255,255,255,0.08);
+          border: 1px solid rgba(255,255,255,0.2);
+          border-radius: 4px;
+          color: #fff;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        .auth-form input::placeholder { color: rgba(255,255,255,0.3); }
+        .auth-form input:focus { border-color: rgba(255,255,255,0.6); }
+        .auth-btn-row {
+          display: flex;
+          gap: 8px;
+          margin-top: 2px;
+        }
+        .auth-btn {
+          flex: 1;
+          padding: 10px 0;
+          font-family: monospace;
+          font-size: 0.9rem;
+          font-weight: bold;
+          letter-spacing: 0.08em;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: opacity 0.15s;
+        }
+        .auth-btn:hover { opacity: 0.85; }
+        .auth-btn-primary { background: #fff; color: #000; }
+        .auth-btn-secondary { background: rgba(255,255,255,0.12); color: #fff; }
+        .auth-error {
+          font-size: 0.78rem;
+          color: #ff6b6b;
+          text-align: center;
+          min-height: 1.1em;
+        }
+        .auth-skip {
+          font-size: 0.78rem;
+          color: rgba(255,255,255,0.35);
+          cursor: pointer;
+          background: none;
+          border: none;
+          font-family: monospace;
+          letter-spacing: 0.04em;
+          margin-top: 2px;
+          text-decoration: underline;
+          text-underline-offset: 2px;
+        }
+        .auth-skip:hover { color: rgba(255,255,255,0.6); }
+
+        /* ── Persistent auth status bar ───────────────────────────────────── */
+        #pong-auth-bar {
+          position: fixed;
+          top: 8px;
+          right: 12px;
+          z-index: 5;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          font-family: monospace;
+          font-size: 0.72rem;
+          color: rgba(255,255,255,0.4);
+          pointer-events: none;
+        }
+        #pong-auth-bar button {
+          pointer-events: all;
+          background: none;
+          border: 1px solid rgba(255,255,255,0.25);
+          border-radius: 3px;
+          color: rgba(255,255,255,0.5);
+          font-family: monospace;
+          font-size: 0.72rem;
+          padding: 2px 8px;
+          cursor: pointer;
+          transition: color 0.15s, border-color 0.15s;
+        }
+        #pong-auth-bar button:hover {
+          color: #fff;
+          border-color: rgba(255,255,255,0.6);
+        }
       `;
       document.head.appendChild(style);
     })();
+
+    // ── Auth Status Bar ───────────────────────────────────────────────────────
+    //
+    // A small persistent bar in the top-right corner shows the current user's
+    // email (or a "Sign In" button when logged out).
+
+    const authBar = document.createElement('div');
+    authBar.id = 'pong-auth-bar';
+    document.body.appendChild(authBar);
+
+    function updateAuthUI() {
+      authBar.innerHTML = '';
+      if (currentUser) {
+        const emailSpan = document.createElement('span');
+        // Truncate long emails for display
+        emailSpan.textContent = currentUser.email || 'signed in';
+        authBar.appendChild(emailSpan);
+
+        const signOutBtn = document.createElement('button');
+        signOutBtn.textContent = 'Sign out';
+        signOutBtn.addEventListener('click', async () => {
+          if (supabase) await supabase.auth.signOut();
+        });
+        authBar.appendChild(signOutBtn);
+      } else {
+        const signInBtn = document.createElement('button');
+        signInBtn.textContent = 'Sign in / Register';
+        signInBtn.addEventListener('click', () => showAuthOverlay());
+        authBar.appendChild(signInBtn);
+      }
+    }
+
+    // ── Auth Overlay ──────────────────────────────────────────────────────────
+    //
+    // A full-screen overlay with email + password fields and Sign In / Sign Up
+    // buttons.  Dismissible via "Play as guest" so auth is never mandatory.
+
+    function showAuthOverlay(afterAuthCallback) {
+      removeAuthOverlay();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-auth-overlay';
+
+      const title = document.createElement('h2');
+      title.textContent = '🏓 Pong';
+      overlay.appendChild(title);
+
+      const subtitle = document.createElement('p');
+      subtitle.className = 'auth-subtitle';
+      subtitle.textContent = 'Sign in to save scores & compete on the leaderboard';
+      overlay.appendChild(subtitle);
+
+      const form = document.createElement('div');
+      form.className = 'auth-form';
+
+      const emailInput = document.createElement('input');
+      emailInput.type = 'email';
+      emailInput.placeholder = 'Email';
+      emailInput.autocomplete = 'email';
+      emailInput.id = 'pong-auth-email';
+      form.appendChild(emailInput);
+
+      const passInput = document.createElement('input');
+      passInput.type = 'password';
+      passInput.placeholder = 'Password';
+      passInput.autocomplete = 'current-password';
+      passInput.id = 'pong-auth-password';
+      form.appendChild(passInput);
+
+      const btnRow = document.createElement('div');
+      btnRow.className = 'auth-btn-row';
+
+      const signInBtn = document.createElement('button');
+      signInBtn.className = 'auth-btn auth-btn-primary';
+      signInBtn.textContent = 'Sign In';
+      signInBtn.id = 'pong-signin-btn';
+
+      const signUpBtn = document.createElement('button');
+      signUpBtn.className = 'auth-btn auth-btn-secondary';
+      signUpBtn.textContent = 'Sign Up';
+      signUpBtn.id = 'pong-signup-btn';
+
+      btnRow.appendChild(signInBtn);
+      btnRow.appendChild(signUpBtn);
+      form.appendChild(btnRow);
+
+      const errorMsg = document.createElement('p');
+      errorMsg.className = 'auth-error';
+      errorMsg.id = 'pong-auth-error';
+      form.appendChild(errorMsg);
+
+      overlay.appendChild(form);
+
+      const skipBtn = document.createElement('button');
+      skipBtn.className = 'auth-skip';
+      skipBtn.textContent = 'Play as guest (scores won\'t be saved)';
+      overlay.appendChild(skipBtn);
+
+      document.body.appendChild(overlay);
+
+      // Focus email input immediately
+      emailInput.focus();
+
+      function setError(msg) {
+        const el = document.getElementById('pong-auth-error');
+        if (el) el.textContent = msg;
+      }
+
+      async function handleSignIn() {
+        if (!supabase) { setError('Supabase not configured.'); return; }
+        const email = emailInput.value.trim();
+        const password = passInput.value;
+        if (!email || !password) { setError('Please enter email and password.'); return; }
+        signInBtn.disabled = true;
+        signInBtn.textContent = '…';
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        signInBtn.disabled = false;
+        signInBtn.textContent = 'Sign In';
+        if (error) {
+          setError(error.message);
+        } else {
+          removeAuthOverlay();
+          if (afterAuthCallback) afterAuthCallback();
+        }
+      }
+
+      async function handleSignUp() {
+        if (!supabase) { setError('Supabase not configured.'); return; }
+        const email = emailInput.value.trim();
+        const password = passInput.value;
+        if (!email || !password) { setError('Please enter email and password.'); return; }
+        if (password.length < 6) { setError('Password must be at least 6 characters.'); return; }
+        signUpBtn.disabled = true;
+        signUpBtn.textContent = '…';
+        const { error } = await supabase.auth.signUp({ email, password });
+        signUpBtn.disabled = false;
+        signUpBtn.textContent = 'Sign Up';
+        if (error) {
+          setError(error.message);
+        } else {
+          setError('');
+          // Sign-up may require email confirmation; try auto-sign-in.
+          const { error: siErr } = await supabase.auth.signInWithPassword({ email, password });
+          if (!siErr) {
+            removeAuthOverlay();
+            if (afterAuthCallback) afterAuthCallback();
+          } else {
+            setError('Account created! Check your email to confirm, then sign in.');
+          }
+        }
+      }
+
+      signInBtn.addEventListener('click', handleSignIn);
+      signUpBtn.addEventListener('click', handleSignUp);
+      skipBtn.addEventListener('click', () => removeAuthOverlay());
+
+      // Allow Enter key to trigger sign-in
+      passInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleSignIn();
+      });
+      emailInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') passInput.focus();
+      });
+    }
+
+    function removeAuthOverlay() {
+      const existing = document.getElementById('pong-auth-overlay');
+      if (existing) existing.remove();
+    }
+
+    // ── Supabase High-Score Helpers ───────────────────────────────────────────
+
+    /**
+     * Persist a player score to the high_scores table.
+     * Only called when the player wins and is authenticated.
+     * Uses upsert so only the user's personal best is stored per user.
+     *
+     * @param {number} score - The player's winning score (always SCORE_WIN when they win)
+     * @param {number} aiScore - The AI's score at game end
+     * @returns {Promise<{ saved: boolean, error: any }>}
+     */
+    async function saveHighScore(score, aiScore) {
+      if (!supabase || !currentUser) return { saved: false, error: null };
+      try {
+        // Fetch current personal best for this user
+        const { data: existing } = await supabase
+          .from('high_scores')
+          .select('score')
+          .eq('user_id', currentUser.id)
+          .maybeSingle();
+
+        const currentBest = existing ? existing.score : -1;
+
+        // Composite score: player score * 100 + (SCORE_WIN - ai score) for tiebreak
+        const compositeScore = score * 100 + (SCORE_WIN - aiScore);
+
+        if (compositeScore <= currentBest) {
+          return { saved: false, error: null, reason: 'not-a-new-best' };
+        }
+
+        const { error } = await supabase
+          .from('high_scores')
+          .upsert(
+            { user_id: currentUser.id, score: compositeScore },
+            { onConflict: 'user_id' }
+          );
+
+        return { saved: !error, error };
+      } catch (err) {
+        return { saved: false, error: err };
+      }
+    }
+
+    /**
+     * Fetch the top-10 high scores.
+     * Returns an array of { email, score } objects.
+     *
+     * @returns {Promise<Array<{ email: string, score: number }>>}
+     */
+    async function fetchLeaderboard() {
+      if (!supabase) return [];
+      try {
+        const { data, error } = await supabase
+          .from('high_scores')
+          .select('score, users:user_id(email)')
+          .order('score', { ascending: false })
+          .limit(10);
+
+        if (error || !data) return [];
+
+        return data.map((row) => ({
+          email: (row.users && row.users.email) ? row.users.email : 'anonymous',
+          score: row.score,
+          user_id: row.user_id,
+        }));
+      } catch (_err) {
+        return [];
+      }
+    }
 
     // ── State ─────────────────────────────────────────────────────────────────
     //
@@ -291,13 +724,14 @@
 
     /**
      * Build and show the full-screen game-over overlay.
-     * Attaches a 'Play Again' button that calls startNewGame() on click.
+     * When the player wins and is authenticated, saves the score and shows a
+     * leaderboard.
      *
      * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
      * @param {number} playerScore - Final player score
      * @param {number} aiScore     - Final AI score
      */
-    function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
+    async function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
       // Remove any pre-existing overlay (defensive guard)
       removeGameOverOverlay();
 
@@ -315,6 +749,11 @@
       scoreEl.textContent = `Final score  ${playerScore} – ${aiScore}`;
       overlay.appendChild(scoreEl);
 
+      // Score-saved notice (only relevant when player wins)
+      const noticeEl = document.createElement('p');
+      noticeEl.id = 'pong-score-notice';
+      overlay.appendChild(noticeEl);
+
       // Play Again button
       const btn = document.createElement('button');
       btn.id = 'pong-play-again';
@@ -328,10 +767,114 @@
       hint.textContent = 'or press Space';
       overlay.appendChild(hint);
 
+      // Leaderboard container (populated asynchronously)
+      const lbContainer = document.createElement('div');
+      lbContainer.id = 'pong-leaderboard';
+      const lbTitle = document.createElement('h2');
+      lbTitle.textContent = 'Top 10';
+      lbContainer.appendChild(lbTitle);
+      const lbList = document.createElement('ol');
+      lbList.id = 'pong-leaderboard-list';
+      lbContainer.appendChild(lbList);
+      overlay.appendChild(lbContainer);
+
       document.body.appendChild(overlay);
 
       // Focus the button immediately so keyboard users can activate it
       btn.focus();
+
+      // ── Async: save score then refresh leaderboard ─────────────────────────
+
+      if (game.winner === 'player') {
+        if (!currentUser && supabase) {
+          // Prompt the player to sign in so their score can be saved
+          noticeEl.textContent = 'Sign in to save your score!';
+          const signInPromptBtn = document.createElement('button');
+          signInPromptBtn.style.cssText = 'background:none;border:1px solid rgba(255,255,255,0.35);border-radius:3px;color:rgba(255,255,255,0.7);font-family:monospace;font-size:0.8rem;padding:4px 12px;cursor:pointer;margin-top:-4px;';
+          signInPromptBtn.textContent = 'Sign in / Register';
+          signInPromptBtn.addEventListener('click', () => {
+            showAuthOverlay(async () => {
+              // After auth, try saving the score
+              const result = await saveHighScore(playerScore, aiScore);
+              if (result.saved) {
+                noticeEl.textContent = '✓ Score saved!';
+                signInPromptBtn.remove();
+              }
+              await refreshLeaderboard(lbList);
+            });
+          });
+          overlay.insertBefore(signInPromptBtn, lbContainer);
+        } else if (currentUser) {
+          noticeEl.textContent = 'Saving score…';
+          const result = await saveHighScore(playerScore, aiScore);
+          if (result.saved) {
+            noticeEl.textContent = '✓ New personal best saved!';
+          } else if (result.reason === 'not-a-new-best') {
+            noticeEl.textContent = 'Good game! (Not a new personal best)';
+          } else {
+            noticeEl.textContent = '';
+          }
+        }
+      }
+
+      // Refresh leaderboard after potential score save
+      await refreshLeaderboard(lbList);
+    }
+
+    /**
+     * Populate or refresh the leaderboard list element with fresh data.
+     * @param {HTMLElement} listEl - The <ol> to populate
+     */
+    async function refreshLeaderboard(listEl) {
+      listEl.innerHTML = '';
+      const rows = await fetchLeaderboard();
+
+      if (rows.length === 0) {
+        const empty = document.createElement('li');
+        empty.className = 'lb-empty';
+        empty.textContent = supabase ? 'No scores yet — be the first!' : 'Sign in to see scores';
+        listEl.appendChild(empty);
+        return;
+      }
+
+      rows.forEach((row, idx) => {
+        const li = document.createElement('li');
+        // Highlight the current user's row
+        if (currentUser && row.user_id === currentUser.id) {
+          li.className = 'current-user';
+        }
+
+        const rank = document.createElement('span');
+        rank.className = 'lb-rank';
+        rank.textContent = `${idx + 1}.`;
+
+        const email = document.createElement('span');
+        email.className = 'lb-email';
+        // Partially mask email for privacy: show first 3 chars + domain
+        email.textContent = maskEmail(row.email);
+        email.title = row.email;  // full email on hover for own entry
+
+        const score = document.createElement('span');
+        score.className = 'lb-score';
+        // Display human-friendly score (strip composite tiebreak encoding)
+        score.textContent = Math.floor(row.score / 100);
+
+        li.appendChild(rank);
+        li.appendChild(email);
+        li.appendChild(score);
+        listEl.appendChild(li);
+      });
+    }
+
+    /**
+     * Partially mask an email for leaderboard display.
+     * "alice@example.com" → "ali***@example.com"
+     */
+    function maskEmail(email) {
+      if (!email || !email.includes('@')) return email;
+      const [local, domain] = email.split('@');
+      const visible = local.length > 3 ? local.slice(0, 3) : local.slice(0, 1);
+      return `${visible}***@${domain}`;
     }
 
     /**
@@ -571,6 +1114,7 @@
         // Pause the loop and present the DOM overlay
         rafId = null;
         const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
+        // showGameOverOverlay is async (saves score + fetches leaderboard)
         showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score);
         return; // do NOT schedule next frame
       }

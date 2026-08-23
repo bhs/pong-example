@@ -1,0 +1,5 @@
+{
+  "up_instructions": "Run the SQL migration in supabase/migrations/20240101000000_create_high_scores.sql against your Supabase project. Using the Supabase CLI: `supabase db push` (from the project root with supabase CLI installed and linked to your project). Alternatively, paste the SQL into the Supabase Dashboard → SQL Editor and execute it. This creates the high_scores table, RLS policies, and grants.",
+  "down_instructions": "Run the following SQL in the Supabase SQL Editor or via CLI to undo: DROP TABLE IF EXISTS public.high_scores CASCADE; DROP FUNCTION IF EXISTS public.set_updated_at() CASCADE;",
+  "notes": "Migration file is at supabase/migrations/20240101000000_create_high_scores.sql. The migration creates one table (high_scores) with a unique constraint on user_id so that upsert on conflict(user_id) keeps only the personal best score per user. Row Level Security is enabled: anyone can read (for the leaderboard), but only authenticated users can write their own rows. The Supabase project must also have Auth enabled with email/password sign-in method turned on (Dashboard → Authentication → Providers → Email)."
+}

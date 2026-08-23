@@ -1,0 +1,56 @@
+# fly.toml — Fly.io deployment configuration for the Pong + Supabase static app.
+#
+# The app is a single static HTML file served by nginx.
+# Supabase credentials are the anon/public key (safe to expose).
+# For production deployments set SUPABASE_URL and SUPABASE_ANON_KEY as Fly secrets
+# so they can be injected via an init script or build arg — or simply hardcode the
+# anon key directly in index.html (it is not a sensitive secret).
+#
+# Deploy:
+#   fly launch   (first time, creates the app)
+#   fly deploy   (subsequent deployments)
+
+app = "pong-supabase"
+primary_region = "iad"
+
+[build]
+  # Uses the Dockerfile in the repository root
+
+[env]
+  # These are overridden by `fly secrets set SUPABASE_URL=... SUPABASE_ANON_KEY=...`
+  # The nginx container serves purely static content so runtime env injection
+  # requires a small entrypoint script (see docs/fly-env-injection.md) or you
+  # can bake the values directly into index.html during `fly deploy`.
+  PORT = "8080"
+
+[[services]]
+  internal_port = 8080
+  protocol      = "tcp"
+
+  [[services.ports]]
+    port     = 80
+    handlers = ["http"]
+
+  [[services.ports]]
+    port     = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type       = "connections"
+    hard_limit = 500
+    soft_limit = 400
+
+  [[services.tcp_checks]]
+    grace_period  = "5s"
+    interval      = "15s"
+    restart_limit = 0
+    timeout       = "2s"
+
+  [[services.http_checks]]
+    interval       = "10s"
+    grace_period   = "10s"
+    method         = "get"
+    path           = "/health"
+    protocol       = "http"
+    timeout        = "2s"
+    tls_skip_verify = false

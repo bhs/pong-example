@@ -1,4 +1,4 @@
 version: 1
 service: app
-container_port: 3000
-health_path: /
+container_port: 8080
+health_path: /health

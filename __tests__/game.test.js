@@ -1073,4 +1073,283 @@ describe('index.html', () => {
     // The overlay shows a winner label (You win / AI wins)
     expect(html).toMatch(/You win|AI wins/);
   });
+
+  // ── Supabase / auth / leaderboard checks ─────────────────────────────────
+
+  test('loads the Supabase JS SDK via CDN script tag', () => {
+    expect(html).toMatch(/supabase\.js|@supabase\/supabase-js/);
+  });
+
+  test('calls supabase.createClient with URL and anon key', () => {
+    expect(html).toMatch(/createClient/);
+    expect(html).toMatch(/SUPABASE_URL/);
+    expect(html).toMatch(/SUPABASE_ANON_KEY/);
+  });
+
+  test('includes auth overlay with email and password inputs', () => {
+    expect(html).toMatch(/pong-auth-overlay/);
+    expect(html).toMatch(/type.*email|email.*type/i);
+    expect(html).toMatch(/type.*password|password.*type/i);
+  });
+
+  test('includes Sign In and Sign Up buttons', () => {
+    expect(html).toMatch(/Sign In/);
+    expect(html).toMatch(/Sign Up/);
+  });
+
+  test('calls supabase.auth.signInWithPassword for sign-in', () => {
+    expect(html).toMatch(/signInWithPassword/);
+  });
+
+  test('calls supabase.auth.signUp for registration', () => {
+    expect(html).toMatch(/auth\.signUp/);
+  });
+
+  test('calls supabase.auth.signOut', () => {
+    expect(html).toMatch(/auth\.signOut/);
+  });
+
+  test('calls supabase.auth.getSession to restore session on load', () => {
+    expect(html).toMatch(/getSession/);
+  });
+
+  test('registers an onAuthStateChange listener', () => {
+    expect(html).toMatch(/onAuthStateChange/);
+  });
+
+  test('queries high_scores table for leaderboard', () => {
+    expect(html).toMatch(/high_scores/);
+  });
+
+  test('orders leaderboard by score descending', () => {
+    expect(html).toMatch(/ascending.*false|descending.*true|order.*score/i);
+  });
+
+  test('limits leaderboard to 10 entries', () => {
+    expect(html).toMatch(/\.limit\s*\(\s*10\s*\)/);
+  });
+
+  test('uses upsert to save the high score', () => {
+    expect(html).toMatch(/\.upsert\s*\(/);
+  });
+
+  test('displays a leaderboard section on game-over', () => {
+    expect(html).toMatch(/pong-leaderboard/);
+    expect(html).toMatch(/Top 10/);
+  });
+
+  test('shows an auth status bar', () => {
+    expect(html).toMatch(/pong-auth-bar/);
+  });
+
+  test('shows guest-play option (skip auth)', () => {
+    expect(html).toMatch(/guest|Play as guest/i);
+  });
+
+  test('maskEmail helper is defined', () => {
+    expect(html).toMatch(/maskEmail/);
+  });
+
+  test('saveHighScore helper is defined', () => {
+    expect(html).toMatch(/saveHighScore/);
+  });
+
+  test('fetchLeaderboard helper is defined', () => {
+    expect(html).toMatch(/fetchLeaderboard/);
+  });
+});
+
+// ── maskEmail unit tests ────────────────────────────────────────────────────
+//
+// maskEmail is defined inside index.html as a browser function but we can
+// test the same logic independently here.
+
+describe('maskEmail (logic)', () => {
+  // Replicate the maskEmail logic from index.html for isolated testing
+  function maskEmail(email) {
+    if (!email || !email.includes('@')) return email;
+    const [local, domain] = email.split('@');
+    const visible = local.length > 3 ? local.slice(0, 3) : local.slice(0, 1);
+    return `${visible}***@${domain}`;
+  }
+
+  test('masks a standard email address', () => {
+    expect(maskEmail('alice@example.com')).toBe('ali***@example.com');
+  });
+
+  test('shows only first char when local part is short (<=3 chars)', () => {
+    expect(maskEmail('ab@example.com')).toBe('a***@example.com');
+  });
+
+  test('handles exactly 3-char local part (shows first char)', () => {
+    expect(maskEmail('abc@test.org')).toBe('a***@test.org');
+  });
+
+  test('handles exactly 4-char local part (shows first 3)', () => {
+    expect(maskEmail('abcd@test.org')).toBe('abc***@test.org');
+  });
+
+  test('returns input unchanged when no @ symbol', () => {
+    expect(maskEmail('notanemail')).toBe('notanemail');
+  });
+
+  test('returns input unchanged when empty string', () => {
+    expect(maskEmail('')).toBe('');
+  });
+
+  test('returns input unchanged when null/undefined', () => {
+    expect(maskEmail(null)).toBe(null);
+    expect(maskEmail(undefined)).toBe(undefined);
+  });
+
+  test('preserves subdomain in domain part', () => {
+    const result = maskEmail('user@mail.example.co.uk');
+    expect(result).toBe('use***@mail.example.co.uk');
+  });
+});
+
+// ── composite score encoding tests ─────────────────────────────────────────
+//
+// The saveHighScore function uses compositeScore = score * 100 + (SCORE_WIN - aiScore)
+// to rank wins where the player allowed fewer opponent points higher.
+
+describe('composite score encoding', () => {
+  const SCORE_WIN_LOCAL = 7;
+
+  function compositeScore(playerScore, aiScore) {
+    return playerScore * 100 + (SCORE_WIN_LOCAL - aiScore);
+  }
+
+  function displayScore(composite) {
+    return Math.floor(composite / 100);
+  }
+
+  test('perfect win (0 ai score) has highest composite for same player score', () => {
+    const perfect   = compositeScore(7, 0);
+    const close     = compositeScore(7, 6);
+    expect(perfect).toBeGreaterThan(close);
+  });
+
+  test('display score recovers original player score', () => {
+    expect(displayScore(compositeScore(7, 3))).toBe(7);
+    expect(displayScore(compositeScore(7, 0))).toBe(7);
+  });
+
+  test('higher player score always beats lower player score regardless of ai score', () => {
+    // This would only happen if a player reaches SCORE_WIN but the encoding still
+    // lets us compare partial games (should not happen in practice since SCORE_WIN is fixed).
+    const high = compositeScore(7, 6);   // 7*100 + 1 = 701
+    const low  = compositeScore(6, 0);   // 6*100 + 7 = 607
+    expect(high).toBeGreaterThan(low);
+  });
+
+  test('composite score is always non-negative', () => {
+    for (let p = 0; p <= SCORE_WIN_LOCAL; p++) {
+      for (let a = 0; a <= SCORE_WIN_LOCAL; a++) {
+        expect(compositeScore(p, a)).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+});
+
+// ── fly.toml existence check ───────────────────────────────────────────────
+
+describe('fly.toml', () => {
+  const fs   = require('fs');
+  const path = require('path');
+
+  test('fly.toml exists at repository root', () => {
+    const filePath = path.join(__dirname, '..', 'fly.toml');
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  test('fly.toml references internal_port 8080', () => {
+    const filePath = path.join(__dirname, '..', 'fly.toml');
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      expect(content).toMatch(/8080/);
+    }
+  });
+});
+
+// ── nginx.conf existence check ────────────────────────────────────────────
+
+describe('nginx.conf', () => {
+  const fs   = require('fs');
+  const path = require('path');
+
+  test('nginx.conf exists at repository root', () => {
+    const filePath = path.join(__dirname, '..', 'nginx.conf');
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  test('nginx.conf listens on port 8080', () => {
+    const filePath = path.join(__dirname, '..', 'nginx.conf');
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      expect(content).toMatch(/listen\s+8080/);
+    }
+  });
+
+  test('nginx.conf serves index.html', () => {
+    const filePath = path.join(__dirname, '..', 'nginx.conf');
+    if (fs.existsSync(filePath)) {
+      const content = fs.readFileSync(filePath, 'utf8');
+      expect(content).toMatch(/index\.html/);
+    }
+  });
+});
+
+// ── Supabase migration SQL checks ─────────────────────────────────────────
+
+describe('Supabase migration SQL', () => {
+  const fs   = require('fs');
+  const path = require('path');
+  const sqlPath = path.join(__dirname, '..', 'supabase', 'migrations', '20240101000000_create_high_scores.sql');
+
+  let sql = '';
+  beforeAll(() => {
+    if (fs.existsSync(sqlPath)) {
+      sql = fs.readFileSync(sqlPath, 'utf8');
+    }
+  });
+
+  test('migration file exists', () => {
+    expect(fs.existsSync(sqlPath)).toBe(true);
+  });
+
+  test('creates high_scores table', () => {
+    expect(sql).toMatch(/CREATE TABLE.*high_scores/is);
+  });
+
+  test('high_scores has user_id column referencing auth.users', () => {
+    expect(sql).toMatch(/user_id/);
+    expect(sql).toMatch(/auth\.users/);
+  });
+
+  test('high_scores has score integer column', () => {
+    expect(sql).toMatch(/score\s+INTEGER/i);
+  });
+
+  test('enables Row Level Security', () => {
+    expect(sql).toMatch(/ENABLE ROW LEVEL SECURITY/i);
+  });
+
+  test('has RLS policy allowing all users to read scores', () => {
+    expect(sql).toMatch(/FOR SELECT/i);
+    expect(sql).toMatch(/USING\s*\(\s*true\s*\)/i);
+  });
+
+  test('has RLS policy restricting writes to own rows', () => {
+    expect(sql).toMatch(/FOR INSERT/i);
+    expect(sql).toMatch(/auth\.uid\s*\(\s*\)\s*=\s*user_id/i);
+  });
+
+  test('has unique constraint on user_id (one row per user)', () => {
+    expect(sql).toMatch(/UNIQUE.*user_id|user_id.*UNIQUE/i);
+  });
+
+  test('grants SELECT to anon role', () => {
+    expect(sql).toMatch(/GRANT SELECT ON.*high_scores TO anon/i);
+  });
 });
