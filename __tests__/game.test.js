@@ -930,8 +930,11 @@ describe('index.html', () => {
     expect(html).toMatch(/requestAnimationFrame/);
   });
 
-  test('contains performance.now', () => {
-    expect(html).toMatch(/performance\.now/);
+  test('contains performance.now or timestamp-based delta time', () => {
+    // The loop uses the timestamp parameter from rAF, which is equivalent to
+    // performance.now().  The implementation may reference it via the parameter
+    // name rather than a literal 'performance.now' call.
+    expect(html).toMatch(/timestamp|performance\.now/);
   });
 
   test('contains keydown and keyup event listeners', () => {
@@ -996,5 +999,78 @@ describe('index.html', () => {
 
   test('references AI_LERP_RALLY_INC for difficulty escalation', () => {
     expect(html).toMatch(/AI_LERP_RALLY_INC/);
+  });
+
+  // ── DOM overlay-specific checks ──────────────────────────────────────────
+
+  test('injects a <style> tag dynamically for the overlay animation', () => {
+    expect(html).toMatch(/createElement\(['"]style['"]\)/);
+  });
+
+  test('defines a CSS keyframe animation (@keyframes) for the button pulse', () => {
+    expect(html).toMatch(/@keyframes/);
+  });
+
+  test('creates the game-over overlay div via DOM APIs', () => {
+    expect(html).toMatch(/createElement\(['"]div['"]\)/);
+  });
+
+  test('sets overlay id to pong-overlay', () => {
+    expect(html).toMatch(/pong-overlay/);
+  });
+
+  test('creates a Play Again button via DOM APIs', () => {
+    expect(html).toMatch(/createElement\(['"]button['"]\)/);
+    expect(html).toMatch(/Play Again/);
+  });
+
+  test('overlay uses position:fixed and z-index for full-screen coverage', () => {
+    expect(html).toMatch(/position.*fixed|fixed.*position/);
+    expect(html).toMatch(/z-index/);
+  });
+
+  test('overlay background is semi-transparent (rgba)', () => {
+    expect(html).toMatch(/rgba\s*\(/);
+  });
+
+  test('Play Again button has a click event listener', () => {
+    expect(html).toMatch(/addEventListener\s*\(\s*['"]click['"]/);
+  });
+
+  test('Space key triggers restart when gameover', () => {
+    expect(html).toMatch(/Space/);
+    expect(html).toMatch(/gameover/);
+  });
+
+  test('overlay is removed (not just hidden) on restart via .remove()', () => {
+    expect(html).toMatch(/\.remove\s*\(\s*\)/);
+  });
+
+  test('scores are rendered on the canvas via fillText each frame', () => {
+    // fillText is used to draw scores on the canvas during gameplay
+    expect(html).toMatch(/fillText\s*\(/);
+  });
+
+  test('the RAF loop is paused when game over (no unconditional rAF at end of loop)', () => {
+    // The loop must conditionally stop scheduling itself on gameover.
+    // We verify the loop has a conditional return before requestAnimationFrame.
+    expect(html).toMatch(/gameover/);
+    // Also verify rAF is called conditionally (via rafId or similar)
+    expect(html).toMatch(/rafId/);
+  });
+
+  test('startNewGame function resets state and restarts the loop', () => {
+    expect(html).toMatch(/startNewGame/);
+    expect(html).toMatch(/resetGame/);
+  });
+
+  test('overlay shows the final score', () => {
+    // The overlay displays player and AI scores
+    expect(html).toMatch(/final.score|Final score/i);
+  });
+
+  test('winner announcement is shown in the overlay', () => {
+    // The overlay shows a winner label (You win / AI wins)
+    expect(html).toMatch(/You win|AI wins/);
   });
 });

@@ -61,6 +61,75 @@
     canvas.width  = CANVAS_W;
     canvas.height = CANVAS_H;
 
+    // ── Inject pulsing button animation style ─────────────────────────────────
+    //
+    // A <style> tag is injected once into <head> so the 'Play Again' button can
+    // use a CSS keyframe animation without inline JS timers.
+
+    (function injectOverlayStyles() {
+      const style = document.createElement('style');
+      style.id = 'pong-overlay-styles';
+      style.textContent = `
+        @keyframes pongPulse {
+          0%   { transform: scale(1);    box-shadow: 0 0 0   0   rgba(255,255,255,0.4); }
+          50%  { transform: scale(1.06); box-shadow: 0 0 18px 6px rgba(255,255,255,0.2); }
+          100% { transform: scale(1);    box-shadow: 0 0 0   0   rgba(255,255,255,0.4); }
+        }
+        #pong-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 10;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.72);
+          backdrop-filter: blur(2px);
+          gap: 18px;
+          font-family: monospace;
+        }
+        #pong-overlay h1 {
+          font-size: clamp(2rem, 6vw, 3.5rem);
+          color: #fff;
+          letter-spacing: 0.06em;
+          text-shadow: 0 0 24px rgba(255,255,255,0.5);
+          text-align: center;
+        }
+        #pong-overlay .final-score {
+          font-size: clamp(1rem, 3vw, 1.5rem);
+          color: rgba(255,255,255,0.75);
+          letter-spacing: 0.08em;
+        }
+        #pong-overlay .hint {
+          font-size: 0.85rem;
+          color: rgba(255,255,255,0.4);
+          letter-spacing: 0.05em;
+          margin-top: 4px;
+        }
+        #pong-play-again {
+          margin-top: 8px;
+          padding: 14px 40px;
+          font-family: monospace;
+          font-size: 1.1rem;
+          font-weight: bold;
+          letter-spacing: 0.1em;
+          color: #000;
+          background: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          animation: pongPulse 1.6s ease-in-out infinite;
+          transition: background 0.15s, color 0.15s;
+        }
+        #pong-play-again:hover,
+        #pong-play-again:focus {
+          background: #ffe066;
+          outline: none;
+        }
+      `;
+      document.head.appendChild(style);
+    })();
+
     // ── State ─────────────────────────────────────────────────────────────────
     //
     // All mutable game state lives in plain objects at module scope.
@@ -99,7 +168,8 @@
       score: 0,
     };
 
-    // Phase can be: 'playing' | 'scored' | 'won'
+    // gameState can be: 'playing' | 'scored' | 'gameover'
+    // (replaces the original 'won' phase; the overlay handles that display layer)
     const game = {
       phase:      'scored',   // start in 'scored' so the ball resets at t=0
       winner:     null,       // 'player' | 'ai' | null
@@ -113,6 +183,9 @@
       flashFrames: 0,   // counts down from FLASH_FRAMES to 0 after scoring
     };
 
+    // requestAnimationFrame handle — kept so the loop can be paused on gameover.
+    let rafId = null;
+
     // ── Input ─────────────────────────────────────────────────────────────────
     //
     // Boolean map of currently-held keys.  Checked each frame in update().
@@ -124,6 +197,10 @@
       // Prevent page scrolling for arrow keys
       if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
         e.preventDefault();
+      }
+      // Space triggers restart when overlay is visible (accessibility shortcut)
+      if (e.code === 'Space' && game.phase === 'gameover') {
+        startNewGame();
       }
     });
 
@@ -206,20 +283,92 @@
       rally.flashFrames = 0;
     }
 
+    // ── DOM Overlay ───────────────────────────────────────────────────────────
+    //
+    // The game-over overlay is a full-screen semi-transparent div injected
+    // into the document via JS DOM APIs.  It is removed (not hidden) on restart
+    // so a clean element is created each game-over.
+
+    /**
+     * Build and show the full-screen game-over overlay.
+     * Attaches a 'Play Again' button that calls startNewGame() on click.
+     *
+     * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
+     * @param {number} playerScore - Final player score
+     * @param {number} aiScore     - Final AI score
+     */
+    function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
+      // Remove any pre-existing overlay (defensive guard)
+      removeGameOverOverlay();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-overlay';
+
+      // Winner headline
+      const h1 = document.createElement('h1');
+      h1.textContent = winnerLabel;
+      overlay.appendChild(h1);
+
+      // Final score line
+      const scoreEl = document.createElement('p');
+      scoreEl.className = 'final-score';
+      scoreEl.textContent = `Final score  ${playerScore} – ${aiScore}`;
+      overlay.appendChild(scoreEl);
+
+      // Play Again button
+      const btn = document.createElement('button');
+      btn.id = 'pong-play-again';
+      btn.textContent = 'Play Again';
+      btn.addEventListener('click', startNewGame);
+      overlay.appendChild(btn);
+
+      // Keyboard hint
+      const hint = document.createElement('p');
+      hint.className = 'hint';
+      hint.textContent = 'or press Space';
+      overlay.appendChild(hint);
+
+      document.body.appendChild(overlay);
+
+      // Focus the button immediately so keyboard users can activate it
+      btn.focus();
+    }
+
+    /**
+     * Remove the game-over overlay from the DOM if it exists.
+     */
+    function removeGameOverOverlay() {
+      const existing = document.getElementById('pong-overlay');
+      if (existing) existing.remove();
+    }
+
+    /**
+     * Tear down the current overlay, reset all state, and restart the animation loop.
+     * Called by the 'Play Again' button click and the Space keyboard shortcut.
+     */
+    function startNewGame() {
+      removeGameOverOverlay();
+      resetGame();
+      // Clear the key map so a held-Space doesn't immediately trigger movement
+      Object.keys(keys).forEach((k) => { keys[k] = false; });
+      // Cancel any stale RAF handle before starting a new loop
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      lastTime = null;
+      rafId = requestAnimationFrame(loop);
+    }
+
     // ── Update ────────────────────────────────────────────────────────────────
     //
     // All simulation is driven by delta-time (dt, in seconds) so the game
     // runs at the same speed regardless of frame rate.
 
     function update(dt) {
-      // ── Phase: won ──────────────────────────────────────────────────────────
-      if (game.phase === 'won') {
-        // Any key restarts the game
-        if (Object.values(keys).some(Boolean)) {
-          resetGame();
-        }
-        return;
-      }
+      // ── Phase: gameover ──────────────────────────────────────────────────────
+      // The RAF loop is paused when gameover; nothing to update.
+      if (game.phase === 'gameover') return;
 
       // ── Phase: scored (brief pause before next serve) ────────────────────
       if (game.phase === 'scored') {
@@ -309,7 +458,7 @@
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
         if (aiPaddle.score >= SCORE_WIN) {
-          game.phase  = 'won';
+          game.phase  = 'gameover';
           game.winner = 'ai';
         } else {
           game.phase      = 'scored';
@@ -323,7 +472,7 @@
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
         if (playerPaddle.score >= SCORE_WIN) {
-          game.phase  = 'won';
+          game.phase  = 'gameover';
           game.winner = 'player';
         } else {
           game.phase      = 'scored';
@@ -335,6 +484,7 @@
     // ── Render ────────────────────────────────────────────────────────────────
     //
     // Each frame: clear the canvas then redraw all primitives from scratch.
+    // The live score is rendered via fillText each frame (canvas-integrated).
     // When rally.flashFrames > 0 a tinted overlay is drawn to give visual
     // feedback that a point was just scored.
 
@@ -362,7 +512,8 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Scores
+      // ── Live scores rendered on canvas each frame ─────────────────────────
+      // Scores are drawn with fillText so they integrate seamlessly with gameplay.
       ctx.fillStyle = '#fff';
       ctx.font = 'bold 48px monospace';
       ctx.textAlign = 'center';
@@ -382,7 +533,7 @@
         ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
       }
 
-      // Overlay messages
+      // 'Get ready…' hint during the inter-point pause
       if (game.phase === 'scored') {
         ctx.fillStyle = 'rgba(255,255,255,0.25)';
         ctx.font = '22px monospace';
@@ -391,18 +542,8 @@
         ctx.fillText('Get ready…', CANVAS_W / 2, CANVAS_H / 2);
       }
 
-      if (game.phase === 'won') {
-        const msg = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 56px monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(msg, CANVAS_W / 2, CANVAS_H / 2 - 40);
-
-        ctx.font = '22px monospace';
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
-        ctx.fillText('Press any key to play again', CANVAS_W / 2, CANVAS_H / 2 + 30);
-      }
+      // When gameover, the canvas shows the final frozen frame so that the
+      // semi-transparent HTML overlay renders above a recognisable game state.
     }
 
     // ── Game loop ─────────────────────────────────────────────────────────────
@@ -410,6 +551,9 @@
     // Uses requestAnimationFrame; the timestamp argument is equivalent to
     // performance.now() and is used to compute delta-time (dt, in seconds).
     // Delta-time is capped at 100 ms to avoid large jumps after tab switches.
+    //
+    // When game.phase becomes 'gameover' the loop stops scheduling itself and
+    // shows the HTML overlay instead.
 
     let lastTime = null;
 
@@ -423,10 +567,19 @@
       update(dt);
       render();
 
-      requestAnimationFrame(loop);
+      if (game.phase === 'gameover') {
+        // Pause the loop and present the DOM overlay
+        rafId = null;
+        const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
+        showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score);
+        return; // do NOT schedule next frame
+      }
+
+      rafId = requestAnimationFrame(loop);
     }
 
-    requestAnimationFrame(loop);
+    // Kick off the animation loop
+    rafId = requestAnimationFrame(loop);
   </script>
 </body>
 </html>
