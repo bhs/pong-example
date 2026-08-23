@@ -1,4 +1,18 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.test.yml — Mendel test environment
+#
+# The unit tests in __tests__/ use mock DB pools, so no real Postgres is needed
+# for "npm test".  This file only wires up the app container.
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
   app:
     build:
       context: ..
+    environment:
+      # Unit tests mock the DB — set a known JWT_SECRET for determinism
+      JWT_SECRET: "test-secret-do-not-use-in-production"
+      # Prevent server.js from trying to connect on require()
+      NODE_ENV: test

@@ -2,12 +2,15 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies
+# Install dependencies (production + dev for test runs)
 COPY package.json ./
 RUN npm install
 
-# Copy source files
+# Copy application source
 COPY . .
 
-# Default command serves the static file; tests override this via exec
-CMD ["node", "-e", "const http=require('http'),fs=require('fs'),path=require('path'); http.createServer((req,res)=>{const f=path.join('/app','index.html');res.writeHead(200,{'Content-Type':'text/html'});fs.createReadStream(f).pipe(res)}).listen(3000,()=>console.log('Serving on :3000'))"]
+# Expose the API/static-file port
+EXPOSE 3000
+
+# Default: start the Express API server (runs migrations, then serves requests)
+CMD ["node", "server.js"]

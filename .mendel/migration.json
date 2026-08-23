@@ -1,0 +1,5 @@
+{
+  "up_instructions":   "psql $DATABASE_URL -f db/migrations/001_init.sql  (or: docker-compose up — the server applies migrations automatically on startup via db.js:migrate())",
+  "down_instructions": "psql $DATABASE_URL -f db/migrations/001_init.down.sql",
+  "notes":             "Migration files live in db/migrations/. The server runs them automatically via migrate() in db.js before accepting connections. 001_init.sql creates the 'users' and 'high_scores' tables."
+}

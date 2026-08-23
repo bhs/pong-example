@@ -1,0 +1,56 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pong – self-hosted Postgres stack
+#
+# Usage:
+#   docker-compose up --build          # start the full stack
+#   docker-compose down -v             # stop and remove volumes
+#
+# The app container waits for Postgres to be healthy before starting, so
+# migrations run cleanly on the first boot.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     pong
+      POSTGRES_PASSWORD: pong
+      POSTGRES_DB:       pong
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test:     ["CMD-SHELL", "pg_isready -U pong -d pong"]
+      interval: 5s
+      timeout:  5s
+      retries:  10
+    ports:
+      # Expose only on loopback so the DB isn't reachable from the internet.
+      - "127.0.0.1:5432:5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Connection details that match the db service above
+      PGHOST:     db
+      PGPORT:     "5432"
+      PGUSER:     pong
+      PGPASSWORD: pong
+      PGDATABASE: pong
+      PORT:       "3000"
+      # Override in production:  JWT_SECRET=<random 64-char string>
+      JWT_SECRET: "${JWT_SECRET:-change-me-in-production}"
+    ports:
+      - "3000:3000"
+
+volumes:
+  pg_data:
