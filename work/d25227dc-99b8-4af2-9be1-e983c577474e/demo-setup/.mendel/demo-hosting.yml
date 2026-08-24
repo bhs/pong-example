@@ -1,5 +1,5 @@
 version: 1
-deployer_image: flyio/flyctl:latest
+deployer_image: alpine:latest
 required_secrets:
   - FLY_API_TOKEN
 deploy_script: deploy.sh

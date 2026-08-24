@@ -1,15 +1,35 @@
-#!/usr/bin/env sh
+#!/bin/sh
 # deploy.sh – Build and deploy the Pong game to Fly.io
 #
 # Environment variables (provided by Mendel):
 #   FLY_API_TOKEN       – Fly.io personal access token
 #   MENDEL_VARIATION_ID – Unique identifier for this variation/deployment
 #
-# The script is executed inside the flyio/flyctl container image with the
-# repository mounted at /workspace.  It must print ONLY the deployed URL
-# to stdout so Mendel can capture it.
+# Runs inside an alpine:latest deployer container with the repository
+# mounted at /workspace.  Prints ONLY the deployed URL to stdout.
 
 set -eu
+
+# ── Install flyctl (not present in alpine base image) ────────────────────────
+if ! command -v flyctl >/dev/null 2>&1; then
+  echo "Installing flyctl..." >&2
+  # apk provides curl; fall back to wget if curl is absent
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://fly.io/install.sh | sh >&2
+  else
+    apk add --no-cache curl >&2
+    curl -fsSL https://fly.io/install.sh | sh >&2
+  fi
+  export PATH="$HOME/.fly/bin:$PATH"
+fi
+
+# Ensure flyctl is on PATH even if it was already installed
+export PATH="$HOME/.fly/bin:$PATH"
+
+if ! command -v flyctl >/dev/null 2>&1; then
+  echo "ERROR: flyctl installation failed." >&2
+  exit 1
+fi
 
 # ── Validate required environment variables ───────────────────────────────────
 if [ -z "${FLY_API_TOKEN:-}" ]; then
@@ -25,7 +45,7 @@ fi
 export FLY_API_TOKEN
 
 # ── Derive a stable, Fly.io-compatible app name ───────────────────────────────
-# Fly.io requires: lowercase letters, digits, hyphens; max 30 chars.
+# Fly.io rules: lowercase letters, digits, hyphens only; max 30 chars.
 SHORT_ID=$(printf '%s' "${MENDEL_VARIATION_ID}" \
   | tr '[:upper:]' '[:lower:]' \
   | tr -cs 'a-z0-9' '-' \
@@ -33,39 +53,30 @@ SHORT_ID=$(printf '%s' "${MENDEL_VARIATION_ID}" \
   | cut -c1-20)
 APP_NAME="pong-${SHORT_ID}"
 
-echo "Using Fly.io app name: ${APP_NAME}" >&2
+echo "Fly.io app name: ${APP_NAME}" >&2
 
-# ── Locate the workspace root (/workspace is mounted by Mendel) ───────────────
+# ── Locate workspace root ─────────────────────────────────────────────────────
 if [ -d "/workspace" ]; then
   REPO_ROOT="/workspace"
 else
-  # Fallback: derive from script location
   REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 fi
-
 echo "Repository root: ${REPO_ROOT}" >&2
-
-# ── Verify flyctl is available ────────────────────────────────────────────────
-if ! command -v flyctl >/dev/null 2>&1; then
-  echo "ERROR: flyctl not found in PATH." >&2
-  exit 1
-fi
+cd "${REPO_ROOT}"
 
 # ── Create the Fly app if it does not already exist ──────────────────────────
-EXISTING=$(flyctl apps list --json 2>/dev/null || echo '[]')
-if printf '%s' "${EXISTING}" | grep -q "\"${APP_NAME}\""; then
+if flyctl apps list --json 2>/dev/null | grep -q "\"${APP_NAME}\""; then
   echo "App '${APP_NAME}' already exists – redeploying." >&2
 else
   echo "Creating Fly.io app '${APP_NAME}'..." >&2
-  flyctl apps create "${APP_NAME}" --machines >&2 || {
-    # Re-check in case of a race with a previous run
-    EXISTING=$(flyctl apps list --json 2>/dev/null || echo '[]')
-    if ! printf '%s' "${EXISTING}" | grep -q "\"${APP_NAME}\""; then
+  if ! flyctl apps create "${APP_NAME}" --machines >&2; then
+    # Check again in case of a race with a previous run
+    if ! flyctl apps list --json 2>/dev/null | grep -q "\"${APP_NAME}\""; then
       echo "ERROR: Failed to create Fly.io app '${APP_NAME}'." >&2
       exit 1
     fi
     echo "App already existed (race condition – continuing)." >&2
-  }
+  fi
 fi
 
 # ── Write a fly.toml tailored for this deployment ────────────────────────────
@@ -100,16 +111,16 @@ TOML
 
 # ── Deploy the application ────────────────────────────────────────────────────
 echo "Deploying '${APP_NAME}' to Fly.io..." >&2
-flyctl deploy \
-  --app        "${APP_NAME}" \
-  --config     "${FLY_TOML}" \
-  --dockerfile "${REPO_ROOT}/Dockerfile" \
-  --remote-only \
-  --yes \
-  >&2 || {
+if ! flyctl deploy \
+    --app        "${APP_NAME}" \
+    --config     "${FLY_TOML}" \
+    --dockerfile "${REPO_ROOT}/Dockerfile" \
+    --remote-only \
+    --yes \
+    >&2; then
   echo "ERROR: flyctl deploy failed for app '${APP_NAME}'." >&2
   exit 1
-}
+fi
 
 # ── Retrieve the public hostname ──────────────────────────────────────────────
 HOSTNAME=$(flyctl info --app "${APP_NAME}" --json 2>/dev/null \
@@ -117,10 +128,10 @@ HOSTNAME=$(flyctl info --app "${APP_NAME}" --json 2>/dev/null \
   | head -n1 \
   | sed 's/.*"Hostname": *"\([^"]*\)".*/\1/')
 
-# Fly.io always provides <app-name>.fly.dev even if the JSON parse fails
+# Fly.io always provides <app-name>.fly.dev as the default hostname
 if [ -z "${HOSTNAME}" ]; then
   HOSTNAME="${APP_NAME}.fly.dev"
 fi
 
-# ── CRITICAL: print only the URL to stdout for Mendel to capture ─────────────
+# ── CRITICAL: print ONLY the URL to stdout so Mendel can capture it ──────────
 echo "https://${HOSTNAME}"

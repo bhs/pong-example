@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 # teardown.sh – Destroy the Fly.io app provisioned by deploy.sh
 #
 # Environment variables (provided by Mendel):
@@ -8,6 +8,26 @@
 # The script is idempotent: if the app is already gone, it exits cleanly.
 
 set -eu
+
+# ── Install flyctl (not present in alpine base image) ────────────────────────
+if ! command -v flyctl >/dev/null 2>&1; then
+  echo "Installing flyctl..." >&2
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://fly.io/install.sh | sh >&2
+  else
+    apk add --no-cache curl >&2
+    curl -fsSL https://fly.io/install.sh | sh >&2
+  fi
+  export PATH="$HOME/.fly/bin:$PATH"
+fi
+
+# Ensure flyctl is on PATH even if it was already installed
+export PATH="$HOME/.fly/bin:$PATH"
+
+if ! command -v flyctl >/dev/null 2>&1; then
+  echo "ERROR: flyctl installation failed." >&2
+  exit 1
+fi
 
 # ── Validate required environment variables ───────────────────────────────────
 if [ -z "${FLY_API_TOKEN:-}" ]; then
@@ -32,26 +52,19 @@ APP_NAME="pong-${SHORT_ID}"
 
 echo "Targeting Fly.io app: ${APP_NAME}" >&2
 
-# ── Verify flyctl is available ────────────────────────────────────────────────
-if ! command -v flyctl >/dev/null 2>&1; then
-  echo "ERROR: flyctl not found in PATH." >&2
-  exit 1
-fi
-
 # ── Destroy the app (idempotent) ──────────────────────────────────────────────
-EXISTING=$(flyctl apps list --json 2>/dev/null || echo '[]')
-if printf '%s' "${EXISTING}" | grep -q "\"${APP_NAME}\""; then
+if flyctl apps list --json 2>/dev/null | grep -q "\"${APP_NAME}\""; then
   echo "Destroying Fly.io app '${APP_NAME}'..." >&2
-  flyctl apps destroy "${APP_NAME}" --yes >&2 || {
+  if ! flyctl apps destroy "${APP_NAME}" --yes >&2; then
     echo "ERROR: Failed to destroy app '${APP_NAME}'." >&2
     exit 1
-  }
+  fi
   echo "App '${APP_NAME}' destroyed successfully." >&2
 else
   echo "App '${APP_NAME}' not found – nothing to tear down." >&2
 fi
 
-# ── Remove any generated fly.toml from the repo root ─────────────────────────
+# ── Remove any generated fly.toml from the workspace ─────────────────────────
 if [ -d "/workspace" ]; then
   REPO_ROOT="/workspace"
 else
