@@ -5,24 +5,20 @@
 #   FLY_API_TOKEN       – Fly.io personal access token
 #   MENDEL_VARIATION_ID – Same unique identifier used during deployment
 #
-# The script is idempotent: if the app is already gone, it exits cleanly.
+# The script is idempotent: if the app is already gone it exits cleanly.
 
 set -eu
 
-# ── Install flyctl (not present in alpine base image) ────────────────────────
+# ── Install flyctl ─────────────────────────────────────────────────────────────
 if ! command -v flyctl >/dev/null 2>&1; then
   echo "Installing flyctl..." >&2
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL https://fly.io/install.sh | sh >&2
-  else
+  if ! command -v curl >/dev/null 2>&1; then
     apk add --no-cache curl >&2
-    curl -fsSL https://fly.io/install.sh | sh >&2
   fi
-  export PATH="$HOME/.fly/bin:$PATH"
+  curl -fsSL https://fly.io/install.sh | sh >&2
 fi
 
-# Ensure flyctl is on PATH even if it was already installed
-export PATH="$HOME/.fly/bin:$PATH"
+export PATH="${HOME}/.fly/bin:${PATH}"
 
 if ! command -v flyctl >/dev/null 2>&1; then
   echo "ERROR: flyctl installation failed." >&2
@@ -46,14 +42,17 @@ export FLY_API_TOKEN
 SHORT_ID=$(printf '%s' "${MENDEL_VARIATION_ID}" \
   | tr '[:upper:]' '[:lower:]' \
   | tr -cs 'a-z0-9' '-' \
-  | sed 's/^-//;s/-$//' \
+  | sed 's/^-*//;s/-*$//' \
   | cut -c1-20)
 APP_NAME="pong-${SHORT_ID}"
-
 echo "Targeting Fly.io app: ${APP_NAME}" >&2
 
 # ── Destroy the app (idempotent) ──────────────────────────────────────────────
-if flyctl apps list --json 2>/dev/null | grep -q "\"${APP_NAME}\""; then
+APP_EXISTS=$(flyctl apps list --json 2>/dev/null \
+  | grep '"Name"' \
+  | grep "\"${APP_NAME}\"" || true)
+
+if [ -n "${APP_EXISTS}" ]; then
   echo "Destroying Fly.io app '${APP_NAME}'..." >&2
   if ! flyctl apps destroy "${APP_NAME}" --yes >&2; then
     echo "ERROR: Failed to destroy app '${APP_NAME}'." >&2

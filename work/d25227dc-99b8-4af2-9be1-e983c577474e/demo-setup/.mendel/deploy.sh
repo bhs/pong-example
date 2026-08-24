@@ -70,7 +70,7 @@ if [ -n "${APP_EXISTS}" ]; then
   echo "App '${APP_NAME}' already exists – redeploying." >&2
 else
   echo "Creating Fly.io app '${APP_NAME}'..." >&2
-  if ! flyctl apps create "${APP_NAME}" --machines >&2; then
+  if ! flyctl apps create "${APP_NAME}" --machines >&2 2>&1; then
     # Re-check in case of a race condition from a parallel run
     APP_EXISTS=$(flyctl apps list --json 2>/dev/null \
       | grep '"Name"' \
