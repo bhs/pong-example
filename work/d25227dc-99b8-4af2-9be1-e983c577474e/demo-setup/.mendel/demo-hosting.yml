@@ -5,3 +5,6 @@ required_secrets:
 deploy_script: deploy.sh
 teardown_script: teardown.sh
 url_from: stdout
+health_path: /
+health_timeout: 120
+health_interval: 5
