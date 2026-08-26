@@ -34,6 +34,9 @@
 <body>
   <canvas id="gameCanvas"></canvas>
 
+  <!-- Auth module: register / login / logout / saveScore / getLeaderboard -->
+  <script src="auth.js"></script>
+
   <script>
     'use strict';
 
@@ -125,6 +128,161 @@
         #pong-play-again:focus {
           background: #ffe066;
           outline: none;
+        }
+
+        /* ── Auth overlay ─────────────────────────────────────────────────── */
+        #pong-auth-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 20;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.88);
+          backdrop-filter: blur(3px);
+          gap: 14px;
+          font-family: monospace;
+        }
+        #pong-auth-overlay h2 {
+          font-size: 1.6rem;
+          color: #fff;
+          letter-spacing: 0.06em;
+          text-shadow: 0 0 18px rgba(255,255,255,0.4);
+        }
+        #pong-auth-overlay input {
+          width: 260px;
+          padding: 10px 14px;
+          font-family: monospace;
+          font-size: 1rem;
+          background: #1a1a1a;
+          color: #fff;
+          border: 1px solid #444;
+          border-radius: 4px;
+          outline: none;
+          transition: border-color 0.15s;
+        }
+        #pong-auth-overlay input:focus {
+          border-color: #fff;
+        }
+        .pong-auth-btns {
+          display: flex;
+          gap: 12px;
+          margin-top: 4px;
+        }
+        .pong-auth-btns button {
+          padding: 10px 26px;
+          font-family: monospace;
+          font-size: 0.95rem;
+          font-weight: bold;
+          letter-spacing: 0.08em;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: background 0.15s, color 0.15s;
+        }
+        #pong-btn-signin {
+          background: #fff;
+          color: #000;
+        }
+        #pong-btn-signin:hover,
+        #pong-btn-signin:focus { background: #ffe066; outline: none; }
+        #pong-btn-signup {
+          background: transparent;
+          color: #fff;
+          border: 1px solid #555 !important;
+        }
+        #pong-btn-signup:hover,
+        #pong-btn-signup:focus { border-color: #fff !important; outline: none; }
+        #pong-auth-error {
+          font-size: 0.85rem;
+          color: #ff6b6b;
+          min-height: 1.2em;
+          text-align: center;
+          max-width: 280px;
+        }
+        #pong-auth-skip {
+          font-size: 0.8rem;
+          color: rgba(255,255,255,0.35);
+          background: none;
+          border: none;
+          cursor: pointer;
+          font-family: monospace;
+          letter-spacing: 0.04em;
+          text-decoration: underline;
+          margin-top: 2px;
+        }
+        #pong-auth-skip:hover { color: rgba(255,255,255,0.6); }
+
+        /* ── Leaderboard section inside game-over overlay ───────────────── */
+        #pong-leaderboard {
+          width: 280px;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.12);
+          border-radius: 6px;
+          padding: 12px 16px;
+          font-size: 0.82rem;
+          color: rgba(255,255,255,0.8);
+        }
+        #pong-leaderboard h3 {
+          font-size: 0.9rem;
+          color: #ffe066;
+          letter-spacing: 0.08em;
+          margin-bottom: 8px;
+          text-align: center;
+        }
+        .pong-lb-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 3px 0;
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .pong-lb-row:last-child { border-bottom: none; }
+        .pong-lb-rank { color: rgba(255,255,255,0.4); min-width: 22px; }
+        .pong-lb-email {
+          flex: 1;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          padding: 0 6px;
+        }
+        .pong-lb-score { color: #ffe066; font-weight: bold; }
+        .pong-lb-empty { text-align: center; color: rgba(255,255,255,0.3); font-style: italic; }
+
+        /* ── Auth status bar ────────────────────────────────────────────── */
+        #pong-status-bar {
+          position: fixed;
+          top: 10px;
+          right: 14px;
+          z-index: 5;
+          font-family: monospace;
+          font-size: 0.75rem;
+          color: rgba(255,255,255,0.45);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          pointer-events: none;
+        }
+        #pong-status-bar button {
+          pointer-events: auto;
+          background: none;
+          border: 1px solid rgba(255,255,255,0.2);
+          border-radius: 3px;
+          color: rgba(255,255,255,0.45);
+          font-family: monospace;
+          font-size: 0.72rem;
+          padding: 2px 7px;
+          cursor: pointer;
+          transition: border-color 0.15s, color 0.15s;
+        }
+        #pong-status-bar button:hover { border-color: #fff; color: #fff; }
+
+        /* ── New best score badge ────────────────────────────────────────── */
+        #pong-new-best {
+          font-size: 0.85rem;
+          color: #ffe066;
+          letter-spacing: 0.06em;
+          animation: pongPulse 1.6s ease-in-out 2;
         }
       `;
       document.head.appendChild(style);
@@ -283,6 +441,214 @@
       rally.flashFrames = 0;
     }
 
+    // ── Auth status bar ───────────────────────────────────────────────────────
+    //
+    // A lightweight fixed-position bar at the top-right showing the logged-in
+    // email and a Logout button, or a Sign In link when no session exists.
+
+    /**
+     * Render (or refresh) the persistent auth status bar in the top-right corner.
+     */
+    function refreshStatusBar() {
+      let bar = document.getElementById('pong-status-bar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'pong-status-bar';
+        document.body.appendChild(bar);
+      }
+      bar.innerHTML = '';
+
+      // PongAuth is exposed by auth.js; guard in case the script failed to load.
+      const auth = window.PongAuth;
+      if (!auth) return;
+
+      const user = auth.getCurrentUser();
+      if (user) {
+        const label = document.createElement('span');
+        label.textContent = user.email;
+        bar.appendChild(label);
+
+        const logoutBtn = document.createElement('button');
+        logoutBtn.textContent = 'Logout';
+        logoutBtn.addEventListener('click', () => {
+          auth.logout();
+          refreshStatusBar();
+        });
+        bar.appendChild(logoutBtn);
+      } else {
+        const signInBtn = document.createElement('button');
+        signInBtn.textContent = 'Sign In';
+        signInBtn.addEventListener('click', showAuthOverlay);
+        bar.appendChild(signInBtn);
+      }
+    }
+
+    // ── Auth overlay ──────────────────────────────────────────────────────────
+    //
+    // Full-screen modal for Sign In / Sign Up.  Follows the same DOM-overlay
+    // pattern as the game-over overlay.
+
+    /**
+     * Build and show the auth overlay.
+     *
+     * @param {Function} [onSuccess] - Optional callback called with the user object
+     *                                 when auth completes successfully.
+     */
+    function showAuthOverlay(onSuccess) {
+      removeAuthOverlay();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-auth-overlay';
+
+      const h2 = document.createElement('h2');
+      h2.textContent = 'PONG  ·  Sign In';
+      overlay.appendChild(h2);
+
+      const emailInput = document.createElement('input');
+      emailInput.type        = 'email';
+      emailInput.placeholder = 'Email address';
+      emailInput.autocomplete = 'email';
+      overlay.appendChild(emailInput);
+
+      const passInput = document.createElement('input');
+      passInput.type        = 'password';
+      passInput.placeholder = 'Password';
+      passInput.autocomplete = 'current-password';
+      overlay.appendChild(passInput);
+
+      const errorEl = document.createElement('p');
+      errorEl.id = 'pong-auth-error';
+      overlay.appendChild(errorEl);
+
+      const btns = document.createElement('div');
+      btns.className = 'pong-auth-btns';
+
+      const signInBtn = document.createElement('button');
+      signInBtn.id          = 'pong-btn-signin';
+      signInBtn.textContent = 'Sign In';
+
+      const signUpBtn = document.createElement('button');
+      signUpBtn.id          = 'pong-btn-signup';
+      signUpBtn.textContent = 'Sign Up';
+
+      btns.appendChild(signInBtn);
+      btns.appendChild(signUpBtn);
+      overlay.appendChild(btns);
+
+      const skipBtn = document.createElement('button');
+      skipBtn.id          = 'pong-auth-skip';
+      skipBtn.textContent = 'Play without signing in';
+      overlay.appendChild(skipBtn);
+
+      document.body.appendChild(overlay);
+      emailInput.focus();
+
+      // ── Shared submit handler ───────────────────────────────────────────
+      async function handleAuth(action) {
+        const email    = emailInput.value;
+        const password = passInput.value;
+        errorEl.textContent = '';
+        signInBtn.disabled  = true;
+        signUpBtn.disabled  = true;
+        try {
+          const auth = window.PongAuth;
+          let user;
+          if (action === 'login') {
+            user = await auth.login(email, password);
+          } else {
+            user = await auth.register(email, password);
+          }
+          removeAuthOverlay();
+          refreshStatusBar();
+          if (typeof onSuccess === 'function') onSuccess(user);
+        } catch (err) {
+          errorEl.textContent = err.message;
+        } finally {
+          signInBtn.disabled = false;
+          signUpBtn.disabled = false;
+        }
+      }
+
+      signInBtn.addEventListener('click', () => handleAuth('login'));
+      signUpBtn.addEventListener('click', () => handleAuth('register'));
+      skipBtn.addEventListener('click',  removeAuthOverlay);
+
+      // Allow Enter key to submit
+      function onKey(e) {
+        if (e.key === 'Enter') handleAuth('login');
+      }
+      emailInput.addEventListener('keydown', onKey);
+      passInput.addEventListener('keydown', onKey);
+    }
+
+    /**
+     * Remove the auth overlay from the DOM if it exists.
+     */
+    function removeAuthOverlay() {
+      const el = document.getElementById('pong-auth-overlay');
+      if (el) el.remove();
+    }
+
+    // ── Leaderboard helpers ───────────────────────────────────────────────────
+
+    /**
+     * Build and return a leaderboard DOM element showing the top 10 scores.
+     *
+     * @returns {HTMLElement}
+     */
+    function buildLeaderboardEl() {
+      const auth    = window.PongAuth;
+      const section = document.createElement('div');
+      section.id    = 'pong-leaderboard';
+
+      const h3 = document.createElement('h3');
+      h3.textContent = '🏆  Leaderboard';
+      section.appendChild(h3);
+
+      if (!auth) {
+        const empty = document.createElement('p');
+        empty.className = 'pong-lb-empty';
+        empty.textContent = 'Auth unavailable';
+        section.appendChild(empty);
+        return section;
+      }
+
+      const entries = auth.getLeaderboard(10);
+      if (entries.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'pong-lb-empty';
+        empty.textContent = 'No scores yet — be the first!';
+        section.appendChild(empty);
+        return section;
+      }
+
+      entries.forEach((entry, i) => {
+        const row = document.createElement('div');
+        row.className = 'pong-lb-row';
+
+        const rank = document.createElement('span');
+        rank.className   = 'pong-lb-rank';
+        rank.textContent = `${i + 1}.`;
+
+        const email = document.createElement('span');
+        email.className   = 'pong-lb-email';
+        // Show only the username portion of the email for brevity
+        email.textContent = entry.email.split('@')[0];
+        email.title       = entry.email;
+
+        const score = document.createElement('span');
+        score.className   = 'pong-lb-score';
+        score.textContent = entry.score;
+
+        row.appendChild(rank);
+        row.appendChild(email);
+        row.appendChild(score);
+        section.appendChild(row);
+      });
+
+      return section;
+    }
+
     // ── DOM Overlay ───────────────────────────────────────────────────────────
     //
     // The game-over overlay is a full-screen semi-transparent div injected
@@ -291,7 +657,7 @@
 
     /**
      * Build and show the full-screen game-over overlay.
-     * Attaches a 'Play Again' button that calls startNewGame() on click.
+     * Also saves the player's score (if logged in) and shows the leaderboard.
      *
      * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
      * @param {number} playerScore - Final player score
@@ -314,6 +680,21 @@
       scoreEl.className = 'final-score';
       scoreEl.textContent = `Final score  ${playerScore} – ${aiScore}`;
       overlay.appendChild(scoreEl);
+
+      // Save high score if the player won and is logged in
+      const auth = window.PongAuth;
+      if (auth && game.winner === 'player') {
+        const isNewBest = auth.saveScore(playerScore);
+        if (isNewBest) {
+          const newBest = document.createElement('p');
+          newBest.id          = 'pong-new-best';
+          newBest.textContent = '★  New personal best!';
+          overlay.appendChild(newBest);
+        }
+      }
+
+      // Leaderboard
+      overlay.appendChild(buildLeaderboardEl());
 
       // Play Again button
       const btn = document.createElement('button');
@@ -577,6 +958,11 @@
 
       rafId = requestAnimationFrame(loop);
     }
+
+    // ── Initialise ────────────────────────────────────────────────────────────
+
+    // Render the auth status bar (shows current session if any)
+    refreshStatusBar();
 
     // Kick off the animation loop
     rafId = requestAnimationFrame(loop);
