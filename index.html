@@ -16,23 +16,201 @@
       width: 100%;
       height: 100%;
       background: #111;
+      font-family: monospace;
+      overflow: hidden;
+    }
+
+    /* ── Auth top-bar ────────────────────────────────────────────────────────── */
+    #auth-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      z-index: 100;
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      font-family: monospace;
+      font-size: 0.82rem;
+    }
+
+    #auth-bar .auth-tabs {
+      display: flex;
+      gap: 4px;
+    }
+
+    #auth-bar .auth-tab {
+      background: none;
+      border: 1px solid #444;
+      color: #aaa;
+      font-family: monospace;
+      font-size: 0.8rem;
+      padding: 3px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+
+    #auth-bar .auth-tab.active {
+      background: #fff;
+      color: #000;
+      border-color: #fff;
+    }
+
+    #auth-bar .auth-tab:hover:not(.active) {
+      background: #333;
+      color: #ddd;
+    }
+
+    #auth-bar .auth-fields {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 1;
+    }
+
+    #auth-bar input[type="email"],
+    #auth-bar input[type="password"] {
+      background: #222;
+      border: 1px solid #444;
+      color: #eee;
+      font-family: monospace;
+      font-size: 0.8rem;
+      padding: 3px 8px;
+      border-radius: 3px;
+      width: 160px;
+      outline: none;
+    }
+
+    #auth-bar input:focus {
+      border-color: #888;
+    }
+
+    #auth-bar .auth-submit {
+      background: #fff;
+      color: #000;
+      border: none;
+      font-family: monospace;
+      font-size: 0.8rem;
+      font-weight: bold;
+      padding: 4px 12px;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    #auth-bar .auth-submit:hover {
+      background: #ffe066;
+    }
+
+    #auth-bar .auth-status {
+      color: #aaa;
+      font-size: 0.8rem;
+      flex: 1;
+    }
+
+    #auth-bar .auth-user {
+      color: #7fdbff;
+      font-weight: bold;
+    }
+
+    #auth-bar .auth-msg {
+      color: #ff6b6b;
+      font-size: 0.78rem;
+      min-width: 160px;
+    }
+
+    #auth-bar .auth-msg.success {
+      color: #6bff8e;
+    }
+
+    #auth-bar .logout-btn {
+      background: none;
+      border: 1px solid #555;
+      color: #aaa;
+      font-family: monospace;
+      font-size: 0.78rem;
+      padding: 2px 8px;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+
+    #auth-bar .logout-btn:hover {
+      background: #333;
+      color: #fff;
+    }
+
+    #auth-bar .save-score-btn {
+      background: #6bff8e;
+      color: #000;
+      border: none;
+      font-family: monospace;
+      font-size: 0.78rem;
+      font-weight: bold;
+      padding: 3px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    #auth-bar .save-score-btn:hover {
+      background: #39d65e;
+    }
+
+    /* ── Game canvas area (offset below auth bar) ─────────────────────────── */
+    #game-area {
+      position: fixed;
+      top: 36px;  /* auth-bar height */
+      left: 0;
+      right: 0;
+      bottom: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      overflow: hidden;
-      font-family: monospace;
+      background: #111;
     }
 
     canvas {
       display: block;
       background: #000;
-      /* Crisp pixel rendering for retro look */
       image-rendering: pixelated;
     }
   </style>
 </head>
 <body>
-  <canvas id="gameCanvas"></canvas>
+
+  <!-- ── Auth top-bar ──────────────────────────────────────────────────── -->
+  <div id="auth-bar">
+    <!-- Unauthenticated view (shown when not logged in) -->
+    <div id="auth-panel-anon" style="display:flex;align-items:center;gap:8px;width:100%;">
+      <div class="auth-tabs">
+        <button class="auth-tab active" id="tab-register" type="button">Register</button>
+        <button class="auth-tab"        id="tab-login"    type="button">Login</button>
+      </div>
+      <div class="auth-fields">
+        <input type="email"    id="auth-email"    placeholder="email" autocomplete="username" />
+        <input type="password" id="auth-password" placeholder="password" autocomplete="current-password" />
+        <button class="auth-submit" id="auth-submit-btn" type="button">Register</button>
+      </div>
+      <span class="auth-msg" id="auth-msg"></span>
+    </div>
+    <!-- Authenticated view (shown when logged in) -->
+    <div id="auth-panel-user" style="display:none;align-items:center;gap:10px;width:100%;">
+      <span class="auth-status">Logged in as <span class="auth-user" id="auth-display-email"></span></span>
+      <button class="save-score-btn" id="save-score-btn" type="button">Save Score</button>
+      <span class="auth-msg" id="save-msg"></span>
+      <button class="logout-btn" id="logout-btn" type="button">Logout</button>
+    </div>
+  </div>
+
+  <!-- ── Game area ─────────────────────────────────────────────────────── -->
+  <div id="game-area">
+    <canvas id="gameCanvas"></canvas>
+  </div>
 
   <script>
     'use strict';
@@ -77,7 +255,7 @@
         }
         #pong-overlay {
           position: fixed;
-          inset: 0;
+          inset: 36px 0 0 0;
           z-index: 10;
           display: flex;
           flex-direction: column;
@@ -580,6 +758,189 @@
 
     // Kick off the animation loop
     rafId = requestAnimationFrame(loop);
+
+    // ── Auth state ────────────────────────────────────────────────────────────
+    //
+    // currentUser holds { id, email } when authenticated, null otherwise.
+    // The auth bar renders two panels: anon (register/login form) or user info.
+
+    let currentUser = null;
+
+    // ── Auth UI references ────────────────────────────────────────────────────
+
+    const anonPanel    = document.getElementById('auth-panel-anon');
+    const userPanel    = document.getElementById('auth-panel-user');
+    const tabRegister  = document.getElementById('tab-register');
+    const tabLogin     = document.getElementById('tab-login');
+    const emailInput   = document.getElementById('auth-email');
+    const passwordInput= document.getElementById('auth-password');
+    const submitBtn    = document.getElementById('auth-submit-btn');
+    const authMsg      = document.getElementById('auth-msg');
+    const displayEmail = document.getElementById('auth-display-email');
+    const saveScoreBtn = document.getElementById('save-score-btn');
+    const saveMsg      = document.getElementById('save-msg');
+    const logoutBtn    = document.getElementById('logout-btn');
+
+    // Active tab: 'register' | 'login'
+    let activeTab = 'register';
+
+    // ── Auth UI helpers ───────────────────────────────────────────────────────
+
+    function showAnonPanel() {
+      anonPanel.style.display = 'flex';
+      userPanel.style.display = 'none';
+    }
+
+    function showUserPanel(user) {
+      anonPanel.style.display = 'none';
+      userPanel.style.display = 'flex';
+      displayEmail.textContent = user.email;
+      saveMsg.textContent = '';
+    }
+
+    function setAuthMsg(msg, isSuccess = false) {
+      authMsg.textContent = msg;
+      authMsg.className   = 'auth-msg' + (isSuccess ? ' success' : '');
+    }
+
+    function setTab(tab) {
+      activeTab = tab;
+      if (tab === 'register') {
+        tabRegister.classList.add('active');
+        tabLogin.classList.remove('active');
+        submitBtn.textContent = 'Register';
+        emailInput.setAttribute('autocomplete', 'username');
+        passwordInput.setAttribute('autocomplete', 'new-password');
+      } else {
+        tabLogin.classList.add('active');
+        tabRegister.classList.remove('active');
+        submitBtn.textContent = 'Login';
+        emailInput.setAttribute('autocomplete', 'username');
+        passwordInput.setAttribute('autocomplete', 'current-password');
+      }
+      setAuthMsg('');
+    }
+
+    // ── Tab click handlers ────────────────────────────────────────────────────
+
+    tabRegister.addEventListener('click', () => setTab('register'));
+    tabLogin.addEventListener('click',    () => setTab('login'));
+
+    // ── Submit handler (register or login) ────────────────────────────────────
+
+    async function handleAuthSubmit() {
+      const email    = emailInput.value.trim();
+      const password = passwordInput.value;
+
+      if (!email) { setAuthMsg('Email is required.'); return; }
+      if (!password) { setAuthMsg('Password is required.'); return; }
+
+      submitBtn.disabled = true;
+      setAuthMsg('');
+
+      try {
+        const endpoint = activeTab === 'register' ? '/api/register' : '/api/login';
+        const res = await fetch(endpoint, {
+          method:      'POST',
+          headers:     { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body:        JSON.stringify({ email, password }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          setAuthMsg(data.error || 'Something went wrong.');
+        } else {
+          currentUser = data.user;
+          emailInput.value    = '';
+          passwordInput.value = '';
+          showUserPanel(currentUser);
+        }
+      } catch (err) {
+        setAuthMsg('Network error. Please try again.');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    }
+
+    submitBtn.addEventListener('click', handleAuthSubmit);
+
+    // Allow Enter key in form fields
+    [emailInput, passwordInput].forEach((el) => {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') handleAuthSubmit();
+      });
+    });
+
+    // ── Logout handler ────────────────────────────────────────────────────────
+
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/session', {
+          method:      'DELETE',
+          credentials: 'same-origin',
+        });
+      } catch (_) { /* ignore */ }
+      currentUser = null;
+      showAnonPanel();
+      setTab('login');
+    });
+
+    // ── Save Score handler ────────────────────────────────────────────────────
+
+    saveScoreBtn.addEventListener('click', async () => {
+      if (!currentUser) return;
+
+      const score = playerPaddle.score;
+      saveMsg.textContent = '';
+      saveScoreBtn.disabled = true;
+
+      try {
+        const res = await fetch('/api/scores', {
+          method:      'POST',
+          headers:     { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body:        JSON.stringify({ score }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          saveMsg.textContent = data.error || 'Failed to save.';
+          saveMsg.className   = 'auth-msg';
+        } else if (data.updated) {
+          saveMsg.textContent = `Score ${score} saved! 🎉`;
+          saveMsg.className   = 'auth-msg success';
+        } else {
+          saveMsg.textContent = `Best is ${data.entry.score} — keep going!`;
+          saveMsg.className   = 'auth-msg';
+        }
+      } catch (_) {
+        saveMsg.textContent = 'Network error.';
+        saveMsg.className   = 'auth-msg';
+      } finally {
+        saveScoreBtn.disabled = false;
+      }
+    });
+
+    // ── Restore auth state on page load ──────────────────────────────────────
+    //
+    // On page load, call GET /me to check if the session cookie is valid.
+    // If authenticated, show the user panel immediately without asking to log in.
+
+    (async function restoreAuthState() {
+      try {
+        const res = await fetch('/api/me', { credentials: 'same-origin' });
+        if (res.ok) {
+          const data = await res.json();
+          currentUser = data.user;
+          showUserPanel(currentUser);
+        }
+      } catch (_) {
+        /* Not authenticated or network error — leave anon panel visible */
+      }
+    })();
+
   </script>
 </body>
 </html>

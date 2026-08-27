@@ -3,7 +3,7 @@
 /**
  * __tests__/server.test.js
  *
- * Unit tests for the ephemeral-local-storage Express API.
+ * Unit tests for the Express API endpoints.
  * Each test suite creates its own isolated store so tests don't share state.
  */
 
@@ -14,7 +14,7 @@ const { createApp, createStore } = require('../server');
 // We drive the Express app directly via its `handle` method rather than
 // opening a real TCP port, keeping tests fast and self-contained.
 
-function makeRequest(app, method, url, body = null, query = '') {
+function makeRequest(app, method, url, { body = null, query = '', cookies = '' } = {}) {
   return new Promise((resolve, reject) => {
     const fullUrl  = url + (query ? `?${query}` : '');
     const bodyJson = body !== null ? JSON.stringify(body) : null;
@@ -30,6 +30,7 @@ function makeRequest(app, method, url, body = null, query = '') {
       headers: {
         'Content-Type':   'application/json',
         'Content-Length': bodyJson ? Buffer.byteLength(bodyJson).toString() : '0',
+        ...(cookies ? { Cookie: cookies } : {}),
       },
     };
 
@@ -45,7 +46,7 @@ function makeRequest(app, method, url, body = null, query = '') {
           const raw  = Buffer.concat(data).toString();
           let parsed = null;
           try { parsed = JSON.parse(raw); } catch (_) { parsed = raw; }
-          resolve({ status: clientRes.statusCode, body: parsed });
+          resolve({ status: clientRes.statusCode, body: parsed, headers: clientRes.headers });
         });
       });
 
@@ -60,66 +61,183 @@ function makeRequest(app, method, url, body = null, query = '') {
 }
 
 // Convenience wrappers
-function post(app, url, body)         { return makeRequest(app, 'POST',   url, body); }
-function get(app, url, query = '')    { return makeRequest(app, 'GET',    url, null, query); }
-function del(app, url)                { return makeRequest(app, 'DELETE', url); }
+function post(app, url, body, opts)         { return makeRequest(app, 'POST',   url, { body, ...opts }); }
+function get(app, url, query, opts)         { return makeRequest(app, 'GET',    url, { query, ...opts }); }
+function del(app, url, opts)                { return makeRequest(app, 'DELETE', url, opts || {}); }
 
-// ── POST /api/login ────────────────────────────────────────────────────────
+/**
+ * Extract a Set-Cookie value from response headers.
+ */
+function extractCookie(headers, name) {
+  const sc = headers['set-cookie'];
+  if (!sc) return null;
+  const arr = Array.isArray(sc) ? sc : [sc];
+  const found = arr.find((c) => c.startsWith(name + '='));
+  return found ? found.split(';')[0] : null;
+}
 
-describe('POST /api/login', () => {
+// ── POST /api/register ─────────────────────────────────────────────────────
+
+describe('POST /api/register', () => {
   let app;
 
   beforeEach(() => {
     app = createApp(createStore());
   });
 
-  test('returns 200 with token and username for valid username', async () => {
-    const res = await post(app, '/api/login', { username: 'Alice' });
-    expect(res.status).toBe(200);
-    expect(typeof res.body.token).toBe('string');
-    expect(res.body.token.length).toBeGreaterThan(0);
-    expect(res.body.username).toBe('alice');  // lowercased
+  test('returns 201 with user object for valid credentials', async () => {
+    const res = await post(app, '/api/register', { email: 'alice@example.com', password: 'secret' });
+    expect(res.status).toBe(201);
+    expect(res.body.user).toBeTruthy();
+    expect(res.body.user.email).toBe('alice@example.com');
+    expect(typeof res.body.user.id).toBe('string');
   });
 
-  test('lowercases the username', async () => {
-    const res = await post(app, '/api/login', { username: 'BOB' });
-    expect(res.status).toBe(200);
-    expect(res.body.username).toBe('bob');
+  test('normalises email to lowercase', async () => {
+    const res = await post(app, '/api/register', { email: 'BOB@EXAMPLE.COM', password: 'pw' });
+    expect(res.status).toBe(201);
+    expect(res.body.user.email).toBe('bob@example.com');
   });
 
-  test('trims whitespace from username', async () => {
-    const res = await post(app, '/api/login', { username: '  carol  ' });
-    expect(res.status).toBe(200);
-    expect(res.body.username).toBe('carol');
+  test('sets an HttpOnly cookie on success', async () => {
+    const res = await post(app, '/api/register', { email: 'c@d.com', password: 'pw' });
+    const sc  = res.headers['set-cookie'];
+    expect(sc).toBeTruthy();
+    const str = Array.isArray(sc) ? sc.join('; ') : sc;
+    expect(str.toLowerCase()).toMatch(/httponly/);
+    expect(str).toMatch(/pong_sid/);
   });
 
-  test('returns a different token each call', async () => {
-    const res1 = await post(app, '/api/login', { username: 'dave' });
-    const res2 = await post(app, '/api/login', { username: 'dave' });
-    expect(res1.body.token).not.toBe(res2.body.token);
+  test('returns 409 when email already registered', async () => {
+    await post(app, '/api/register', { email: 'dup@e.com', password: 'first' });
+    const res = await post(app, '/api/register', { email: 'dup@e.com', password: 'second' });
+    expect(res.status).toBe(409);
   });
 
-  test('returns 400 when username is missing', async () => {
-    const res = await post(app, '/api/login', {});
+  test('returns 400 when email is missing', async () => {
+    const res = await post(app, '/api/register', { password: 'pw' });
     expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when password is missing', async () => {
+    const res = await post(app, '/api/register', { email: 'a@b.com' });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when email is empty string', async () => {
+    const res = await post(app, '/api/register', { email: '', password: 'x' });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ── POST /api/login ────────────────────────────────────────────────────────
+
+describe('POST /api/login', () => {
+  let app;
+
+  beforeEach(async () => {
+    app = createApp(createStore());
+    // Pre-register a user
+    await post(app, '/api/register', { email: 'alice@example.com', password: 'mypassword' });
+  });
+
+  test('returns 200 with user object for correct credentials', async () => {
+    const res = await post(app, '/api/login', { email: 'alice@example.com', password: 'mypassword' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe('alice@example.com');
+    expect(typeof res.body.user.id).toBe('string');
+  });
+
+  test('sets an HttpOnly session cookie on success', async () => {
+    const res = await post(app, '/api/login', { email: 'alice@example.com', password: 'mypassword' });
+    const sc  = res.headers['set-cookie'];
+    expect(sc).toBeTruthy();
+    const str = Array.isArray(sc) ? sc.join('; ') : sc;
+    expect(str.toLowerCase()).toMatch(/httponly/);
+  });
+
+  test('is case-insensitive for email', async () => {
+    const res = await post(app, '/api/login', { email: 'ALICE@EXAMPLE.COM', password: 'mypassword' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe('alice@example.com');
+  });
+
+  test('returns 401 for wrong password', async () => {
+    const res = await post(app, '/api/login', { email: 'alice@example.com', password: 'wrong' });
+    expect(res.status).toBe(401);
     expect(res.body.error).toBeTruthy();
   });
 
-  test('returns 400 when username is an empty string', async () => {
-    const res = await post(app, '/api/login', { username: '' });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBeTruthy();
+  test('returns 401 for unknown email', async () => {
+    const res = await post(app, '/api/login', { email: 'nobody@x.com', password: 'x' });
+    expect(res.status).toBe(401);
   });
 
-  test('returns 400 when username is whitespace-only', async () => {
-    const res = await post(app, '/api/login', { username: '   ' });
+  test('returns 400 when email is missing', async () => {
+    const res = await post(app, '/api/login', { password: 'x' });
     expect(res.status).toBe(400);
-    expect(res.body.error).toBeTruthy();
   });
 
-  test('returns 400 when username is not a string', async () => {
-    const res = await post(app, '/api/login', { username: 42 });
+  test('returns 400 when password is missing', async () => {
+    const res = await post(app, '/api/login', { email: 'alice@example.com' });
     expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when email is empty string', async () => {
+    const res = await post(app, '/api/login', { email: '', password: 'x' });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ── GET /api/me ────────────────────────────────────────────────────────────
+
+describe('GET /api/me', () => {
+  let app;
+
+  beforeEach(() => { app = createApp(createStore()); });
+
+  test('returns 401 when no cookie is sent', async () => {
+    const res = await get(app, '/api/me');
+    expect(res.status).toBe(401);
+  });
+
+  test('returns 200 and user when valid session cookie is present', async () => {
+    const regRes = await post(app, '/api/register', { email: 'me@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+    expect(cookie).toBeTruthy();
+
+    const res = await get(app, '/api/me', '', { cookies: cookie });
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe('me@x.com');
+  });
+
+  test('returns 401 for invalid session id', async () => {
+    const res = await get(app, '/api/me', '', { cookies: 'pong_sid=not-a-real-session' });
+    expect(res.status).toBe(401);
+  });
+});
+
+// ── DELETE /api/session ────────────────────────────────────────────────────
+
+describe('DELETE /api/session', () => {
+  let app;
+
+  beforeEach(() => { app = createApp(createStore()); });
+
+  test('returns 200 even without a cookie', async () => {
+    const res = await del(app, '/api/session');
+    expect(res.status).toBe(200);
+    expect(res.body.loggedOut).toBe(true);
+  });
+
+  test('invalidates session so subsequent GET /me returns 401', async () => {
+    const regRes = await post(app, '/api/register', { email: 'out@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    await del(app, '/api/session', { cookies: cookie });
+
+    const res = await get(app, '/api/me', '', { cookies: cookie });
+    expect(res.status).toBe(401);
   });
 });
 
@@ -140,8 +258,8 @@ describe('GET /api/scores', () => {
   });
 
   test('returns all scores when store has entries', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
-    store.scores.set('bob',   { player: 'bob',   score: 200, updatedAt: Date.now() });
+    store.scores.set('alice@x.com', { player: 'alice@x.com', score: 100, updatedAt: Date.now() });
+    store.scores.set('bob@x.com',   { player: 'bob@x.com',   score: 200, updatedAt: Date.now() });
 
     const res = await get(app, '/api/scores');
     expect(res.status).toBe(200);
@@ -149,9 +267,9 @@ describe('GET /api/scores', () => {
   });
 
   test('returns scores sorted by score descending', async () => {
-    store.scores.set('alice', { player: 'alice', score: 50,  updatedAt: Date.now() });
-    store.scores.set('bob',   { player: 'bob',   score: 200, updatedAt: Date.now() });
-    store.scores.set('carol', { player: 'carol', score: 100, updatedAt: Date.now() });
+    store.scores.set('a@x.com', { player: 'a@x.com', score: 50,  updatedAt: Date.now() });
+    store.scores.set('b@x.com', { player: 'b@x.com', score: 200, updatedAt: Date.now() });
+    store.scores.set('c@x.com', { player: 'c@x.com', score: 100, updatedAt: Date.now() });
 
     const res = await get(app, '/api/scores');
     const scores = res.body.scores.map((e) => e.score);
@@ -160,7 +278,7 @@ describe('GET /api/scores', () => {
 
   test('respects the ?limit query parameter', async () => {
     for (let i = 0; i < 10; i++) {
-      store.scores.set(`player${i}`, { player: `player${i}`, score: i * 10, updatedAt: Date.now() });
+      store.scores.set(`p${i}@x.com`, { player: `p${i}@x.com`, score: i * 10, updatedAt: Date.now() });
     }
 
     const res = await get(app, '/api/scores', 'limit=3');
@@ -169,9 +287,8 @@ describe('GET /api/scores', () => {
   });
 
   test('caps limit at 100', async () => {
-    // Populate 5 entries; limit=200 → capped at 100, returns all 5
     for (let i = 0; i < 5; i++) {
-      store.scores.set(`p${i}`, { player: `p${i}`, score: i, updatedAt: Date.now() });
+      store.scores.set(`p${i}@x.com`, { player: `p${i}@x.com`, score: i, updatedAt: Date.now() });
     }
 
     const res = await get(app, '/api/scores', 'limit=200');
@@ -180,7 +297,7 @@ describe('GET /api/scores', () => {
   });
 });
 
-// ── POST /api/scores ───────────────────────────────────────────────────────
+// ── POST /api/scores (auth-gated) ─────────────────────────────────────────
 
 describe('POST /api/scores', () => {
   let app, store;
@@ -190,79 +307,99 @@ describe('POST /api/scores', () => {
     app   = createApp(store);
   });
 
-  test('creates a new score entry and returns updated:true', async () => {
-    const res = await post(app, '/api/scores', { player: 'Alice', score: 150 });
+  test('returns 401 when no session cookie is provided', async () => {
+    const res = await post(app, '/api/scores', { score: 100 });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBeTruthy();
+  });
+
+  test('creates a new score entry and returns updated:true when authenticated', async () => {
+    const regRes = await post(app, '/api/register', { email: 'scorer@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    const res = await post(app, '/api/scores', { score: 150 }, { cookies: cookie });
     expect(res.status).toBe(200);
     expect(res.body.updated).toBe(true);
-    expect(res.body.entry.player).toBe('alice');
+    expect(res.body.entry.player).toBe('scorer@x.com');
     expect(res.body.entry.score).toBe(150);
   });
 
-  test('stores the score in the Map', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 99 });
-    expect(store.scores.has('alice')).toBe(true);
-    expect(store.scores.get('alice').score).toBe(99);
+  test('stores the score in the Map keyed by email', async () => {
+    const regRes = await post(app, '/api/register', { email: 'store@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    await post(app, '/api/scores', { score: 99 }, { cookies: cookie });
+    expect(store.scores.has('store@x.com')).toBe(true);
+    expect(store.scores.get('store@x.com').score).toBe(99);
   });
 
   test('updates the score when new score is higher', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 50 });
-    const res = await post(app, '/api/scores', { player: 'alice', score: 150 });
+    const regRes = await post(app, '/api/register', { email: 'up@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    await post(app, '/api/scores', { score: 50 }, { cookies: cookie });
+    const res = await post(app, '/api/scores', { score: 150 }, { cookies: cookie });
     expect(res.body.updated).toBe(true);
     expect(res.body.entry.score).toBe(150);
   });
 
   test('does NOT update when new score is lower', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 200 });
-    const res = await post(app, '/api/scores', { player: 'alice', score: 50 });
+    const regRes = await post(app, '/api/register', { email: 'down@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    await post(app, '/api/scores', { score: 200 }, { cookies: cookie });
+    const res = await post(app, '/api/scores', { score: 50 }, { cookies: cookie });
     expect(res.body.updated).toBe(false);
     expect(res.body.entry.score).toBe(200);
   });
 
   test('does NOT update when new score equals existing score', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 100 });
-    const res = await post(app, '/api/scores', { player: 'alice', score: 100 });
+    const regRes = await post(app, '/api/register', { email: 'eq@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    await post(app, '/api/scores', { score: 100 }, { cookies: cookie });
+    const res = await post(app, '/api/scores', { score: 100 }, { cookies: cookie });
     expect(res.body.updated).toBe(false);
   });
 
-  test('lowercases and trims player name', async () => {
-    await post(app, '/api/scores', { player: '  BOB  ', score: 77 });
-    expect(store.scores.has('bob')).toBe(true);
-  });
-
-  test('returns 400 when player is missing', async () => {
-    const res = await post(app, '/api/scores', { score: 100 });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBeTruthy();
-  });
-
-  test('returns 400 when player is an empty string', async () => {
-    const res = await post(app, '/api/scores', { player: '', score: 100 });
-    expect(res.status).toBe(400);
-  });
-
   test('returns 400 when score is missing', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice' });
+    const regRes = await post(app, '/api/register', { email: 'miss@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    const res = await post(app, '/api/scores', {}, { cookies: cookie });
     expect(res.status).toBe(400);
     expect(res.body.error).toBeTruthy();
   });
 
   test('returns 400 when score is a string', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: 'high' });
+    const regRes = await post(app, '/api/register', { email: 'str@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    const res = await post(app, '/api/scores', { score: 'high' }, { cookies: cookie });
     expect(res.status).toBe(400);
   });
 
   test('returns 400 when score is negative', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: -1 });
+    const regRes = await post(app, '/api/register', { email: 'neg@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    const res = await post(app, '/api/scores', { score: -1 }, { cookies: cookie });
     expect(res.status).toBe(400);
   });
 
   test('returns 400 when score is Infinity', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: Infinity });
+    const regRes = await post(app, '/api/register', { email: 'inf@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    const res = await post(app, '/api/scores', { score: Infinity }, { cookies: cookie });
     expect(res.status).toBe(400);
   });
 
   test('accepts score of 0', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: 0 });
+    const regRes = await post(app, '/api/register', { email: 'zero@x.com', password: 'pw' });
+    const cookie = extractCookie(regRes.headers, 'pong_sid');
+
+    const res = await post(app, '/api/scores', { score: 0 }, { cookies: cookie });
     expect(res.status).toBe(200);
     expect(res.body.entry.score).toBe(0);
   });
@@ -279,22 +416,15 @@ describe('GET /api/scores/:player', () => {
   });
 
   test('returns the entry for a known player', async () => {
-    store.scores.set('alice', { player: 'alice', score: 300, updatedAt: Date.now() });
-    const res = await get(app, '/api/scores/alice');
+    store.scores.set('alice@x.com', { player: 'alice@x.com', score: 300, updatedAt: Date.now() });
+    const res = await get(app, '/api/scores/alice@x.com');
     expect(res.status).toBe(200);
-    expect(res.body.entry.player).toBe('alice');
+    expect(res.body.entry.player).toBe('alice@x.com');
     expect(res.body.entry.score).toBe(300);
   });
 
-  test('is case-insensitive (player name is lowercased)', async () => {
-    store.scores.set('alice', { player: 'alice', score: 300, updatedAt: Date.now() });
-    const res = await get(app, '/api/scores/ALICE');
-    expect(res.status).toBe(200);
-    expect(res.body.entry.player).toBe('alice');
-  });
-
   test('returns 404 for an unknown player', async () => {
-    const res = await get(app, '/api/scores/nobody');
+    const res = await get(app, '/api/scores/nobody@x.com');
     expect(res.status).toBe(404);
     expect(res.body.error).toBeTruthy();
   });
@@ -311,30 +441,23 @@ describe('DELETE /api/scores/:player', () => {
   });
 
   test('deletes an existing entry and returns deleted:true', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
-    const res = await del(app, '/api/scores/alice');
+    store.scores.set('alice@x.com', { player: 'alice@x.com', score: 100, updatedAt: Date.now() });
+    const res = await del(app, '/api/scores/alice@x.com');
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(true);
-    expect(res.body.player).toBe('alice');
+    expect(res.body.player).toBe('alice@x.com');
   });
 
   test('removes the entry from the Map', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
-    await del(app, '/api/scores/alice');
-    expect(store.scores.has('alice')).toBe(false);
+    store.scores.set('alice@x.com', { player: 'alice@x.com', score: 100, updatedAt: Date.now() });
+    await del(app, '/api/scores/alice@x.com');
+    expect(store.scores.has('alice@x.com')).toBe(false);
   });
 
   test('returns 404 when player does not exist', async () => {
-    const res = await del(app, '/api/scores/nobody');
+    const res = await del(app, '/api/scores/nobody@x.com');
     expect(res.status).toBe(404);
     expect(res.body.error).toBeTruthy();
-  });
-
-  test('is case-insensitive', async () => {
-    store.scores.set('bob', { player: 'bob', score: 50, updatedAt: Date.now() });
-    const res = await del(app, '/api/scores/BOB');
-    expect(res.status).toBe(200);
-    expect(store.scores.has('bob')).toBe(false);
   });
 });
 
@@ -344,18 +467,20 @@ describe('createStore', () => {
   test('creates independent store instances', () => {
     const s1 = createStore();
     const s2 = createStore();
-    s1.scores.set('alice', { player: 'alice', score: 1, updatedAt: 0 });
-    expect(s2.scores.has('alice')).toBe(false);
+    s1.scores.set('alice@x.com', { player: 'alice@x.com', score: 1, updatedAt: 0 });
+    expect(s2.scores.has('alice@x.com')).toBe(false);
   });
 
-  test('store has sessions and scores Maps', () => {
+  test('store has users, sessions and scores Maps', () => {
     const s = createStore();
+    expect(s.users).toBeInstanceOf(Map);
     expect(s.sessions).toBeInstanceOf(Map);
     expect(s.scores).toBeInstanceOf(Map);
   });
 
-  test('both Maps start empty', () => {
+  test('all Maps start empty', () => {
     const s = createStore();
+    expect(s.users.size).toBe(0);
     expect(s.sessions.size).toBe(0);
     expect(s.scores.size).toBe(0);
   });
