@@ -13,6 +13,15 @@
  * session cookie (express-session, in-memory store) so the login survives
  * page reloads for the lifetime of the process / cookie.
  *
+ * Requires registering the app in Google Cloud Console and setting
+ * GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (and optionally an explicit
+ * GOOGLE_CALLBACK_URL) environment variables. When deploying behind a
+ * TLS-terminating proxy (e.g. Fly.io), the app must trust that proxy's
+ * X-Forwarded-Proto header — otherwise the callback URL passport builds for
+ * the OAuth redirect is silently downgraded to "http://…", which no longer
+ * matches the "https://…" URI registered in Google Cloud Console and Google
+ * rejects the request with "Error 400: redirect_uri_mismatch".
+ *
  * Endpoints
  * ─────────
  *   GET  /auth/google           Redirect to the Google consent screen.
@@ -72,6 +81,18 @@ const defaultStore = createStore();
 
 function createApp(store = defaultStore) {
   const app = express();
+
+  // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
+  // reverse proxy in front of this process). Without this, Express derives
+  // req.protocol from the raw (plaintext) connection it receives — which is
+  // always "http" once the proxy has terminated TLS — instead of honouring
+  // the X-Forwarded-Proto header the proxy sets. That mismatch is exactly
+  // what causes Google's "redirect_uri_mismatch": passport-oauth2 builds the
+  // callback URL it sends to Google from req.protocol + req.get('host'), so
+  // an untrusted proxy silently downgrades the redirect_uri from
+  // "https://…/auth/google/callback" to "http://…/auth/google/callback",
+  // which no longer matches the URI registered in Google Cloud Console.
+  app.set('trust proxy', 1);
 
   app.use(express.json());
 
@@ -133,6 +154,15 @@ function createApp(store = defaultStore) {
     done(null, user || false);
   });
 
+  // GOOGLE_CALLBACK_URL may be:
+  //   - left unset, in which case it defaults to the relative path below and
+  //     is resolved by passport-oauth2 against the incoming request's
+  //     protocol + host (correct now that 'trust proxy' is set above); or
+  //   - set explicitly to a fully-qualified URL (recommended in production),
+  //     e.g. "https://pong-game-0e30d7df.fly.dev/auth/google/callback" — this
+  //     MUST exactly match (scheme, host, path) an "Authorized redirect URI"
+  //     registered for the OAuth client in Google Cloud Console, or Google
+  //     will reject the request with "Error 400: redirect_uri_mismatch".
   const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
   const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
   const GOOGLE_CALLBACK_URL  = process.env.GOOGLE_CALLBACK_URL || '/auth/google/callback';

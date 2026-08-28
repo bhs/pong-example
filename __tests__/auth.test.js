@@ -15,7 +15,7 @@ const { createApp, createStore } = require('../server');
 
 // ── Minimal HTTP request helper (mirrors __tests__/server.test.js) ────────
 
-function makeRequest(app, method, url, body = null) {
+function makeRequest(app, method, url, body = null, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const bodyJson = body !== null ? JSON.stringify(body) : null;
     const http     = require('http');
@@ -32,6 +32,7 @@ function makeRequest(app, method, url, body = null) {
         headers: {
           'Content-Type':   'application/json',
           'Content-Length': bodyJson ? Buffer.byteLength(bodyJson).toString() : '0',
+          ...extraHeaders,
         },
       };
 
@@ -55,7 +56,7 @@ function makeRequest(app, method, url, body = null) {
   });
 }
 
-function get(app, url)         { return makeRequest(app, 'GET', url); }
+function get(app, url, headers)         { return makeRequest(app, 'GET', url, null, headers); }
 function post(app, url, body)  { return makeRequest(app, 'POST', url, body); }
 
 // ── GET /health ─────────────────────────────────────────────────────────────
@@ -101,6 +102,47 @@ describe('GET /auth/google', () => {
     const res = await get(app, '/auth/google');
     expect(res.status).toBe(503);
     expect(res.body.error).toBeTruthy();
+  });
+});
+
+// ── GET /auth/google — redirect_uri honours X-Forwarded-Proto ───────────────
+//
+// Regression test for "Error 400: redirect_uri_mismatch": when the app runs
+// behind a TLS-terminating proxy (e.g. Fly.io), Express must trust the
+// proxy's X-Forwarded-Proto / X-Forwarded-Host headers so the redirect_uri
+// passport sends to Google is "https://…" (matching what's registered in
+// Google Cloud Console) instead of silently downgrading to "http://…".
+
+describe('GET /auth/google behind a TLS-terminating proxy', () => {
+  const originalId     = process.env.GOOGLE_CLIENT_ID;
+  const originalSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const originalUrl     = process.env.GOOGLE_CALLBACK_URL;
+
+  beforeEach(() => {
+    process.env.GOOGLE_CLIENT_ID     = 'test-client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
+    delete process.env.GOOGLE_CALLBACK_URL;
+  });
+
+  afterAll(() => {
+    if (originalId) process.env.GOOGLE_CLIENT_ID = originalId; else delete process.env.GOOGLE_CLIENT_ID;
+    if (originalSecret) process.env.GOOGLE_CLIENT_SECRET = originalSecret; else delete process.env.GOOGLE_CLIENT_SECRET;
+    if (originalUrl) process.env.GOOGLE_CALLBACK_URL = originalUrl; else delete process.env.GOOGLE_CALLBACK_URL;
+  });
+
+  test('builds an https:// redirect_uri when X-Forwarded-Proto is https', async () => {
+    const app = createApp(createStore());
+    const res = await get(app, '/auth/google', {
+      Host:               'pong-game-0e30d7df.fly.dev',
+      'X-Forwarded-Proto': 'https',
+      'X-Forwarded-Host':  'pong-game-0e30d7df.fly.dev',
+    });
+
+    expect(res.status).toBe(302);
+    const location = res.headers.location || '';
+    const redirectUriMatch = decodeURIComponent(location).match(/redirect_uri=([^&]+)/);
+    expect(redirectUriMatch).toBeTruthy();
+    expect(redirectUriMatch[1]).toBe('https://pong-game-0e30d7df.fly.dev/auth/google/callback');
   });
 });
 
