@@ -126,6 +126,65 @@
           background: #ffe066;
           outline: none;
         }
+
+        /* ── Auth bar (Google OAuth) ─────────────────────────────────────── */
+        #pong-auth-bar {
+          position: fixed;
+          top: 14px;
+          right: 16px;
+          z-index: 20;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          font-family: monospace;
+        }
+        .pong-auth-btn {
+          padding: 8px 16px;
+          font-family: monospace;
+          font-size: 0.8rem;
+          font-weight: bold;
+          letter-spacing: 0.05em;
+          color: #000;
+          background: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: background 0.15s, color 0.15s, opacity 0.15s;
+        }
+        .pong-auth-btn:hover,
+        .pong-auth-btn:focus {
+          background: #ffe066;
+          outline: none;
+        }
+        .pong-auth-btn:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
+        .pong-auth-btn-ghost {
+          background: transparent;
+          color: rgba(255,255,255,0.7);
+          border: 1px solid rgba(255,255,255,0.35);
+        }
+        .pong-auth-btn-ghost:hover,
+        .pong-auth-btn-ghost:focus {
+          background: rgba(255,255,255,0.1);
+          color: #fff;
+        }
+        #pong-user-avatar {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          border: 1px solid rgba(255,255,255,0.4);
+        }
+        #pong-user-label {
+          color: rgba(255,255,255,0.85);
+          font-size: 0.8rem;
+          letter-spacing: 0.03em;
+          max-width: 160px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
       `;
       document.head.appendChild(style);
     })();
@@ -341,6 +400,135 @@
       const existing = document.getElementById('pong-overlay');
       if (existing) existing.remove();
     }
+
+    // ── Auth bar (Google OAuth) ─────────────────────────────────────────────
+    //
+    // A small fixed panel in the top-right corner shows either a
+    // 'Sign in with Google' button (signed out) or the user's avatar/email
+    // plus 'Save Score' and 'Log out' buttons (signed in). Session state is
+    // fetched from GET /me on load — the actual login state lives in an
+    // HttpOnly cookie set by the server, so the client never touches tokens.
+
+    /**
+     * Create (or return the existing) auth bar container element.
+     */
+    function getAuthBar() {
+      let bar = document.getElementById('pong-auth-bar');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'pong-auth-bar';
+        document.body.appendChild(bar);
+      }
+      return bar;
+    }
+
+    /**
+     * Render the signed-out state: a single 'Sign in with Google' button
+     * that navigates to the server-side OAuth redirect endpoint.
+     */
+    function renderSignedOut(bar) {
+      bar.innerHTML = '';
+
+      const btn = document.createElement('button');
+      btn.id = 'pong-google-signin';
+      btn.className = 'pong-auth-btn';
+      btn.textContent = 'Sign in with Google';
+      btn.addEventListener('click', () => {
+        window.location.href = '/auth/google';
+      });
+      bar.appendChild(btn);
+    }
+
+    /**
+     * Render the signed-in state: avatar (if any), display name/email,
+     * a 'Save Score' button, and a 'Log out' button.
+     *
+     * @param {HTMLElement} bar
+     * @param {{id:string, email:?string, name:?string, avatar:?string}} user
+     */
+    function renderSignedIn(bar, user) {
+      bar.innerHTML = '';
+
+      if (user.avatar) {
+        const img = document.createElement('img');
+        img.id = 'pong-user-avatar';
+        img.src = user.avatar;
+        img.alt = user.name || user.email || 'Signed-in user avatar';
+        bar.appendChild(img);
+      }
+
+      const label = document.createElement('span');
+      label.id = 'pong-user-label';
+      label.textContent = user.name || user.email || 'Signed in';
+      bar.appendChild(label);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.id = 'pong-save-score';
+      saveBtn.className = 'pong-auth-btn';
+      saveBtn.textContent = 'Save Score';
+      saveBtn.addEventListener('click', () => saveScore(saveBtn));
+      bar.appendChild(saveBtn);
+
+      const logoutBtn = document.createElement('button');
+      logoutBtn.id = 'pong-logout';
+      logoutBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
+      logoutBtn.textContent = 'Log out';
+      logoutBtn.addEventListener('click', () => {
+        window.location.href = '/auth/logout';
+      });
+      bar.appendChild(logoutBtn);
+    }
+
+    /**
+     * POST the player's current score to the server. No player name is
+     * sent — the server resolves identity from the HttpOnly session cookie
+     * established during Google OAuth login.
+     *
+     * @param {HTMLButtonElement} btn
+     */
+    async function saveScore(btn) {
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+
+      try {
+        const res = await fetch('/api/scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ score: playerPaddle.score }),
+        });
+        btn.textContent = res.ok ? 'Saved!' : 'Failed';
+      } catch (err) {
+        btn.textContent = 'Failed';
+      } finally {
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.disabled = false;
+        }, 1500);
+      }
+    }
+
+    /**
+     * Fetch the current session's user (if any) from GET /me and render
+     * the appropriate auth bar state. Called once on page load.
+     */
+    async function initAuthBar() {
+      const bar = getAuthBar();
+      try {
+        const res  = await fetch('/me', { credentials: 'same-origin' });
+        const data = await res.json();
+        if (data && data.user) {
+          renderSignedIn(bar, data.user);
+        } else {
+          renderSignedOut(bar);
+        }
+      } catch (err) {
+        renderSignedOut(bar);
+      }
+    }
+
+    initAuthBar();
 
     /**
      * Tear down the current overlay, reset all state, and restart the animation loop.

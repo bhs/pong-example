@@ -1,0 +1,23 @@
+{
+  "requirements": [
+    {
+      "kind": "secret",
+      "name": "GOOGLE_CLIENT_ID",
+      "description": "OAuth client ID for Google sign-in",
+      "console_url": "https://console.cloud.google.com/apis/credentials"
+    },
+    {
+      "kind": "secret",
+      "name": "GOOGLE_CLIENT_SECRET",
+      "description": "OAuth client secret for Google sign-in",
+      "console_url": "https://console.cloud.google.com/apis/credentials"
+    },
+    {
+      "kind": "acknowledgement",
+      "name": "google-redirect-uri",
+      "description": "Redirect URI must be registered before sign-in works",
+      "instructions": "Add {{deploy_url}}/auth/google/callback to Authorized redirect URIs for the OAuth client.",
+      "console_url": "https://console.cloud.google.com/apis/credentials"
+    }
+  ]
+}
