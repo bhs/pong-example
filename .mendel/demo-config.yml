@@ -1,4 +1,0 @@
-version: 1
-service: app
-container_port: 3000
-health_path: /
