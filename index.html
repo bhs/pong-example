@@ -106,6 +106,23 @@
           letter-spacing: 0.05em;
           margin-top: 4px;
         }
+        #pong-overlay .personal-best {
+          font-size: 0.95rem;
+          color: rgba(255,255,255,0.6);
+          letter-spacing: 0.06em;
+          margin-top: -6px;
+        }
+        #pong-overlay .signin-link {
+          font-size: 0.85rem;
+          color: #ffe066;
+          letter-spacing: 0.05em;
+          margin-top: -6px;
+          text-decoration: underline;
+        }
+        #pong-overlay .signin-link:hover,
+        #pong-overlay .signin-link:focus {
+          color: #fff;
+        }
         #pong-play-again {
           margin-top: 8px;
           padding: 14px 40px;
@@ -391,6 +408,12 @@
 
       // Focus the button immediately so keyboard users can activate it
       btn.focus();
+
+      // Fire-and-render the personal-best badge (see 'Personal best badge'
+      // section below). Runs after the overlay is already in the DOM so the
+      // badge line can simply be appended once the network round-trip(s)
+      // resolve.
+      renderPersonalBestBadge(overlay, playerScore);
     }
 
     /**
@@ -399,6 +422,78 @@
     function removeGameOverOverlay() {
       const existing = document.getElementById('pong-overlay');
       if (existing) existing.remove();
+    }
+
+    // ── Personal best badge ─────────────────────────────────────────────────
+    //
+    // Right after a round ends, POST the final score to /scores (which only
+    // persists it if it beats the signed-in user's previously stored best),
+    // then GET /scores/me to read back the (possibly just-updated) best and
+    // append a small 'Personal Best: N' line to the game-over overlay. Both
+    // requests carry the HttpOnly session cookie (credentials: 'include'),
+    // so identity is resolved server-side — no player name is ever sent.
+    // If there is no session at all, /scores/me responds 401 and the overlay
+    // shows a 'Sign in with Google to save your score' link instead.
+
+    /**
+     * @param {HTMLElement} overlay    - the game-over overlay div, already in the DOM
+     * @param {number}      finalScore - the player's final score for this round
+     */
+    async function renderPersonalBestBadge(overlay, finalScore) {
+      try {
+        await fetch('/scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ score: finalScore }),
+        });
+      } catch (err) {
+        // Network error posting the score — fall through and still try to
+        // read back whatever best is on record (or the signed-out state).
+      }
+
+      try {
+        const res = await fetch('/scores/me', { credentials: 'include' });
+
+        if (res.status === 401) {
+          appendSignInLink(overlay);
+          return;
+        }
+
+        const data = await res.json();
+        appendPersonalBestLine(overlay, typeof data.best === 'number' ? data.best : finalScore);
+      } catch (err) {
+        // Network error — fail silently, no badge shown for this round.
+      }
+    }
+
+    /**
+     * Append a 'Personal Best: N' line to the game-over overlay.
+     * @param {HTMLElement} overlay
+     * @param {number} best
+     */
+    function appendPersonalBestLine(overlay, best) {
+      if (!document.body.contains(overlay)) return; // overlay dismissed already
+      const el = document.createElement('p');
+      el.id = 'pong-personal-best';
+      el.className = 'personal-best';
+      el.textContent = `Personal Best: ${best}`;
+      overlay.appendChild(el);
+    }
+
+    /**
+     * Append a 'Sign in with Google to save your score' link to the
+     * game-over overlay for signed-out players.
+     * @param {HTMLElement} overlay
+     */
+    function appendSignInLink(overlay) {
+      if (!document.body.contains(overlay)) return; // overlay dismissed already
+      const a = document.createElement('a');
+      a.id = 'pong-personal-best-signin';
+      a.className = 'signin-link';
+      a.href = '/auth/google';
+      a.textContent = 'Sign in with Google to save your score';
+      overlay.appendChild(a);
     }
 
     // ── Auth bar (Google OAuth) ─────────────────────────────────────────────

@@ -41,6 +41,18 @@
  *   GET  /api/scores/:player     Get the high score for a specific player.
  *   DELETE /api/scores/:player   Delete the high score for a specific player.
  *
+ *   POST /scores                 Upsert the signed-in user's personal-best
+ *                                 score, keyed strictly by their Google `sub`
+ *                                 id (no player name accepted). 401 if there
+ *                                 is no authenticated session. Only replaces
+ *                                 the stored value when the new score is
+ *                                 strictly higher — this is what the
+ *                                 game-over overlay's 'personal best' badge
+ *                                 posts to right after a round ends.
+ *   GET  /scores/me               Returns the signed-in user's personal-best
+ *                                 score ({ best: number | null }), or 401 if
+ *                                 there is no authenticated session.
+ *
  *   GET  /health                 Basic health check (200 OK).
  *
  * The module exports { app, store } so unit tests can inject their own store
@@ -57,18 +69,38 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
 // Maps kept in memory for the lifetime of the process:
-//   sessions  : token → { username, createdAt }             (legacy stub login)
-//   scores    : username (lowercase) → { player, score, updatedAt }
-//   users     : Google `sub` id → { id, email, name, avatar, createdAt, updatedAt }
+//   sessions    : token → { username, createdAt }             (legacy stub login)
+//   scores      : username (lowercase) → { player, score, updatedAt }
+//   users       : Google `sub` id → { id, email, name, avatar, createdAt, updatedAt }
+//   bestScores  : Google `sub` id → { score, updatedAt }       (POST /scores, GET /scores/me)
 //
 // Factory function so tests can create isolated instances.
 
 function createStore() {
   return {
-    sessions: new Map(),
-    scores:   new Map(),
-    users:    new Map(),
+    sessions:   new Map(),
+    scores:     new Map(),
+    users:      new Map(),
+    bestScores: new Map(),
   };
+}
+
+// ── Pure helper (no I/O) ────────────────────────────────────────────────────
+//
+// Decides whether a newly submitted score should replace a signed-in user's
+// stored personal best. Kept free of Express/store plumbing so it can be
+// unit tested in isolation, mirroring the style of game-logic.js.
+
+/**
+ * @param {?{score:number, updatedAt:number}} existing - current best entry, or null/undefined
+ * @param {number} score - newly submitted score
+ * @returns {{updated: boolean, best: number}}
+ */
+function computeBestScore(existing, score) {
+  if (!existing || score > existing.score) {
+    return { updated: true, best: score };
+  }
+  return { updated: false, best: existing.score };
 }
 
 // Module-level default store (used by the real server).
@@ -248,6 +280,53 @@ function createApp(store = defaultStore) {
     return res.status(200).json({ user: null });
   });
 
+  // ── POST /scores ──────────────────────────────────────────────────────────
+  //
+  // Upserts the signed-in user's personal-best score. Keyed strictly by the
+  // Google `sub` id on the session (req.user.id) — unlike legacy POST
+  // /api/scores this never accepts an explicit player name. Requires an
+  // authenticated Google OAuth session; anonymous callers get 401 so the
+  // game-over overlay knows to show a 'Sign in with Google' link instead.
+  // Only replaces the stored value when the new score is strictly higher.
+  // Body: { score: number }
+
+  app.post('/scores', (req, res) => {
+    if (!(req.isAuthenticated && req.isAuthenticated() && req.user)) {
+      return res.status(401).json({ error: 'sign in required' });
+    }
+
+    const score = req.body && req.body.score;
+
+    if (typeof score !== 'number' || !Number.isFinite(score) || score < 0) {
+      return res.status(400).json({ error: 'score must be a non-negative finite number' });
+    }
+
+    const userId   = req.user.id;
+    const existing = store.bestScores.get(userId);
+    const result   = computeBestScore(existing, score);
+
+    if (result.updated) {
+      store.bestScores.set(userId, { score, updatedAt: Date.now() });
+    }
+
+    return res.status(200).json(result);
+  });
+
+  // ── GET /scores/me ─────────────────────────────────────────────────────────
+  //
+  // Returns the signed-in user's personal-best score, or 401 if there is no
+  // authenticated session. { best: number } once a score has been saved,
+  // { best: null } if the user is signed in but hasn't saved one yet.
+
+  app.get('/scores/me', (req, res) => {
+    if (!(req.isAuthenticated && req.isAuthenticated() && req.user)) {
+      return res.status(401).json({ error: 'sign in required' });
+    }
+
+    const entry = store.bestScores.get(req.user.id);
+    return res.status(200).json({ best: entry ? entry.score : null });
+  });
+
   // ── POST /api/login ──────────────────────────────────────────────────────
   //
   // Legacy stub authentication (kept for backward compatibility): any
@@ -377,4 +456,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createApp, createStore };
+module.exports = { createApp, createStore, computeBestScore };
