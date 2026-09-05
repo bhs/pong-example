@@ -185,6 +185,61 @@
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+
+        /* ── Top-ten leaderboard panel (below the Play Again button) ─────── */
+        #pong-leaderboard {
+          margin-top: 4px;
+          width: min(92vw, 360px);
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.16);
+          border-radius: 6px;
+          padding: 12px 16px 8px;
+        }
+        .pong-leaderboard-title {
+          font-size: 0.75rem;
+          font-weight: bold;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.55);
+          text-align: center;
+          margin-bottom: 8px;
+        }
+        .pong-leaderboard-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.85rem;
+          color: rgba(255,255,255,0.85);
+        }
+        .pong-leaderboard-table td {
+          padding: 3px 4px;
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .pong-leaderboard-table tr:last-child td {
+          border-bottom: none;
+        }
+        .pong-leaderboard-table td:first-child {
+          width: 2.2em;
+          color: rgba(255,255,255,0.4);
+        }
+        .pong-leaderboard-table td:nth-child(2) {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 160px;
+        }
+        .pong-leaderboard-table td:last-child {
+          text-align: right;
+          font-weight: bold;
+        }
+        .pong-leaderboard-row-me td {
+          color: #ffe066;
+        }
+        .pong-leaderboard-empty td {
+          text-align: center;
+          color: rgba(255,255,255,0.4);
+          padding: 10px 0 !important;
+          border-bottom: none !important;
+        }
       `;
       document.head.appendChild(style);
     })();
@@ -350,7 +405,8 @@
 
     /**
      * Build and show the full-screen game-over overlay.
-     * Attaches a 'Play Again' button that calls startNewGame() on click.
+     * Attaches a 'Play Again' button that calls startNewGame() on click, and
+     * a top-ten leaderboard panel below it (see persistScoreAndRefreshLeaderboard).
      *
      * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
      * @param {number} playerScore - Final player score
@@ -391,6 +447,13 @@
 
       // Focus the button immediately so keyboard users can activate it
       btn.focus();
+
+      // Instant-paint the leaderboard panel from the last cached response (if
+      // any) so it doesn't pop in empty while the network round-trip below
+      // is in flight, then persist this game's score and replace the panel
+      // with fresh data once both requests resolve.
+      renderLeaderboardPanel(overlay, btn, readCachedLeaderboard(), null);
+      persistScoreAndRefreshLeaderboard(overlay, btn, playerScore);
     }
 
     /**
@@ -399,6 +462,167 @@
     function removeGameOverOverlay() {
       const existing = document.getElementById('pong-overlay');
       if (existing) existing.remove();
+    }
+
+    // ── Top-ten leaderboard panel ────────────────────────────────────────────
+    //
+    // A compact table showing the all-time top 10 scores, appended directly
+    // below the 'Play Again' button on every game over. A localStorage cache
+    // of the last-fetched leaderboard is used to instant-paint a placeholder
+    // (avoiding a layout flash) before the network response replaces it.
+
+    const LEADERBOARD_CACHE_KEY = 'pong-leaderboard-cache-v1';
+
+    /**
+     * Read the cached leaderboard array from localStorage, if present.
+     * Returns null on any error (quota, privacy mode, corrupt JSON, etc.).
+     */
+    function readCachedLeaderboard() {
+      try {
+        const raw = localStorage.getItem(LEADERBOARD_CACHE_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    /**
+     * Persist the given leaderboard array to localStorage for next time.
+     * Failures (quota, privacy mode) are silently ignored — caching is
+     * purely a rendering optimisation, not a source of truth.
+     */
+    function writeCachedLeaderboard(leaderboard) {
+      try {
+        localStorage.setItem(LEADERBOARD_CACHE_KEY, JSON.stringify(leaderboard));
+      } catch (err) {
+        // Ignore — the panel still works without a cache.
+      }
+    }
+
+    /**
+     * Build the <table> element for a leaderboard array, highlighting the
+     * row belonging to meUserId (if it appears in the top 10).
+     *
+     * @param {Array<{id:string,userId:string,name:string,score:number}>} leaderboard
+     * @param {?string} meUserId
+     */
+    function buildLeaderboardTable(leaderboard, meUserId) {
+      const table = document.createElement('table');
+      table.className = 'pong-leaderboard-table';
+      const tbody = document.createElement('tbody');
+
+      if (!leaderboard || leaderboard.length === 0) {
+        const tr = document.createElement('tr');
+        tr.className = 'pong-leaderboard-empty';
+        const td = document.createElement('td');
+        td.colSpan = 3;
+        td.textContent = 'No scores yet — be the first!';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else {
+        leaderboard.forEach((entry, i) => {
+          const tr = document.createElement('tr');
+          if (meUserId && entry.userId === meUserId) {
+            tr.className = 'pong-leaderboard-row-me';
+          }
+
+          const rankTd = document.createElement('td');
+          rankTd.textContent = `#${i + 1}`;
+
+          const nameTd = document.createElement('td');
+          nameTd.textContent = entry.name || 'Anonymous';
+
+          const scoreTd = document.createElement('td');
+          scoreTd.textContent = entry.score;
+
+          tr.appendChild(rankTd);
+          tr.appendChild(nameTd);
+          tr.appendChild(scoreTd);
+          tbody.appendChild(tr);
+        });
+      }
+
+      table.appendChild(tbody);
+      return table;
+    }
+
+    /**
+     * Create (if needed) and (re)populate the leaderboard panel, inserted as
+     * the next sibling of anchorEl (the 'Play Again' button) so it lives
+     * inside the overlay and is torn down along with it.
+     *
+     * @param {HTMLElement} overlay
+     * @param {HTMLElement} anchorEl     - element the panel is inserted after
+     * @param {Array}       leaderboard
+     * @param {?string}     meUserId
+     */
+    function renderLeaderboardPanel(overlay, anchorEl, leaderboard, meUserId) {
+      let panel = overlay.querySelector('#pong-leaderboard');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'pong-leaderboard';
+        anchorEl.insertAdjacentElement('afterend', panel);
+      }
+
+      panel.innerHTML = '';
+
+      const title = document.createElement('h2');
+      title.className = 'pong-leaderboard-title';
+      title.textContent = 'Top 10';
+      panel.appendChild(title);
+      panel.appendChild(buildLeaderboardTable(leaderboard, meUserId));
+
+      return panel;
+    }
+
+    /**
+     * POST the final score to the server (identical call to the 'Save Score'
+     * button's request — same endpoint, same body), then fetch the all-time
+     * leaderboard and the caller's personal best, cache the leaderboard, and
+     * re-render the panel with live data. Best-effort throughout: network
+     * failures leave whatever was already painted (cache or empty state) in
+     * place rather than throwing.
+     *
+     * @param {HTMLElement} overlay
+     * @param {HTMLElement} anchorEl
+     * @param {number}      score
+     */
+    async function persistScoreAndRefreshLeaderboard(overlay, anchorEl, score) {
+      try {
+        await fetch('/api/scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ score }),
+        });
+      } catch (err) {
+        // Ignore — the leaderboard fetch below still runs regardless.
+      }
+
+      // The overlay may already have been dismissed (Play Again clicked
+      // before the network round-trip finished) — don't paint into a
+      // detached panel.
+      if (!document.body.contains(overlay)) return;
+
+      try {
+        const [leaderboardRes, meRes] = await Promise.all([
+          fetch('/scores/leaderboard', { credentials: 'same-origin' }),
+          fetch('/scores/me',          { credentials: 'same-origin' }),
+        ]);
+        const leaderboardData = await leaderboardRes.json();
+        const meData          = await meRes.json();
+
+        const leaderboard = (leaderboardData && leaderboardData.leaderboard) || [];
+        const meUserId     = (meData && meData.best && meData.best.userId) || null;
+
+        writeCachedLeaderboard(leaderboard);
+
+        if (document.body.contains(overlay)) {
+          renderLeaderboardPanel(overlay, anchorEl, leaderboard, meUserId);
+        }
+      } catch (err) {
+        // Network failure — leave the cached/placeholder panel as-is.
+      }
     }
 
     // ── Auth bar (Google OAuth) ─────────────────────────────────────────────

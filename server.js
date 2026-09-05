@@ -38,8 +38,21 @@
  *                                 caller has an authenticated Google session
  *                                 and no `player` is supplied, the player is
  *                                 derived from the logged-in user's identity.
+ *                                 Every call made with an authenticated
+ *                                 Google session additionally appends a
+ *                                 game-over event to `store.scoreEvents`
+ *                                 (see below), regardless of whether it beat
+ *                                 the caller's existing best.
  *   GET  /api/scores/:player     Get the high score for a specific player.
  *   DELETE /api/scores/:player   Delete the high score for a specific player.
+ *
+ *   GET  /scores/leaderboard     Top 10 game-over events of all time across
+ *                                 all Google-authenticated players, sorted by
+ *                                 score descending. Powers the in-game
+ *                                 top-ten leaderboard panel.
+ *   GET  /scores/me              The authenticated caller's personal best
+ *                                 game-over event (or { best: null } if
+ *                                 unauthenticated / no scores yet).
  *
  *   GET  /health                 Basic health check (200 OK).
  *
@@ -57,17 +70,24 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
 // Maps kept in memory for the lifetime of the process:
-//   sessions  : token → { username, createdAt }             (legacy stub login)
-//   scores    : username (lowercase) → { player, score, updatedAt }
-//   users     : Google `sub` id → { id, email, name, avatar, createdAt, updatedAt }
+//   sessions    : token → { username, createdAt }             (legacy stub login)
+//   scores      : username (lowercase) → { player, score, updatedAt }
+//   users       : Google `sub` id → { id, email, name, avatar, createdAt, updatedAt }
+//   scoreEvents : array of every game-over event recorded for a
+//                 Google-authenticated player — { id, userId, name, score,
+//                 createdAt }. Unlike `scores` (which only keeps a single
+//                 best-per-player row, keyed by a lowercased display name),
+//                 this is an append-only log keyed by the stable Google
+//                 `sub` id, and backs the top-ten leaderboard panel.
 //
 // Factory function so tests can create isolated instances.
 
 function createStore() {
   return {
-    sessions: new Map(),
-    scores:   new Map(),
-    users:    new Map(),
+    sessions:    new Map(),
+    scores:      new Map(),
+    users:       new Map(),
+    scoreEvents: [],
   };
 }
 
@@ -315,6 +335,20 @@ function createApp(store = defaultStore) {
     const key      = player.trim().toLowerCase();
     const existing = store.scores.get(key);
 
+    // Log this game-over event for the leaderboard panel. Only Google-
+    // authenticated callers get an entry here (the leaderboard shows real
+    // display names, not arbitrary/legacy player strings) — every game over
+    // is logged, not just new personal bests.
+    if (req.isAuthenticated && req.isAuthenticated() && req.user) {
+      store.scoreEvents.push({
+        id:        crypto.randomBytes(8).toString('hex'),
+        userId:    req.user.id,
+        name:      req.user.name || req.user.email || 'Anonymous',
+        score,
+        createdAt: Date.now(),
+      });
+    }
+
     // Only store if it's a new personal best (or first entry)
     if (!existing || score > existing.score) {
       const entry = { player: key, score, updatedAt: Date.now() };
@@ -354,6 +388,40 @@ function createApp(store = defaultStore) {
 
     store.scores.delete(key);
     return res.status(200).json({ deleted: true, player: key });
+  });
+
+  // ── GET /scores/leaderboard ────────────────────────────────────────────────
+  //
+  // Top 10 game-over events of all time, sorted by score descending. Backs
+  // the compact leaderboard panel rendered under the 'Play Again' button.
+
+  app.get('/scores/leaderboard', (req, res) => {
+    const leaderboard = [...store.scoreEvents]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10)
+      .map(({ id, userId, name, score, createdAt }) => ({ id, userId, name, score, createdAt }));
+
+    return res.status(200).json({ leaderboard });
+  });
+
+  // ── GET /scores/me ─────────────────────────────────────────────────────────
+  //
+  // The authenticated caller's personal best game-over event. Returns
+  // { best: null } when unauthenticated or when the caller has no recorded
+  // scores yet.
+
+  app.get('/scores/me', (req, res) => {
+    if (!(req.isAuthenticated && req.isAuthenticated() && req.user)) {
+      return res.status(200).json({ best: null });
+    }
+
+    const mine = store.scoreEvents.filter((e) => e.userId === req.user.id);
+    if (mine.length === 0) {
+      return res.status(200).json({ best: null });
+    }
+
+    const best = mine.reduce((a, b) => (b.score > a.score ? b : a));
+    return res.status(200).json({ best });
   });
 
   return app;
