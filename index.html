@@ -15,7 +15,7 @@
     html, body {
       width: 100%;
       height: 100%;
-      background: #111;
+      background: #3e2411;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -25,7 +25,7 @@
 
     canvas {
       display: block;
-      background: #000;
+      background: #3e2411;
       /* Crisp pixel rendering for retro look */
       image-rendering: pixelated;
     }
@@ -901,9 +901,9 @@
     // feedback that a point was just scored.
 
     function render() {
-      // Clear to black
+      // Clear to brown (game background)
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = '#3e2411';
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       // Score flash: tinted background for a few frames after scoring
@@ -916,7 +916,7 @@
 
       // Centre dashed divider
       ctx.setLineDash([DIVIDER_DASH, DIVIDER_GAP]);
-      ctx.strokeStyle = '#333';
+      ctx.strokeStyle = 'rgba(255, 180, 0, 0.4)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(CANVAS_W / 2, 0);
@@ -926,7 +926,7 @@
 
       // ── Live scores rendered on canvas each frame ─────────────────────────
       // Scores are drawn with fillText so they integrate seamlessly with gameplay.
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = '#ffb400';
       ctx.font = 'bold 48px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
@@ -934,7 +934,7 @@
       ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
 
       // Player paddle
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = '#ffb400';
       ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
 
       // AI paddle
@@ -947,7 +947,7 @@
 
       // 'Get ready…' hint during the inter-point pause
       if (game.phase === 'scored') {
-        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.fillStyle = 'rgba(255, 180, 0, 0.35)';
         ctx.font = '22px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
