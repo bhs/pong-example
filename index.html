@@ -15,7 +15,7 @@
     html, body {
       width: 100%;
       height: 100%;
-      background: #111;
+      background: #00008b;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -25,7 +25,7 @@
 
     canvas {
       display: block;
-      background: #000;
+      background: #00008b;
       /* Crisp pixel rendering for retro look */
       image-rendering: pixelated;
     }
@@ -772,9 +772,9 @@
     // feedback that a point was just scored.
 
     function render() {
-      // Clear to black
+      // Clear to dark blue
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = '#00008b';
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       // Score flash: tinted background for a few frames after scoring
@@ -787,7 +787,7 @@
 
       // Centre dashed divider
       ctx.setLineDash([DIVIDER_DASH, DIVIDER_GAP]);
-      ctx.strokeStyle = '#333';
+      ctx.strokeStyle = '#4a5a8f';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(CANVAS_W / 2, 0);
