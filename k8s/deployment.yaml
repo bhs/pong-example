@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pong-game
+  labels:
+    app: pong-game
+spec:
+  replicas: 1
+  # SQLite is a single-writer, file-based database (see db.js) — the
+  # preferences table lives on the PersistentVolumeClaim mounted below.
+  # Keep replicas at 1 (or switch to a shared network filesystem / a real
+  # networked database) before scaling out; multiple pods writing to the
+  # same SQLite file concurrently is not supported.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: pong-game
+  template:
+    metadata:
+      labels:
+        app: pong-game
+    spec:
+      containers:
+        - name: pong-game
+          image: pong-game:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            # Style preferences (paddle/ball/background colors) are
+            # persisted to this SQLite file on the mounted volume below, so
+            # they survive pod restarts.
+            - name: DB_PATH
+              value: /app/data/pong.db
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: GOOGLE_CLIENT_ID
+                  optional: true
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: GOOGLE_CLIENT_SECRET
+                  optional: true
+            - name: GOOGLE_CALLBACK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: GOOGLE_CALLBACK_URL
+                  optional: true
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: SESSION_SECRET
+                  optional: true
+          volumeMounts:
+            - name: pong-data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      volumes:
+        - name: pong-data
+          persistentVolumeClaim:
+            claimName: pong-game-data

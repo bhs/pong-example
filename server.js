@@ -41,10 +41,26 @@
  *   GET  /api/scores/:player     Get the high score for a specific player.
  *   DELETE /api/scores/:player   Delete the high score for a specific player.
  *
+ *   GET  /api/preferences        Returns the logged-in user's saved style
+ *                                 preferences (paddle/ball/background colors)
+ *                                 as { preferences: {...} | null }. Guests
+ *                                 (no session) always get { preferences: null }
+ *                                 so the client can fall back to defaults.
+ *   PUT  /api/preferences        Session-protected: upserts the logged-in
+ *                                 user's style preferences. Body:
+ *                                 { paddleColor, ballColor, bgColor } — each
+ *                                 a "#rrggbb" hex string. 401 if not logged in.
+ *
  *   GET  /health                 Basic health check (200 OK).
  *
  * The module exports { app, store } so unit tests can inject their own store
  * and inspect state without starting a real HTTP server.
+ *
+ * Unlike scores/sessions/users (ephemeral, in-process Maps — see `store`
+ * below), style preferences are written to a persistent on-disk SQLite
+ * database (see db.js) keyed by the Google `sub` id, so they survive server
+ * restarts and follow a signed-in user to any browser/device they log in
+ * from.
  */
 
 const express        = require('express');
@@ -53,6 +69,9 @@ const crypto         = require('crypto');
 const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+
+const { createPreferencesStore }     = require('./db');
+const { validatePreferencesPayload } = require('./preferences-logic');
 
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
@@ -74,13 +93,35 @@ function createStore() {
 // Module-level default store (used by the real server).
 const defaultStore = createStore();
 
+// ── Default preferences store (lazy) ────────────────────────────────────────
+//
+// Unlike `defaultStore`, this opens a real SQLite file on disk the first
+// time it's actually needed. It's created lazily (rather than eagerly at
+// module load, like `defaultStore`) so merely requiring server.js — as
+// every other test file in this repo does — never touches the filesystem;
+// only a request that actually hits /api/preferences (with no explicit
+// `prefsStore` injected, i.e. the real running server) does.
+
+let _defaultPrefsStore = null;
+
+function getDefaultPrefsStore() {
+  if (!_defaultPrefsStore) {
+    _defaultPrefsStore = createPreferencesStore(process.env.DB_PATH || undefined);
+  }
+  return _defaultPrefsStore;
+}
+
 // ── App factory ────────────────────────────────────────────────────────────
 //
 // Accepting a store parameter makes every endpoint independently testable
-// without touching the shared module-level state.
+// without touching the shared module-level state. `prefsStore` follows the
+// same idea for the SQLite-backed preferences table — pass an isolated
+// instance (e.g. createPreferencesStore(':memory:')) in tests.
 
-function createApp(store = defaultStore) {
+function createApp(store = defaultStore, prefsStore) {
   const app = express();
+
+  const resolvePrefsStore = () => prefsStore || getDefaultPrefsStore();
 
   // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
   // reverse proxy in front of this process). Without this, Express derives
@@ -356,6 +397,42 @@ function createApp(store = defaultStore) {
     return res.status(200).json({ deleted: true, player: key });
   });
 
+  // ── GET /api/preferences ──────────────────────────────────────────────────
+  //
+  // Returns the logged-in user's saved style preferences. Guests (no active
+  // Google session) always get { preferences: null } — the client falls
+  // back to built-in defaults in that case, so this never errors for a
+  // logged-out visitor.
+
+  app.get('/api/preferences', (req, res) => {
+    if (!(req.isAuthenticated && req.isAuthenticated() && req.user)) {
+      return res.status(200).json({ preferences: null });
+    }
+
+    const preferences = resolvePrefsStore().get(req.user.id);
+    return res.status(200).json({ preferences });
+  });
+
+  // ── PUT /api/preferences ──────────────────────────────────────────────────
+  //
+  // Session-protected: upserts the logged-in user's style preferences into
+  // the persistent SQLite database, keyed by their Google `sub` id.
+  // Body: { paddleColor, ballColor, bgColor } — each a "#rrggbb" hex string.
+
+  app.put('/api/preferences', (req, res) => {
+    if (!(req.isAuthenticated && req.isAuthenticated() && req.user)) {
+      return res.status(401).json({ error: 'authentication required' });
+    }
+
+    const result = validatePreferencesPayload(req.body);
+    if (!result.valid) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    const saved = resolvePrefsStore().set(req.user.id, result.preferences);
+    return res.status(200).json({ preferences: saved });
+  });
+
   return app;
 }
 
@@ -368,7 +445,8 @@ if (require.main === module) {
 
   app.listen(PORT, HOST, () => {
     console.log(`Pong server listening on ${HOST}:${PORT}`);
-    console.log('Storage: ephemeral in-process Map (data lost on restart)');
+    console.log('Storage: ephemeral in-process Map for scores/sessions (data lost on restart)');
+    console.log(`Storage: persistent SQLite for style preferences (${process.env.DB_PATH || require('./db').DEFAULT_DB_PATH})`);
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
       console.log('Google OAuth: NOT configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)');
     } else {
@@ -377,4 +455,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createApp, createStore };
+module.exports = { createApp, createStore, getDefaultPrefsStore };

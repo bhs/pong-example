@@ -185,6 +185,61 @@
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+
+        /* ── Preferences modal ───────────────────────────────────────────── */
+        .pong-modal-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 30;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.6);
+          backdrop-filter: blur(2px);
+        }
+        .pong-modal-panel {
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          min-width: 280px;
+          padding: 24px 28px;
+          background: #1a1a1a;
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 8px;
+          font-family: monospace;
+          box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+        }
+        .pong-modal-panel h2 {
+          color: #fff;
+          font-size: 1.1rem;
+          letter-spacing: 0.05em;
+          margin-bottom: 4px;
+        }
+        .pong-prefs-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          color: rgba(255,255,255,0.85);
+          font-size: 0.85rem;
+        }
+        .pong-prefs-row input[type="color"] {
+          width: 44px;
+          height: 28px;
+          padding: 0;
+          border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 4px;
+          background: none;
+          cursor: pointer;
+        }
+        .pong-prefs-presets {
+          display: flex;
+          gap: 10px;
+          margin-top: 4px;
+        }
+        .pong-prefs-presets .pong-auth-btn {
+          flex: 1;
+        }
       `;
       document.head.appendChild(style);
     })();
@@ -244,6 +299,25 @@
 
     // requestAnimationFrame handle — kept so the loop can be paused on gameover.
     let rafId = null;
+
+    // ── User style preferences (paddle / ball / background colors) ───────────
+    //
+    // render() reads these globals every frame, so changing them (e.g. from
+    // the preferences modal below) takes effect on the very next frame —
+    // before the PUT to the server even completes. Defaults reproduce the
+    // game's original monochrome look; a signed-in user's saved values
+    // (fetched from GET /api/preferences in loadPreferences()) override
+    // these before the render loop starts. Guests always see the defaults.
+
+    let paddleColor = '#ffffff';
+    let ballColor   = '#ffffff';
+    let bgColor     = '#000000';
+
+    // Preset-style buttons offered in the preferences modal.
+    const PREFERENCE_PRESETS = {
+      classic: { paddleColor: '#ffffff', ballColor: '#ffffff', bgColor: '#000000' },
+      neon:    { paddleColor: '#39ff14', ballColor: '#ff00ff', bgColor: '#0d0221' },
+    };
 
     // ── Input ─────────────────────────────────────────────────────────────────
     //
@@ -428,6 +502,7 @@
      */
     function renderSignedOut(bar) {
       bar.innerHTML = '';
+      removePreferencesModal();
 
       const btn = document.createElement('button');
       btn.id = 'pong-google-signin';
@@ -441,7 +516,7 @@
 
     /**
      * Render the signed-in state: avatar (if any), display name/email,
-     * a 'Save Score' button, and a 'Log out' button.
+     * a 'Preferences' button, a 'Save Score' button, and a 'Log out' button.
      *
      * @param {HTMLElement} bar
      * @param {{id:string, email:?string, name:?string, avatar:?string}} user
@@ -462,6 +537,13 @@
       label.textContent = user.name || user.email || 'Signed in';
       bar.appendChild(label);
 
+      const prefsBtn = document.createElement('button');
+      prefsBtn.id = 'pong-preferences';
+      prefsBtn.className = 'pong-auth-btn';
+      prefsBtn.textContent = 'Preferences';
+      prefsBtn.addEventListener('click', showPreferencesModal);
+      bar.appendChild(prefsBtn);
+
       const saveBtn = document.createElement('button');
       saveBtn.id = 'pong-save-score';
       saveBtn.className = 'pong-auth-btn';
@@ -474,9 +556,198 @@
       logoutBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
       logoutBtn.textContent = 'Log out';
       logoutBtn.addEventListener('click', () => {
+        removePreferencesModal();
         window.location.href = '/auth/logout';
       });
       bar.appendChild(logoutBtn);
+    }
+
+    // ── Preferences modal (signed-in users only) ──────────────────────────
+    //
+    // A DOM modal offering three <input type="color"> pickers (paddle, ball,
+    // background) plus 'Classic'/'Neon' preset buttons. render() reads the
+    // paddleColor/ballColor/bgColor globals every frame, so moving a picker
+    // updates the game's look instantly — well before the PUT below
+    // completes (or even if it fails). The server is the durable source of
+    // truth: preferences are written to a persistent SQLite database keyed
+    // by the signed-in user's Google id, so GET /api/preferences on any
+    // other browser/device (or after a server restart) returns exactly what
+    // was last saved here.
+
+    // <input> element refs for the currently-open modal, so preset buttons
+    // can update the visible swatches; null while the modal is closed.
+    let prefsFieldRefs = null;
+
+    /**
+     * Build one "label — color swatch" row for the preferences modal.
+     *
+     * @param {string} labelText
+     * @param {string} initialValue - "#rrggbb"
+     * @param {(value: string, commit: boolean) => void} onChange - called on
+     *        every drag tick (commit=false, 'input' event) and once more
+     *        when the picker is closed/confirmed (commit=true, 'change').
+     */
+    function buildColorField(labelText, initialValue, onChange) {
+      const row = document.createElement('label');
+      row.className = 'pong-prefs-row';
+
+      const span = document.createElement('span');
+      span.textContent = labelText;
+      row.appendChild(span);
+
+      const input = document.createElement('input');
+      input.type  = 'color';
+      input.value = initialValue;
+      input.addEventListener('input',  (e) => onChange(e.target.value, false));
+      input.addEventListener('change', (e) => onChange(e.target.value, true));
+      row.appendChild(input);
+
+      row._input = input; // stashed so applyPreset() can update the swatch
+      return row;
+    }
+
+    /**
+     * Build and show the preferences modal, pre-filled with the current
+     * in-memory colors.
+     */
+    function showPreferencesModal() {
+      removePreferencesModal();
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-prefs-overlay';
+      overlay.className = 'pong-modal-overlay';
+
+      const panel = document.createElement('div');
+      panel.className = 'pong-modal-panel';
+
+      const heading = document.createElement('h2');
+      heading.textContent = 'Preferences';
+      panel.appendChild(heading);
+
+      const paddleRow = buildColorField('Paddle color', paddleColor, (val, commit) => {
+        paddleColor = val;
+        if (commit) savePreferences();
+      });
+      const ballRow = buildColorField('Ball color', ballColor, (val, commit) => {
+        ballColor = val;
+        if (commit) savePreferences();
+      });
+      const bgRow = buildColorField('Background color', bgColor, (val, commit) => {
+        bgColor = val;
+        if (commit) savePreferences();
+      });
+
+      panel.appendChild(paddleRow);
+      panel.appendChild(ballRow);
+      panel.appendChild(bgRow);
+
+      prefsFieldRefs = { paddle: paddleRow._input, ball: ballRow._input, bg: bgRow._input };
+
+      const presetsRow = document.createElement('div');
+      presetsRow.className = 'pong-prefs-presets';
+
+      const classicBtn = document.createElement('button');
+      classicBtn.className = 'pong-auth-btn';
+      classicBtn.textContent = 'Classic';
+      classicBtn.addEventListener('click', () => applyPreset(PREFERENCE_PRESETS.classic));
+      presetsRow.appendChild(classicBtn);
+
+      const neonBtn = document.createElement('button');
+      neonBtn.className = 'pong-auth-btn';
+      neonBtn.textContent = 'Neon';
+      neonBtn.addEventListener('click', () => applyPreset(PREFERENCE_PRESETS.neon));
+      presetsRow.appendChild(neonBtn);
+
+      panel.appendChild(presetsRow);
+
+      const closeBtn = document.createElement('button');
+      closeBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
+      closeBtn.textContent = 'Close';
+      closeBtn.addEventListener('click', removePreferencesModal);
+      panel.appendChild(closeBtn);
+
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+    }
+
+    /**
+     * Remove the preferences modal from the DOM if it exists.
+     */
+    function removePreferencesModal() {
+      const existing = document.getElementById('pong-prefs-overlay');
+      if (existing) existing.remove();
+      prefsFieldRefs = null;
+    }
+
+    /**
+     * Apply a named preset: update the global color variables (instant
+     * visual feedback via render()), reflect them in the open modal's color
+     * swatches (if the modal is open), then persist server-side.
+     *
+     * @param {{paddleColor:string, ballColor:string, bgColor:string}} preset
+     */
+    function applyPreset(preset) {
+      paddleColor = preset.paddleColor;
+      ballColor   = preset.ballColor;
+      bgColor     = preset.bgColor;
+
+      if (prefsFieldRefs) {
+        prefsFieldRefs.paddle.value = paddleColor;
+        prefsFieldRefs.ball.value   = ballColor;
+        prefsFieldRefs.bg.value     = bgColor;
+      }
+
+      savePreferences();
+    }
+
+    /**
+     * PUT the current in-memory color preferences to the server. Only ever
+     * invoked for signed-in users (the modal that calls this is only
+     * reachable via the signed-in auth bar's 'Preferences' button).
+     * Best-effort: on failure the local colors (already applied) stay as-is
+     * for this session, they just won't have persisted server-side.
+     */
+    async function savePreferences() {
+      try {
+        await fetch('/api/preferences', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ paddleColor, ballColor, bgColor }),
+        });
+      } catch (err) {
+        // Best-effort; local colors already applied for this session.
+      }
+    }
+
+    /**
+     * Apply a preferences record (as returned by GET /api/preferences) to
+     * the local paddleColor/ballColor/bgColor globals.
+     */
+    function applyPreferencesLocally(prefs) {
+      if (prefs.paddleColor) paddleColor = prefs.paddleColor;
+      if (prefs.ballColor)   ballColor   = prefs.ballColor;
+      if (prefs.bgColor)     bgColor     = prefs.bgColor;
+    }
+
+    /**
+     * Fetch this session's saved style preferences from the server and
+     * apply them locally. Guests (no session) and network failures silently
+     * keep the built-in defaults already assigned above — this call is
+     * best-effort and never blocks the game from starting. Always fetched
+     * fresh from the server (never cached client-side), so a signed-in
+     * user's colors follow them to any browser/device they log in from.
+     */
+    async function loadPreferences() {
+      try {
+        const res  = await fetch('/api/preferences', { credentials: 'same-origin' });
+        const data = await res.json();
+        if (data && data.preferences) {
+          applyPreferencesLocally(data.preferences);
+        }
+      } catch (err) {
+        // Network failure — keep defaults.
+      }
     }
 
     /**
@@ -527,8 +798,6 @@
         renderSignedOut(bar);
       }
     }
-
-    initAuthBar();
 
     /**
      * Tear down the current overlay, reset all state, and restart the animation loop.
@@ -677,9 +946,9 @@
     // feedback that a point was just scored.
 
     function render() {
-      // Clear to black
+      // Clear to the user's background color (default black)
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       // Score flash: tinted background for a few frames after scoring
@@ -710,7 +979,7 @@
       ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
 
       // Player paddle
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = paddleColor;
       ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
 
       // AI paddle
@@ -718,6 +987,7 @@
 
       // Ball (only when playing)
       if (game.phase === 'playing') {
+        ctx.fillStyle = ballColor;
         ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
       }
 
@@ -766,8 +1036,20 @@
       rafId = requestAnimationFrame(loop);
     }
 
-    // Kick off the animation loop
-    rafId = requestAnimationFrame(loop);
+    // ── Boot sequence ─────────────────────────────────────────────────────────
+    //
+    // Render the auth bar and fetch any saved style preferences in parallel,
+    // then start the render loop. Preferences are always fetched fresh from
+    // the server (never cached client-side) so a signed-in user sees the
+    // same paddle/ball/background colors no matter which browser or device
+    // they log in from; guests simply keep the built-in defaults.
+
+    async function init() {
+      await Promise.all([initAuthBar(), loadPreferences()]);
+      rafId = requestAnimationFrame(loop);
+    }
+
+    init();
   </script>
 </body>
 </html>

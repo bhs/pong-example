@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pong-game-data
+  labels:
+    app: pong-game
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # The preferences SQLite database is tiny (one small row per
+      # signed-in user) — this is generous headroom, not a real requirement.
+      storage: 1Gi
