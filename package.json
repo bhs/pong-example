@@ -1,7 +1,7 @@
 {
   "name": "game-canvas-scaffold",
   "version": "1.0.0",
-  "description": "Single-file HTML5 canvas Pong game with ephemeral backend API",
+  "description": "HTML5 canvas Pong game with ephemeral users/scores + SQLite-backed style preferences",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,6 +12,7 @@
     "testMatch": ["**/__tests__/**/*.test.js"]
   },
   "dependencies": {
+    "better-sqlite3": "^11.3.0",
     "express": "^4.18.2",
     "express-session": "^1.18.0",
     "passport": "^0.7.0",

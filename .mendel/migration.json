@@ -1,0 +1,5 @@
+{
+  "up_instructions": "Applied automatically on startup — createDb() in db.js runs this CREATE TABLE IF NOT EXISTS against the SQLite file at SQLITE_PATH (default ./data/preferences.sqlite3) every time the server boots. To apply by hand instead: sqlite3 $SQLITE_PATH < db/migrations/001_create_user_preferences.up.sql",
+  "down_instructions": "sqlite3 $SQLITE_PATH < db/migrations/001_create_user_preferences.down.sql",
+  "notes": "Migration files live in db/migrations/. 001_create_user_preferences creates the 'user_preferences' table (user_id, paddle_color, ball_color, bg_color, preset_name, updated_at) in a dedicated SQLite database file, separate from the ephemeral in-memory users/scores store. See db.js and preferencesRepo.js."
+}

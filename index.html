@@ -185,6 +185,123 @@
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+
+        /* ── Settings button (top-left) ──────────────────────────────────── */
+        #pong-settings-btn {
+          position: fixed;
+          top: 14px;
+          left: 16px;
+          z-index: 20;
+          width: 36px;
+          height: 36px;
+          font-size: 1.1rem;
+          line-height: 1;
+          color: #fff;
+          background: rgba(255,255,255,0.12);
+          border: 1px solid rgba(255,255,255,0.35);
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        #pong-settings-btn:hover,
+        #pong-settings-btn:focus {
+          background: rgba(255,255,255,0.25);
+          outline: none;
+        }
+
+        /* ── Settings modal ───────────────────────────────────────────────── */
+        #pong-settings-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 30;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.72);
+          backdrop-filter: blur(2px);
+          font-family: monospace;
+        }
+        #pong-settings-overlay.pong-hidden {
+          display: none;
+        }
+        #pong-settings-modal {
+          width: min(320px, 90vw);
+          padding: 24px;
+          background: #1a1a1a;
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 8px;
+          color: #fff;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        #pong-settings-modal h2 {
+          font-size: 1rem;
+          letter-spacing: 0.08em;
+          text-align: center;
+        }
+        .pong-pref-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          font-size: 0.85rem;
+        }
+        .pong-pref-row input[type="color"] {
+          width: 48px;
+          height: 28px;
+          padding: 0;
+          border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 4px;
+          background: none;
+          cursor: pointer;
+        }
+        .pong-preset-row {
+          display: flex;
+          gap: 10px;
+        }
+        .pong-preset-btn {
+          flex: 1;
+          padding: 8px 0;
+          font-family: monospace;
+          font-size: 0.8rem;
+          font-weight: bold;
+          letter-spacing: 0.04em;
+          color: #000;
+          background: #fff;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .pong-preset-btn:hover,
+        .pong-preset-btn:focus {
+          background: #ffe066;
+          outline: none;
+        }
+        #pong-pref-status {
+          min-height: 1em;
+          font-size: 0.72rem;
+          color: rgba(255,255,255,0.5);
+          text-align: center;
+          letter-spacing: 0.03em;
+        }
+        #pong-settings-close {
+          padding: 8px 0;
+          font-family: monospace;
+          font-size: 0.8rem;
+          color: rgba(255,255,255,0.75);
+          background: transparent;
+          border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        #pong-settings-close:hover,
+        #pong-settings-close:focus {
+          background: rgba(255,255,255,0.1);
+          color: #fff;
+          outline: none;
+        }
       `;
       document.head.appendChild(style);
     })();
@@ -241,6 +358,35 @@
       rallyCount:  0,   // hits since last score; resets each point
       flashFrames: 0,   // counts down from FLASH_FRAMES to 0 after scoring
     };
+
+    // ── Style preferences ───────────────────────────────────────────────────
+    //
+    // `style` holds the live render colors — render() reads from it every
+    // frame, so a color-picker 'input' event updates it synchronously for
+    // instant visual feedback, independent of whether/when the debounced
+    // save to the server actually completes.
+    //
+    // Persistence: signed-in users get their saved preferences fetched from
+    // GET /api/preferences on load (or defaults if they've never saved any),
+    // and every change is written back via a debounced PUT /api/preferences
+    // (~500ms after the last change) so rapid picker drags don't hammer the
+    // server/DB. Signed-out users can still customize colors for the current
+    // page load, but changes aren't persisted anywhere.
+
+    const DEFAULT_STYLE = Object.freeze({
+      paddleColor: '#ffffff',
+      ballColor:   '#ffffff',
+      bgColor:     '#000000',
+      presetName:  null,
+    });
+
+    const PRESETS = Object.freeze({
+      classic: Object.freeze({ paddleColor: '#ffffff', ballColor: '#ffffff', bgColor: '#000000' }),
+      neon:    Object.freeze({ paddleColor: '#39ff14', ballColor: '#ff2ec4', bgColor: '#0d0221' }),
+    });
+
+    const style = { ...DEFAULT_STYLE };
+    let isSignedIn = false;
 
     // requestAnimationFrame handle — kept so the loop can be paused on gameover.
     let rafId = null;
@@ -511,7 +657,8 @@
 
     /**
      * Fetch the current session's user (if any) from GET /me and render
-     * the appropriate auth bar state. Called once on page load.
+     * the appropriate auth bar state. Called once on page load. Also kicks
+     * off the style-preferences load for signed-in users.
      */
     async function initAuthBar() {
       const bar = getAuthBar();
@@ -519,16 +666,244 @@
         const res  = await fetch('/me', { credentials: 'same-origin' });
         const data = await res.json();
         if (data && data.user) {
+          isSignedIn = true;
           renderSignedIn(bar, data.user);
+          loadPreferences();
         } else {
+          isSignedIn = false;
           renderSignedOut(bar);
         }
       } catch (err) {
+        isSignedIn = false;
         renderSignedOut(bar);
       }
     }
 
     initAuthBar();
+
+    // ── Settings pane (style preferences) ───────────────────────────────────
+    //
+    // A gear button (top-left) opens a modal with three color pickers
+    // (paddle / ball / background) and two one-click presets. Every change
+    // updates `style` synchronously (render() picks it up on the very next
+    // frame) and schedules a debounced save for signed-in users.
+
+    let settingsModalEl  = null;
+    let paddleColorInput = null;
+    let ballColorInput   = null;
+    let bgColorInput     = null;
+    let prefStatusEl     = null;
+    let saveDebounceTimer = null;
+
+    /**
+     * Push the current `style` values into the color-picker inputs (used
+     * after loading saved preferences or applying a preset).
+     */
+    function syncInputsFromStyle() {
+      if (!settingsModalEl) return;
+      paddleColorInput.value = style.paddleColor;
+      ballColorInput.value   = style.ballColor;
+      bgColorInput.value     = style.bgColor;
+    }
+
+    /**
+     * Debounced (~500ms) write-through of the current style to the server.
+     * No-op for signed-out visitors — their changes only apply to the
+     * current page load and are never sent to /api/preferences.
+     */
+    function schedulePreferencesSave() {
+      if (!isSignedIn) {
+        if (prefStatusEl) prefStatusEl.textContent = 'Sign in to save your colors';
+        return;
+      }
+
+      if (prefStatusEl) prefStatusEl.textContent = 'Saving…';
+      if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+
+      saveDebounceTimer = setTimeout(async () => {
+        saveDebounceTimer = null;
+        try {
+          const res = await fetch('/api/preferences', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              paddleColor: style.paddleColor,
+              ballColor:   style.ballColor,
+              bgColor:     style.bgColor,
+              presetName:  style.presetName,
+            }),
+          });
+          if (prefStatusEl) prefStatusEl.textContent = res.ok ? 'Saved' : 'Failed to save';
+        } catch (err) {
+          if (prefStatusEl) prefStatusEl.textContent = 'Failed to save';
+        }
+      }, 500);
+    }
+
+    /**
+     * Fetch the signed-in user's saved preferences (or defaults) from
+     * GET /api/preferences and apply them to `style` + the picker inputs.
+     * Called once after a successful sign-in is detected.
+     */
+    async function loadPreferences() {
+      try {
+        const res  = await fetch('/api/preferences', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const prefs = data && data.preferences;
+        if (!prefs) return;
+
+        style.paddleColor = prefs.paddleColor || DEFAULT_STYLE.paddleColor;
+        style.ballColor   = prefs.ballColor   || DEFAULT_STYLE.ballColor;
+        style.bgColor     = prefs.bgColor     || DEFAULT_STYLE.bgColor;
+        style.presetName  = prefs.presetName  || null;
+
+        syncInputsFromStyle();
+      } catch (err) {
+        // Non-fatal: keep whatever's currently in `style` (defaults).
+      }
+    }
+
+    /**
+     * Apply a named preset (see PRESETS) to `style`, update the pickers, and
+     * schedule a save — same code path as a manual color-picker change.
+     */
+    function applyPreset(name) {
+      const preset = PRESETS[name];
+      if (!preset) return;
+
+      Object.assign(style, preset);
+      style.presetName = name;
+
+      syncInputsFromStyle();
+      schedulePreferencesSave();
+    }
+
+    /**
+     * Create (once) and return the settings modal overlay element, wiring
+     * up its color pickers, preset buttons, and close button.
+     */
+    function getSettingsModal() {
+      if (settingsModalEl) return settingsModalEl;
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-settings-overlay';
+      overlay.classList.add('pong-hidden');
+
+      const modal = document.createElement('div');
+      modal.id = 'pong-settings-modal';
+
+      const title = document.createElement('h2');
+      title.textContent = 'STYLE PREFERENCES';
+      modal.appendChild(title);
+
+      function makeColorRow(labelText, inputId) {
+        const row = document.createElement('div');
+        row.className = 'pong-pref-row';
+
+        const label = document.createElement('label');
+        label.textContent = labelText;
+        label.htmlFor = inputId;
+        row.appendChild(label);
+
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.id = inputId;
+        row.appendChild(input);
+
+        modal.appendChild(row);
+        return input;
+      }
+
+      paddleColorInput = makeColorRow('Paddle color', 'pref-paddle-color');
+      ballColorInput   = makeColorRow('Ball color', 'pref-ball-color');
+      bgColorInput     = makeColorRow('Background color', 'pref-bg-color');
+
+      paddleColorInput.addEventListener('input', () => {
+        style.paddleColor = paddleColorInput.value;
+        style.presetName  = null;
+        schedulePreferencesSave();
+      });
+      ballColorInput.addEventListener('input', () => {
+        style.ballColor  = ballColorInput.value;
+        style.presetName = null;
+        schedulePreferencesSave();
+      });
+      bgColorInput.addEventListener('input', () => {
+        style.bgColor    = bgColorInput.value;
+        style.presetName = null;
+        schedulePreferencesSave();
+      });
+
+      const presetRow = document.createElement('div');
+      presetRow.className = 'pong-preset-row';
+
+      const classicBtn = document.createElement('button');
+      classicBtn.type = 'button';
+      classicBtn.className = 'pong-preset-btn';
+      classicBtn.textContent = 'Classic';
+      classicBtn.addEventListener('click', () => applyPreset('classic'));
+      presetRow.appendChild(classicBtn);
+
+      const neonBtn = document.createElement('button');
+      neonBtn.type = 'button';
+      neonBtn.className = 'pong-preset-btn';
+      neonBtn.textContent = 'Neon';
+      neonBtn.addEventListener('click', () => applyPreset('neon'));
+      presetRow.appendChild(neonBtn);
+
+      modal.appendChild(presetRow);
+
+      prefStatusEl = document.createElement('p');
+      prefStatusEl.id = 'pong-pref-status';
+      modal.appendChild(prefStatusEl);
+
+      const closeBtn = document.createElement('button');
+      closeBtn.id = 'pong-settings-close';
+      closeBtn.type = 'button';
+      closeBtn.textContent = 'Close';
+      closeBtn.addEventListener('click', () => hideSettingsModal());
+      modal.appendChild(closeBtn);
+
+      overlay.appendChild(modal);
+      // Clicking the dimmed backdrop (not the modal itself) also closes it.
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) hideSettingsModal();
+      });
+
+      document.body.appendChild(overlay);
+      settingsModalEl = overlay;
+
+      syncInputsFromStyle();
+      return overlay;
+    }
+
+    function showSettingsModal() {
+      const overlay = getSettingsModal();
+      syncInputsFromStyle();
+      prefStatusEl.textContent = isSignedIn ? '' : 'Sign in to save your colors';
+      overlay.classList.remove('pong-hidden');
+    }
+
+    function hideSettingsModal() {
+      if (settingsModalEl) settingsModalEl.classList.add('pong-hidden');
+    }
+
+    /**
+     * Create the fixed gear button (top-left) that opens the settings modal.
+     */
+    function initSettingsButton() {
+      const btn = document.createElement('button');
+      btn.id = 'pong-settings-btn';
+      btn.type = 'button';
+      btn.title = 'Style preferences';
+      btn.textContent = '⚙';
+      btn.addEventListener('click', () => showSettingsModal());
+      document.body.appendChild(btn);
+    }
+
+    initSettingsButton();
 
     /**
      * Tear down the current overlay, reset all state, and restart the animation loop.
@@ -677,9 +1052,9 @@
     // feedback that a point was just scored.
 
     function render() {
-      // Clear to black
+      // Clear to the user's chosen background color (defaults to black)
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = style.bgColor;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       // Score flash: tinted background for a few frames after scoring
@@ -710,7 +1085,7 @@
       ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
 
       // Player paddle
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = style.paddleColor;
       ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
 
       // AI paddle
@@ -718,6 +1093,7 @@
 
       // Ball (only when playing)
       if (game.phase === 'playing') {
+        ctx.fillStyle = style.ballColor;
         ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
       }
 

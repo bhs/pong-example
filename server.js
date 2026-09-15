@@ -41,6 +41,14 @@
  *   GET  /api/scores/:player     Get the high score for a specific player.
  *   DELETE /api/scores/:player   Delete the high score for a specific player.
  *
+ *   GET  /api/preferences        Fetch the signed-in user's style preferences
+ *                                 (paddle/ball/background color, preset name),
+ *                                 or built-in defaults if none saved yet.
+ *   PUT  /api/preferences        Upsert the signed-in user's style preferences.
+ *                                 Persisted to a dedicated SQLite table (see
+ *                                 db.js / preferencesRepo.js), separate from
+ *                                 the ephemeral users/scores store below.
+ *
  *   GET  /health                 Basic health check (200 OK).
  *
  * The module exports { app, store } so unit tests can inject their own store
@@ -53,6 +61,9 @@ const crypto         = require('crypto');
 const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+
+const { createDb }              = require('./db');
+const { createPreferencesRepo, DEFAULT_PREFERENCES } = require('./preferencesRepo');
 
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
@@ -77,10 +88,16 @@ const defaultStore = createStore();
 // ── App factory ────────────────────────────────────────────────────────────
 //
 // Accepting a store parameter makes every endpoint independently testable
-// without touching the shared module-level state.
+// without touching the shared module-level state. `deps.db` /
+// `deps.prefsRepo` work the same way for the SQLite-backed preferences
+// feature: tests get an isolated in-memory database by default, while the
+// real server (below) passes an explicit persistent one.
 
-function createApp(store = defaultStore) {
+function createApp(store = defaultStore, deps = {}) {
   const app = express();
+
+  const db        = deps.db        || createDb(':memory:');
+  const prefsRepo  = deps.prefsRepo || createPreferencesRepo(db);
 
   // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
   // reverse proxy in front of this process). Without this, Express derives
@@ -248,6 +265,78 @@ function createApp(store = defaultStore) {
     return res.status(200).json({ user: null });
   });
 
+  // ── Style preferences (dedicated SQLite table + LRU cache) ──────────────
+  //
+  // Resolves the stable identity used as the preferences table's user_id:
+  //   - a Google OAuth session (req.user.id), same identity used elsewhere; or
+  //   - the legacy stub login's Bearer token (POST /api/login), so the
+  //     feature — and its tests — don't hard-depend on a real Google
+  //     OAuth round-trip to exercise an authenticated request.
+  // Returns null when neither is present (caller responds 401).
+
+  function resolveUserId(req) {
+    if (req.isAuthenticated && req.isAuthenticated() && req.user) {
+      return req.user.id;
+    }
+
+    const authHeader = req.headers['authorization'] || '';
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (match) {
+      const legacySession = store.sessions.get(match[1]);
+      if (legacySession) return legacySession.username;
+    }
+
+    return null;
+  }
+
+  // ── GET /api/preferences ──────────────────────────────────────────────────
+  //
+  // Returns the signed-in user's saved style preferences, or built-in
+  // defaults (isDefault: true) if they've never saved any yet. Reads pass
+  // through the LRU cache in preferencesRepo before touching SQLite.
+
+  app.get('/api/preferences', (req, res) => {
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'authentication required' });
+    }
+
+    const existing = prefsRepo.getPreferences(userId);
+    if (!existing) {
+      return res.status(200).json({
+        preferences: { ...DEFAULT_PREFERENCES, userId },
+        isDefault: true,
+      });
+    }
+
+    return res.status(200).json({ preferences: existing, isDefault: false });
+  });
+
+  // ── PUT /api/preferences ──────────────────────────────────────────────────
+  //
+  // Upserts the signed-in user's style preferences. Intended to be called by
+  // a debounced client (~500ms after the last color-picker drag event) so
+  // rapid input changes don't hammer SQLite — the in-memory render variables
+  // update instantly on the client regardless of when this call lands.
+  // Body: { paddleColor?, ballColor?, bgColor?, presetName? } — all optional,
+  // omitted fields keep their previously-saved (or default) value.
+
+  app.put('/api/preferences', (req, res) => {
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ error: 'authentication required' });
+    }
+
+    const { paddleColor, ballColor, bgColor, presetName } = req.body || {};
+
+    try {
+      const saved = prefsRepo.upsertPreferences(userId, { paddleColor, ballColor, bgColor, presetName });
+      return res.status(200).json({ preferences: saved });
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+  });
+
   // ── POST /api/login ──────────────────────────────────────────────────────
   //
   // Legacy stub authentication (kept for backward compatibility): any
@@ -364,11 +453,18 @@ function createApp(store = defaultStore) {
 if (require.main === module) {
   const PORT = parseInt(process.env.PORT, 10) || 3000;
   const HOST = '0.0.0.0';
-  const app  = createApp(defaultStore);
+
+  // Real runs get a persistent, on-disk SQLite database for preferences
+  // (defaults to ./data/preferences.sqlite3, override via SQLITE_PATH) —
+  // unlike the ephemeral users/scores Maps, this survives process restarts.
+  const db        = createDb();
+  const prefsRepo = createPreferencesRepo(db);
+  const app       = createApp(defaultStore, { db, prefsRepo });
 
   app.listen(PORT, HOST, () => {
     console.log(`Pong server listening on ${HOST}:${PORT}`);
-    console.log('Storage: ephemeral in-process Map (data lost on restart)');
+    console.log('Storage: ephemeral in-process Map for users/scores (data lost on restart)');
+    console.log(`Storage: persistent SQLite for style preferences (${process.env.SQLITE_PATH || './data/preferences.sqlite3'})`);
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
       console.log('Google OAuth: NOT configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)');
     } else {
