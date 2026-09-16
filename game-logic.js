@@ -185,9 +185,9 @@ function reflectAngleVertical(angle) {
  * (positive = ball hit below paddle centre).
  * The returned angle is always in the range [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE].
  */
-function deflectAngle(relY) {
+function deflectAngle(relY, maxAngle = MAX_DEFLECT_ANGLE) {
   const norm = clamp(relY / (PADDLE_H / 2), -1, 1);
-  return norm * MAX_DEFLECT_ANGLE;
+  return norm * maxAngle;
 }
 
 /**
@@ -309,6 +309,109 @@ function tickPause(game, dt) {
   return game.pauseTimer <= 0;
 }
 
+// ── Settings (dom-settings-panel variation) ─────────────────────────────────
+//
+// The HTML settings panel exposes three independent choices — paddle
+// skin, ball speed preset, and AI difficulty — that get written into a
+// single shared `settings` object in index.html and persisted to
+// localStorage. These lookup tables and pure resolver functions are the
+// single source of truth for what each option value actually means in
+// terms of gameplay constants, so they're unit-testable here without a
+// DOM/canvas, and mirrored (duplicated) into index.html's inline script
+// per the single-file-vanilla scaffold this project follows.
+
+const PADDLE_SKINS = {
+  classic: { label: 'Classic White', fill: '#ffffff' },
+  neon:    { label: 'Neon Blue',     fill: '#3ad6ff' },
+  striped: { label: 'Striped',       fill: '#ff5fa2' },
+};
+
+const BALL_SPEED_PRESETS = {
+  slow:   { label: 'Slow',   multiplier: 0.7 },
+  normal: { label: 'Normal', multiplier: 1.0 },
+  fast:   { label: 'Fast',   multiplier: 1.4 },
+};
+
+const DIFFICULTY_PRESETS = {
+  easy: {
+    label:           'Easy',
+    aiLerp:          3.0,
+    aiLerpRallyInc:  0.08,
+    maxDeflectAngle: Math.PI * 60 / 180,
+  },
+  normal: {
+    label:           'Normal',
+    aiLerp:          AI_LERP,
+    aiLerpRallyInc:  AI_LERP_RALLY_INC,
+    maxDeflectAngle: MAX_DEFLECT_ANGLE,
+  },
+  hard: {
+    label:           'Hard',
+    aiLerp:          6.5,
+    aiLerpRallyInc:  0.25,
+    maxDeflectAngle: Math.PI * 82 / 180,
+  },
+};
+
+const DEFAULT_SETTINGS = {
+  paddleSkin: 'classic',
+  ballSpeed:  'normal',
+  difficulty: 'normal',
+};
+
+/**
+ * Sanitize a raw settings-like object (e.g. JSON.parse()'d from
+ * localStorage, which may be missing, stale, or corrupted) into a valid
+ * settings object. Any key holding an unrecognised value falls back to
+ * its default rather than propagating NaN/undefined into gameplay code.
+ */
+function normalizeSettings(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  return {
+    paddleSkin: PADDLE_SKINS[src.paddleSkin]       ? src.paddleSkin : DEFAULT_SETTINGS.paddleSkin,
+    ballSpeed:  BALL_SPEED_PRESETS[src.ballSpeed]   ? src.ballSpeed  : DEFAULT_SETTINGS.ballSpeed,
+    difficulty: DIFFICULTY_PRESETS[src.difficulty]  ? src.difficulty : DEFAULT_SETTINGS.difficulty,
+  };
+}
+
+/**
+ * Resolve a settings object into the concrete ball-speed constants the
+ * physics loop should use (BALL_SPEED_INIT / BALL_SPEED_MAX scaled by the
+ * chosen preset's multiplier).
+ */
+function resolveBallSpeeds(settings) {
+  const preset = BALL_SPEED_PRESETS[settings && settings.ballSpeed] ||
+                 BALL_SPEED_PRESETS[DEFAULT_SETTINGS.ballSpeed];
+  return {
+    initSpeed: BALL_SPEED_INIT * preset.multiplier,
+    maxSpeed:  BALL_SPEED_MAX * preset.multiplier,
+  };
+}
+
+/**
+ * Resolve a settings object into the concrete AI-difficulty constants the
+ * physics loop should use (AI lerp aggressiveness, its per-rally increase,
+ * and the max deflection angle from angle-based paddle reflection).
+ */
+function resolveDifficulty(settings) {
+  const preset = DIFFICULTY_PRESETS[settings && settings.difficulty] ||
+                 DIFFICULTY_PRESETS[DEFAULT_SETTINGS.difficulty];
+  return {
+    aiLerp:          preset.aiLerp,
+    aiLerpRallyInc:  preset.aiLerpRallyInc,
+    maxDeflectAngle: preset.maxDeflectAngle,
+  };
+}
+
+/**
+ * Resolve a settings object into the fill style to use for both paddles.
+ */
+function resolvePaddleFill(settings) {
+  const skin = PADDLE_SKINS[settings && settings.paddleSkin] ||
+               PADDLE_SKINS[DEFAULT_SETTINGS.paddleSkin];
+  return skin.fill;
+}
+
 module.exports = {
   // Constants (exported for test assertions)
   CANVAS_W, CANVAS_H,
@@ -320,6 +423,16 @@ module.exports = {
   MAX_DEFLECT_ANGLE,
   SCORE_WIN,
   FLASH_FRAMES,
+
+  // Settings (dom-settings-panel variation)
+  PADDLE_SKINS,
+  BALL_SPEED_PRESETS,
+  DIFFICULTY_PRESETS,
+  DEFAULT_SETTINGS,
+  normalizeSettings,
+  resolveBallSpeeds,
+  resolveDifficulty,
+  resolvePaddleFill,
 
   // Factory functions
   makeBall,

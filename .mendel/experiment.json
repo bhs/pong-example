@@ -1,0 +1,20 @@
+{
+  "assignment_unit": "device",
+  "dissonance": "The gear-icon settings panel in the top-left disappears, and any paddle skin / ball speed / difficulty they'd picked stops applying — the game reverts silently to the default classic-white paddle, normal ball speed, and normal AI difficulty on their next visit, with no way to customize it.",
+  "metrics": [
+    {
+      "name": "settings_changed",
+      "per": "page_view",
+      "role": "primary",
+      "better": "higher",
+      "description": "Settings-panel interactions (paddle skin / ball speed / difficulty changes) per page view"
+    },
+    {
+      "name": "game_completed",
+      "per": "page_view",
+      "role": "guardrail",
+      "better": "higher",
+      "description": "Completed games (reaching game-over) per page view"
+    }
+  ]
+}

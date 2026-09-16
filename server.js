@@ -53,6 +53,7 @@ const crypto         = require('crypto');
 const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const { mendelMetricsMiddleware, recordDeclaredMetric } = require('./metrics');
 
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
@@ -93,6 +94,13 @@ function createApp(store = defaultStore) {
   // "https://…/auth/google/callback" to "http://…/auth/google/callback",
   // which no longer matches the URI registered in Google Cloud Console.
   app.set('trust proxy', 1);
+
+  // ── Mendel live-traffic experiment instrumentation ───────────────────────
+  //
+  // Isolated OTel MeterProvider (see metrics.js) — a complete no-op when the
+  // MENDEL_METRICS_* / MENDEL_EXPERIMENT_ID env vars aren't set, so this is
+  // always safe to mount unconditionally.
+  app.use(mendelMetricsMiddleware);
 
   app.use(express.json());
 
@@ -189,12 +197,42 @@ function createApp(store = defaultStore) {
   }
 
   // Serve the static Pong game at the root
+  //
+  // A GET on '/' or '/index.html' counts as a page view for the
+  // 'game-customization-options' experiment (settings_changed / game_completed
+  // are both measured per page_view) before falling through to the static
+  // file handler.
+  app.get(['/', '/index.html'], (req, res, next) => {
+    recordDeclaredMetric('page_view', req);
+    next();
+  });
   app.use(express.static(path.join(__dirname)));
 
   // ── GET /health ───────────────────────────────────────────────────────────
 
   app.get('/health', (req, res) => {
     return res.status(200).json({ status: 'ok' });
+  });
+
+  // ── POST /api/metrics/settings-changed ───────────────────────────────────
+  //
+  // Best-effort beacon fired by the client whenever the settings panel
+  // (paddle skin / ball speed / difficulty) changes. Body is informational
+  // only; the important side effect is the declared-metric counter increment.
+
+  app.post('/api/metrics/settings-changed', (req, res) => {
+    recordDeclaredMetric('settings_changed', req);
+    return res.status(204).end();
+  });
+
+  // ── POST /api/metrics/game-completed ─────────────────────────────────────
+  //
+  // Best-effort beacon fired by the client when a game reaches its 'gameover'
+  // phase (guardrail metric: settings shouldn't reduce completed games).
+
+  app.post('/api/metrics/game-completed', (req, res) => {
+    recordDeclaredMetric('game_completed', req);
+    return res.status(204).end();
   });
 
   // ── GET /auth/google ──────────────────────────────────────────────────────
