@@ -360,3 +360,49 @@ describe('createStore', () => {
     expect(s.scores.size).toBe(0);
   });
 });
+
+// ── GET /health ─────────────────────────────────────────────────────────────
+
+describe('GET /health', () => {
+  test('returns 200 ok', async () => {
+    const app = createApp(createStore());
+    const res = await get(app, '/health');
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('ok');
+  });
+});
+
+// ── POST /api/events (experiment instrumentation beacon) ───────────────────
+//
+// Metrics reporting is disabled in the test environment (no
+// MENDEL_METRICS_ENDPOINT / _TOKEN / _EXPERIMENT_ID configured), so these
+// tests only assert the endpoint accepts events and always responds without
+// error — never that anything is actually exported.
+
+describe('POST /api/events', () => {
+  let app;
+
+  beforeEach(() => {
+    app = createApp(createStore());
+  });
+
+  test('returns 204 for a declared event type', async () => {
+    const res = await post(app, '/api/events', { type: 'customization_changed' });
+    expect(res.status).toBe(204);
+  });
+
+  test('returns 204 for the game_completed event type', async () => {
+    const res = await post(app, '/api/events', { type: 'game_completed' });
+    expect(res.status).toBe(204);
+  });
+
+  test('returns 204 even for an unknown event type (never errors the client)', async () => {
+    const res = await post(app, '/api/events', { type: 'not_a_real_event' });
+    expect(res.status).toBe(204);
+  });
+
+  test('returns 204 when the body is empty', async () => {
+    const res = await post(app, '/api/events', {});
+    expect(res.status).toBe(204);
+  });
+});

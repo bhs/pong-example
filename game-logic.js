@@ -158,13 +158,15 @@ function movePlayerPaddle(paddle, keys, dt) {
  * @param {object} paddle
  * @param {object} ball
  * @param {number} dt
- * @param {number} [rallyCount=0] - current rally hit count for difficulty scaling
+ * @param {number} [rallyCount=0]  - current rally hit count for difficulty scaling
+ * @param {number} [aiLerpBase=AI_LERP] - base lerp factor, overridable by the
+ *   difficulty-toggle customization option (see effectiveAiLerp()).
  */
-function moveAiPaddle(paddle, ball, dt, rallyCount = 0) {
+function moveAiPaddle(paddle, ball, dt, rallyCount = 0, aiLerpBase = AI_LERP) {
   const ballCentreY  = ball.y + BALL_SIZE / 2;
   const aiCentreY    = paddle.y + PADDLE_H / 2;
   const diff         = ballCentreY - aiCentreY;
-  const effectiveLerp = AI_LERP + rallyCount * AI_LERP_RALLY_INC;
+  const effectiveLerp = aiLerpBase + rallyCount * AI_LERP_RALLY_INC;
   const move = clamp(diff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
   paddle.y = clamp(paddle.y + move, 0, CANVAS_H - PADDLE_H);
   return paddle;
@@ -183,18 +185,80 @@ function reflectAngleVertical(angle) {
  *
  * relY is the signed distance from the paddle's centre to the ball's centre
  * (positive = ball hit below paddle centre).
- * The returned angle is always in the range [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE].
+ * The returned angle is always in the range [-maxAngle, +maxAngle].
+ *
+ * @param {number} relY
+ * @param {number} [maxAngle=MAX_DEFLECT_ANGLE] - overridable for the
+ *   difficulty-toggle customization option (steeper max angle = harder).
  */
-function deflectAngle(relY) {
+function deflectAngle(relY, maxAngle = MAX_DEFLECT_ANGLE) {
   const norm = clamp(relY / (PADDLE_H / 2), -1, 1);
-  return norm * MAX_DEFLECT_ANGLE;
+  return norm * maxAngle;
 }
 
 /**
- * Apply a speed multiplier on paddle hit and clamp to BALL_SPEED_MAX.
+ * Apply a speed multiplier on paddle hit and clamp to [min, max].
+ *
+ * @param {number} speed
+ * @param {number} [min=BALL_SPEED_INIT] - overridable for the ball-speed preset option.
+ * @param {number} [max=BALL_SPEED_MAX]  - overridable for the ball-speed preset option.
+ * @param {number} [mul=BALL_SPEED_MUL]
  */
-function incrementSpeed(speed) {
-  return clamp(speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+function incrementSpeed(speed, min = BALL_SPEED_INIT, max = BALL_SPEED_MAX, mul = BALL_SPEED_MUL) {
+  return clamp(speed * mul, min, max);
+}
+
+// ── Customization presets (in-canvas settings menu) ─────────────────────────
+//
+// Shared preset tables consumed by the in-canvas MENU / PAUSED overlay (see
+// index.html, which mirrors these tables inline for its self-contained
+// browser-side copy). Kept here as well so their values — and the effective-
+// setting helpers below — can be unit tested independently of any DOM/canvas
+// rendering.
+
+const PADDLE_COLORS = ['#ffffff', '#00e5ff', '#ff5252', '#ffd740', '#69f0ae'];
+
+const BALL_SPEED_PRESETS = [
+  { label: 'Slow',   mul: 0.7 },
+  { label: 'Normal', mul: 1.0 },
+  { label: 'Fast',   mul: 1.4 },
+];
+
+const DIFFICULTY_PRESETS = [
+  { label: 'Easy',   aiLerp: 3.0,     deflectMul: 0.8  },
+  { label: 'Normal', aiLerp: AI_LERP, deflectMul: 1.0  },
+  { label: 'Hard',   aiLerp: 6.5,     deflectMul: 1.15 },
+];
+
+const DEFAULT_SETTINGS_INDEX = { paddleColorIndex: 0, ballSpeedIndex: 1, difficultyIndex: 1 };
+
+/**
+ * Resolve the effective ball-speed bounds { init, max } for a ball-speed
+ * preset index. Falls back to the Normal preset for an out-of-range index.
+ */
+function effectiveBallSpeed(ballSpeedIndex = DEFAULT_SETTINGS_INDEX.ballSpeedIndex) {
+  const preset = BALL_SPEED_PRESETS[ballSpeedIndex] || BALL_SPEED_PRESETS[DEFAULT_SETTINGS_INDEX.ballSpeedIndex];
+  return {
+    init: BALL_SPEED_INIT * preset.mul,
+    max:  BALL_SPEED_MAX * preset.mul,
+  };
+}
+
+/**
+ * Resolve the AI lerp factor for a difficulty preset index.
+ */
+function effectiveAiLerp(difficultyIndex = DEFAULT_SETTINGS_INDEX.difficultyIndex) {
+  const preset = DIFFICULTY_PRESETS[difficultyIndex] || DIFFICULTY_PRESETS[DEFAULT_SETTINGS_INDEX.difficultyIndex];
+  return preset.aiLerp;
+}
+
+/**
+ * Resolve the effective max deflection angle (radians) for a difficulty
+ * preset index.
+ */
+function effectiveMaxDeflectAngle(difficultyIndex = DEFAULT_SETTINGS_INDEX.difficultyIndex) {
+  const preset = DIFFICULTY_PRESETS[difficultyIndex] || DIFFICULTY_PRESETS[DEFAULT_SETTINGS_INDEX.difficultyIndex];
+  return MAX_DEFLECT_ANGLE * preset.deflectMul;
 }
 
 /**
@@ -224,9 +288,17 @@ function syncBallVelocity(ball) {
  * @param {object} game          - mutable game phase state
  * @param {number} dt            - delta-time in seconds
  * @param {object} [rally]       - mutable rally state (optional; created if omitted)
+ * @param {object} [opts]        - optional customization overrides:
+ *   { maxDeflectAngle, speedInit, speedMax } — sourced from the in-canvas
+ *   settings menu (ball-speed preset / difficulty toggle). Falls back to the
+ *   module defaults when omitted, preserving prior behaviour.
  */
-function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
+function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally, opts) {
   if (!rally) rally = makeRally();
+
+  const maxDeflectAngle = (opts && opts.maxDeflectAngle) || MAX_DEFLECT_ANGLE;
+  const speedInit       = (opts && opts.speedInit) || BALL_SPEED_INIT;
+  const speedMax        = (opts && opts.speedMax) || BALL_SPEED_MAX;
 
   ball.x += ball.vx * dt;
   ball.y += ball.vy * dt;
@@ -250,8 +322,8 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
   ) {
     ball.x  = playerPaddle.x + playerPaddle.w;
     const relY    = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
-    ball.angle    = deflectAngle(relY);      // positive angle → launches right + down/up
-    ball.speed    = incrementSpeed(ball.speed);
+    ball.angle    = deflectAngle(relY, maxDeflectAngle);  // positive angle → launches right + down/up
+    ball.speed    = incrementSpeed(ball.speed, speedInit, speedMax);
     syncBallVelocity(ball);
     rally.rallyCount += 1;
   }
@@ -265,8 +337,8 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     ball.x  = aiPaddle.x - BALL_SIZE;
     const relY    = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
     // Reflect back toward the player: π - deflectAngle puts it in the left hemisphere
-    ball.angle    = Math.PI - deflectAngle(relY);
-    ball.speed    = incrementSpeed(ball.speed);
+    ball.angle    = Math.PI - deflectAngle(relY, maxDeflectAngle);
+    ball.speed    = incrementSpeed(ball.speed, speedInit, speedMax);
     syncBallVelocity(ball);
     rally.rallyCount += 1;
   }
@@ -320,6 +392,15 @@ module.exports = {
   MAX_DEFLECT_ANGLE,
   SCORE_WIN,
   FLASH_FRAMES,
+
+  // Customization presets (in-canvas settings menu) + effective-value helpers
+  PADDLE_COLORS,
+  BALL_SPEED_PRESETS,
+  DIFFICULTY_PRESETS,
+  DEFAULT_SETTINGS_INDEX,
+  effectiveBallSpeed,
+  effectiveAiLerp,
+  effectiveMaxDeflectAngle,
 
   // Factory functions
   makeBall,

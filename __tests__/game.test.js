@@ -10,6 +10,13 @@ const {
   MAX_DEFLECT_ANGLE,
   SCORE_WIN,
   FLASH_FRAMES,
+  PADDLE_COLORS,
+  BALL_SPEED_PRESETS,
+  DIFFICULTY_PRESETS,
+  DEFAULT_SETTINGS_INDEX,
+  effectiveBallSpeed,
+  effectiveAiLerp,
+  effectiveMaxDeflectAngle,
   makeBall,
   makePlayerPaddle,
   makeAiPaddle,
@@ -145,6 +152,16 @@ describe('deflectAngle', () => {
   test('MAX_DEFLECT_ANGLE is 75 degrees', () => {
     expect(MAX_DEFLECT_ANGLE).toBeCloseTo(Math.PI * 75 / 180);
   });
+
+  test('honours an overridden maxAngle (Difficulty setting)', () => {
+    const customMax = Math.PI * 40 / 180;
+    expect(deflectAngle(PADDLE_H / 2, customMax)).toBeCloseTo(customMax);
+    expect(deflectAngle(-PADDLE_H / 2, customMax)).toBeCloseTo(-customMax);
+  });
+
+  test('defaults maxAngle to MAX_DEFLECT_ANGLE when omitted', () => {
+    expect(deflectAngle(PADDLE_H / 2)).toBeCloseTo(MAX_DEFLECT_ANGLE);
+  });
 });
 
 // ── incrementSpeed ────────────────────────────────────────────────────────
@@ -165,6 +182,16 @@ describe('incrementSpeed', () => {
 
   test('BALL_SPEED_MUL is 1.05', () => {
     expect(BALL_SPEED_MUL).toBeCloseTo(1.05);
+  });
+
+  test('honours overridden min/max bounds (Ball Speed preset)', () => {
+    expect(incrementSpeed(0, 100, 400)).toBeCloseTo(100);
+    expect(incrementSpeed(1000, 100, 400)).toBeCloseTo(400);
+    expect(incrementSpeed(200, 100, 400)).toBeCloseTo(200 * BALL_SPEED_MUL);
+  });
+
+  test('honours an overridden multiplier', () => {
+    expect(incrementSpeed(200, 0, 10000, 2)).toBeCloseTo(400);
   });
 });
 
@@ -450,6 +477,31 @@ describe('moveAiPaddle', () => {
   test('AI_LERP_RALLY_INC is positive', () => {
     expect(AI_LERP_RALLY_INC).toBeGreaterThan(0);
   });
+
+  test('honours an overridden aiLerpBase (Difficulty setting)', () => {
+    const aiEasy = makeAiPaddle();
+    const aiHard = makeAiPaddle();
+    const ball   = makeBall(1, 0);
+    aiEasy.y = CANVAS_H / 2 - PADDLE_H / 2 - 10;
+    aiHard.y = aiEasy.y;
+    ball.y   = CANVAS_H / 2 - BALL_SIZE / 2;
+    const before = aiEasy.y;
+    moveAiPaddle(aiEasy, ball, DT, 0, 2.0);   // Easy-like lerp
+    moveAiPaddle(aiHard, ball, DT, 0, 8.0);   // Hard-like lerp
+    expect(aiHard.y - before).toBeGreaterThan(aiEasy.y - before);
+  });
+
+  test('defaults aiLerpBase to AI_LERP when omitted', () => {
+    const ai1  = makeAiPaddle();
+    const ai2  = makeAiPaddle();
+    const ball = makeBall(1, 0);
+    ai1.y = CANVAS_H / 2 - PADDLE_H / 2 - 10;
+    ai2.y = ai1.y;
+    ball.y = CANVAS_H / 2 - BALL_SIZE / 2;
+    moveAiPaddle(ai1, ball, DT);
+    moveAiPaddle(ai2, ball, DT, 0, AI_LERP);
+    expect(ai1.y).toBeCloseTo(ai2.y);
+  });
 });
 
 // ── updateBall — wall bounces ─────────────────────────────────────────────
@@ -600,6 +652,52 @@ describe('updateBall — player paddle collision', () => {
     updateBall(ball, player, ai, game, 1 / 60, rally);
     const angle = Math.atan2(ball.vy, ball.vx);
     expect(Math.abs(angle)).toBeLessThanOrEqual(MAX_DEFLECT_ANGLE + 0.001);
+  });
+});
+
+// ── updateBall — customization opts (ball-speed / difficulty overrides) ────
+
+describe('updateBall — customization opts', () => {
+  function makeCollisionSetup() {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
+
+    const ball = {
+      x:     player.x + player.w - 2,
+      y:     player.y, // top edge hit → maximal deflection
+      speed: BALL_SPEED_INIT,
+      angle: Math.PI,
+      vx:    -BALL_SPEED_INIT,
+      vy:    0,
+      w:     BALL_SIZE,
+      h:     BALL_SIZE,
+    };
+    return { ball, player, ai, game, rally };
+  }
+
+  test('a smaller maxDeflectAngle produces a shallower bounce than the default', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    const customMax = Math.PI * 20 / 180; // 20°, well below the 75° default
+    updateBall(ball, player, ai, game, 1 / 60, rally, { maxDeflectAngle: customMax });
+    const angle = Math.abs(Math.atan2(ball.vy, ball.vx));
+    expect(angle).toBeLessThanOrEqual(customMax + 0.001);
+  });
+
+  test('a custom speedInit/speedMax caps the post-hit speed accordingly', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally, { speedInit: 50, speedMax: 120 });
+    expect(ball.speed).toBeLessThanOrEqual(120 + 0.001);
+  });
+
+  test('omitting opts falls back to the module defaults (behaviour unchanged)', () => {
+    const a = makeCollisionSetup();
+    const b = makeCollisionSetup();
+    updateBall(a.ball, a.player, a.ai, a.game, 1 / 60, a.rally);
+    updateBall(b.ball, b.player, b.ai, b.game, 1 / 60, b.rally, {});
+    expect(a.ball.speed).toBeCloseTo(b.ball.speed);
+    expect(a.ball.angle).toBeCloseTo(b.ball.angle);
   });
 });
 
@@ -915,6 +1013,73 @@ describe('constants', () => {
   });
 });
 
+// ── Customization presets (in-canvas MENU / PAUSED overlay) ────────────────
+//
+// These exercise the shared preset tables and effective-value helpers used
+// by the in-canvas settings menu — the menu's DOM-free canvas rendering and
+// click handling itself lives only in index.html (see the sanity checks
+// below), but the values it reads/writes are the same ones tested here.
+
+describe('customization presets', () => {
+  test('PADDLE_COLORS has at least one swatch and all are valid hex colors', () => {
+    expect(PADDLE_COLORS.length).toBeGreaterThan(0);
+    for (const c of PADDLE_COLORS) {
+      expect(c).toMatch(/^#[0-9a-fA-F]{3,6}$/);
+    }
+  });
+
+  test('BALL_SPEED_PRESETS are ordered Slow < Normal < Fast by multiplier', () => {
+    const [slow, normal, fast] = BALL_SPEED_PRESETS;
+    expect(slow.mul).toBeLessThan(normal.mul);
+    expect(normal.mul).toBeLessThan(fast.mul);
+  });
+
+  test('DIFFICULTY_PRESETS are ordered Easy < Normal < Hard by aiLerp and deflectMul', () => {
+    const [easy, normal, hard] = DIFFICULTY_PRESETS;
+    expect(easy.aiLerp).toBeLessThan(normal.aiLerp);
+    expect(normal.aiLerp).toBeLessThan(hard.aiLerp);
+    expect(easy.deflectMul).toBeLessThan(normal.deflectMul);
+    expect(normal.deflectMul).toBeLessThan(hard.deflectMul);
+  });
+
+  test('DIFFICULTY_PRESETS Normal matches the module AI_LERP default', () => {
+    expect(DIFFICULTY_PRESETS[DEFAULT_SETTINGS_INDEX.difficultyIndex].aiLerp).toBeCloseTo(AI_LERP);
+  });
+
+  test('effectiveBallSpeed() defaults to the Normal preset (base values unchanged)', () => {
+    const { init, max } = effectiveBallSpeed();
+    expect(init).toBeCloseTo(BALL_SPEED_INIT);
+    expect(max).toBeCloseTo(BALL_SPEED_MAX);
+  });
+
+  test('effectiveBallSpeed() scales both bounds by the selected preset multiplier', () => {
+    const slowIndex = BALL_SPEED_PRESETS.findIndex((p) => p.label === 'Slow');
+    const { init, max } = effectiveBallSpeed(slowIndex);
+    const preset = BALL_SPEED_PRESETS[slowIndex];
+    expect(init).toBeCloseTo(BALL_SPEED_INIT * preset.mul);
+    expect(max).toBeCloseTo(BALL_SPEED_MAX * preset.mul);
+  });
+
+  test('effectiveBallSpeed() falls back to Normal for an out-of-range index', () => {
+    const { init, max } = effectiveBallSpeed(99);
+    expect(init).toBeCloseTo(BALL_SPEED_INIT);
+    expect(max).toBeCloseTo(BALL_SPEED_MAX);
+  });
+
+  test('effectiveAiLerp() defaults to AI_LERP and honours a difficulty index', () => {
+    expect(effectiveAiLerp()).toBeCloseTo(AI_LERP);
+    const hardIndex = DIFFICULTY_PRESETS.findIndex((p) => p.label === 'Hard');
+    expect(effectiveAiLerp(hardIndex)).toBeCloseTo(DIFFICULTY_PRESETS[hardIndex].aiLerp);
+  });
+
+  test('effectiveMaxDeflectAngle() defaults to MAX_DEFLECT_ANGLE and scales with difficulty', () => {
+    expect(effectiveMaxDeflectAngle()).toBeCloseTo(MAX_DEFLECT_ANGLE);
+    const easyIndex = DIFFICULTY_PRESETS.findIndex((p) => p.label === 'Easy');
+    expect(effectiveMaxDeflectAngle(easyIndex))
+      .toBeCloseTo(MAX_DEFLECT_ANGLE * DIFFICULTY_PRESETS[easyIndex].deflectMul);
+  });
+});
+
 // ── index.html sanity checks ───────────────────────────────────────────────
 
 describe('index.html', () => {
@@ -1072,5 +1237,64 @@ describe('index.html', () => {
   test('winner announcement is shown in the overlay', () => {
     // The overlay shows a winner label (You win / AI wins)
     expect(html).toMatch(/You win|AI wins/);
+  });
+});
+
+// ── index.html: in-canvas menu overlay (MENU / PLAYING / PAUSED) ───────────
+//
+// The settings menu introduces no extra DOM elements — it is a small
+// state machine (uiState) rendered entirely via canvas draw calls, with
+// click/hover hit-testing done against canvas coordinates. These checks
+// verify the feature is present and wired up, without needing a real
+// browser/canvas environment.
+
+describe('index.html — in-canvas menu overlay', () => {
+  const fs   = require('fs');
+  const path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+
+  test('defines a MENU / PLAYING / PAUSED uiState state machine', () => {
+    expect(html).toMatch(/uiState/);
+    expect(html).toMatch(/'MENU'/);
+    expect(html).toMatch(/'PLAYING'/);
+    expect(html).toMatch(/'PAUSED'/);
+  });
+
+  test('the settings menu is drawn on canvas only — no new DOM elements are created for it', () => {
+    // The menu overlay functions must use ctx.* draw calls, not createElement.
+    expect(html).toMatch(/function renderMenuOverlay/);
+    expect(html).toMatch(/function renderMenuOverlay[\s\S]*?ctx\.fillRect/);
+  });
+
+  test('exposes clickable settings: paddle color, ball speed, and difficulty', () => {
+    expect(html).toMatch(/paddleColorIndex/);
+    expect(html).toMatch(/ballSpeedIndex/);
+    expect(html).toMatch(/difficultyIndex/);
+    expect(html).toMatch(/PADDLE_COLORS/);
+    expect(html).toMatch(/BALL_SPEED_PRESETS/);
+    expect(html).toMatch(/DIFFICULTY_PRESETS/);
+  });
+
+  test('hit-tests clicks against canvas coordinates (mouse/click hit-testing, no DOM buttons for the menu)', () => {
+    expect(html).toMatch(/function pointInRect/);
+    expect(html).toMatch(/function hitTestMenu/);
+    expect(html).toMatch(/toCanvasCoords/);
+    expect(html).toMatch(/canvas\.addEventListener\(\s*['"]click['"]/);
+  });
+
+  test('a gear icon toggles PLAYING back to a paused menu view', () => {
+    expect(html).toMatch(/function drawGearIcon/);
+    expect(html).toMatch(/gearRect/);
+    expect(html).toMatch(/uiState\s*=\s*'PAUSED'/);
+  });
+
+  test('selected settings feed back into paddle-ball physics (speed / AI difficulty / deflection)', () => {
+    expect(html).toMatch(/effectiveBallSpeedInit/);
+    expect(html).toMatch(/effectiveAiLerp/);
+    expect(html).toMatch(/effectiveMaxDeflectAngle/);
+  });
+
+  test('the update() simulation is skipped while MENU or PAUSED (game truly freezes)', () => {
+    expect(html).toMatch(/if\s*\(\s*uiState\s*===\s*'PLAYING'\s*\)\s*\{\s*update\(dt\)/);
   });
 });

@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pong-game
+  labels:
+    app: pong-game
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pong-game
+  template:
+    metadata:
+      labels:
+        app: pong-game
+    spec:
+      containers:
+        - name: pong-game
+          image: pong-game:latest
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PORT
+              value: "3000"
+            # Optional Google OAuth (app boots fine without these; sign-in is disabled).
+            - name: GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: GOOGLE_CLIENT_ID
+                  optional: true
+            - name: GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: GOOGLE_CLIENT_SECRET
+                  optional: true
+            - name: GOOGLE_CALLBACK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: GOOGLE_CALLBACK_URL
+                  optional: true
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: SESSION_SECRET
+                  optional: true
+            # Optional live-traffic experiment metrics (see mendel-metrics.js).
+            # The app reports nothing and sets no cookie when these are unset.
+            - name: MENDEL_METRICS_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: MENDEL_METRICS_ENDPOINT
+                  optional: true
+            - name: MENDEL_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: MENDEL_METRICS_TOKEN
+                  optional: true
+            - name: MENDEL_EXPERIMENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: MENDEL_EXPERIMENT_ID
+                  optional: true
+            - name: MENDEL_EXPERIMENT_BUCKETS
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: MENDEL_EXPERIMENT_BUCKETS
+                  optional: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

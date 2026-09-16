@@ -43,6 +43,11 @@
  *
  *   GET  /health                 Basic health check (200 OK).
  *
+ *   POST /api/events              Reports a declared experiment event (see
+ *                                 mendel-metrics.js) fired by the in-canvas
+ *                                 settings menu / game loop, e.g.
+ *                                 { type: 'customization_changed' }.
+ *
  * The module exports { app, store } so unit tests can inject their own store
  * and inspect state without starting a real HTTP server.
  */
@@ -53,6 +58,7 @@ const crypto         = require('crypto');
 const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const { mendelMiddleware, incr, DECLARED_METRICS } = require('./mendel-metrics');
 
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
@@ -93,6 +99,14 @@ function createApp(store = defaultStore) {
   // "https://…/auth/google/callback" to "http://…/auth/google/callback",
   // which no longer matches the URI registered in Google Cloud Console.
   app.set('trust proxy', 1);
+
+  // ── Live-traffic experiment instrumentation ──────────────────────────────
+  //
+  // Isolated OpenTelemetry metrics for the 'game-customization-options' hop
+  // (see mendel-metrics.js). No-ops entirely — no cookies set, nothing
+  // exported, nothing logged — when MENDEL_METRICS_ENDPOINT / _TOKEN /
+  // MENDEL_EXPERIMENT_ID are not configured.
+  app.use(mendelMiddleware);
 
   app.use(express.json());
 
@@ -195,6 +209,24 @@ function createApp(store = defaultStore) {
 
   app.get('/health', (req, res) => {
     return res.status(200).json({ status: 'ok' });
+  });
+
+  // ── POST /api/events ──────────────────────────────────────────────────────
+  //
+  // Lets the in-canvas game report a declared experiment event (see
+  // mendel-metrics.js DECLARED_METRICS) — e.g. the player changed a
+  // customization option, or a match reached game-over. Always responds
+  // 204 regardless of whether metrics reporting is enabled, so the client
+  // never has to branch on it.
+
+  const DECLARED_EVENT_NAMES = new Set(DECLARED_METRICS.map((m) => m.name));
+
+  app.post('/api/events', (req, res) => {
+    const type = req.body && req.body.type;
+    if (typeof type === 'string' && DECLARED_EVENT_NAMES.has(type)) {
+      incr(type, res.locals.mendelAttrs);
+    }
+    return res.status(204).end();
   });
 
   // ── GET /auth/google ──────────────────────────────────────────────────────
