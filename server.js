@@ -43,6 +43,10 @@
  *
  *   GET  /health                 Basic health check (200 OK).
  *
+ *   POST /api/events              Reports a declared experiment event (see
+ *                                 mendel-metrics.js) fired by the client,
+ *                                 e.g. { type: 'play_again_click' }.
+ *
  * The module exports { app, store } so unit tests can inject their own store
  * and inspect state without starting a real HTTP server.
  */
@@ -53,6 +57,7 @@ const crypto         = require('crypto');
 const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const { mendelMiddleware, incr, TRACKED_EVENT_NAMES } = require('./mendel-metrics');
 
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
@@ -93,6 +98,14 @@ function createApp(store = defaultStore) {
   // "https://…/auth/google/callback" to "http://…/auth/google/callback",
   // which no longer matches the URI registered in Google Cloud Console.
   app.set('trust proxy', 1);
+
+  // ── Live-traffic experiment instrumentation ──────────────────────────────
+  //
+  // Isolated OpenTelemetry metrics for the 'play-again-button' hop's
+  // 'state-reset-function' variation (see mendel-metrics.js). No-ops
+  // entirely — no cookies set, nothing exported, nothing logged — when
+  // MENDEL_METRICS_ENDPOINT / _TOKEN / MENDEL_EXPERIMENT_ID are not set.
+  app.use(mendelMiddleware);
 
   app.use(express.json());
 
@@ -195,6 +208,24 @@ function createApp(store = defaultStore) {
 
   app.get('/health', (req, res) => {
     return res.status(200).json({ status: 'ok' });
+  });
+
+  // ── POST /api/events ──────────────────────────────────────────────────────
+  //
+  // Lets the client report a declared experiment event (see mendel-metrics.js
+  // DECLARED_METRICS / TRACKED_EVENT_NAMES) — e.g. the game-over overlay was
+  // shown, the player clicked Play Again, or the page reloaded instead.
+  // Always responds 204 regardless of whether metrics reporting is enabled,
+  // so the client never has to branch on it.
+
+  const TRACKED_EVENT_NAME_SET = new Set(TRACKED_EVENT_NAMES);
+
+  app.post('/api/events', (req, res) => {
+    const type = req.body && req.body.type;
+    if (typeof type === 'string' && TRACKED_EVENT_NAME_SET.has(type)) {
+      incr(type, res.locals.mendelAttrs);
+    }
+    return res.status(204).end();
   });
 
   // ── GET /auth/google ──────────────────────────────────────────────────────

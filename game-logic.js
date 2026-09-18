@@ -309,6 +309,62 @@ function tickPause(game, dt) {
   return game.pauseTimer <= 0;
 }
 
+/**
+ * Create a fresh settings/preferences state object.
+ *
+ * Settings hold player customization (paddle colour, canvas theme,
+ * difficulty) — deliberately separate from ball / paddle / game / rally
+ * state so resetGame() (below) never has a reason to touch them. A partial
+ * `overrides` object may be supplied to change specific defaults.
+ */
+function makeSettings(overrides = {}) {
+  return {
+    paddleColor: '#ffffff',
+    canvasTheme: '#000000',
+    difficulty:  'normal',   // 'easy' | 'normal' | 'hard'
+    ...overrides,
+  };
+}
+
+/**
+ * Multiplier applied to the AI's effective lerp speed for each difficulty
+ * setting. 'normal' reproduces the original fixed AI_LERP behaviour exactly.
+ */
+const DIFFICULTY_LERP_MULTIPLIER = {
+  easy:   0.7,
+  normal: 1.0,
+  hard:   1.4,
+};
+
+/**
+ * Reset paddles, scores, game phase and rally counters to start a fresh
+ * match — consolidates every piece of mutable *game* state into one call.
+ *
+ * Intentionally takes no `settings` parameter and never mutates one: player
+ * preferences (paddle colour / canvas theme / difficulty) must survive a
+ * restart untouched. Any caller holding a `settings` object built by
+ * makeSettings() can keep using it after calling resetGame() with no extra
+ * bookkeeping.
+ *
+ * Mutates playerPaddle, aiPaddle, game and (if supplied) rally in place.
+ */
+function resetGame(playerPaddle, aiPaddle, game, rally) {
+  playerPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
+  playerPaddle.score = 0;
+
+  aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
+  aiPaddle.score = 0;
+
+  game.winner     = null;
+  game.phase      = 'scored';
+  game.pauseTimer = 1.2;
+
+  if (rally) {
+    rally.rallyCount  = 0;
+    rally.flashFrames = 0;
+  }
+}
+
 module.exports = {
   // Constants (exported for test assertions)
   CANVAS_W, CANVAS_H,
@@ -320,6 +376,7 @@ module.exports = {
   MAX_DEFLECT_ANGLE,
   SCORE_WIN,
   FLASH_FRAMES,
+  DIFFICULTY_LERP_MULTIPLIER,
 
   // Factory functions
   makeBall,
@@ -327,6 +384,7 @@ module.exports = {
   makeAiPaddle,
   makeGame,
   makeRally,
+  makeSettings,
 
   // Pure helpers
   rand,
@@ -343,4 +401,5 @@ module.exports = {
   updateBall,
   tickPause,
   tickFlash,
+  resetGame,
 };

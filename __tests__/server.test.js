@@ -360,3 +360,31 @@ describe('createStore', () => {
     expect(s.scores.size).toBe(0);
   });
 });
+
+// ── POST /api/events ─────────────────────────────────────────────────────────
+
+describe('POST /api/events', () => {
+  test('responds 204 for a recognised declared event type', async () => {
+    const app = createApp(createStore());
+    const res = await post(app, '/api/events', { type: 'play_again_click' });
+    expect(res.status).toBe(204);
+  });
+
+  test('responds 204 for the game_over_shown denominator event', async () => {
+    const app = createApp(createStore());
+    const res = await post(app, '/api/events', { type: 'game_over_shown' });
+    expect(res.status).toBe(204);
+  });
+
+  test('responds 204 even for an unrecognised event type (never fails the request)', async () => {
+    const app = createApp(createStore());
+    const res = await post(app, '/api/events', { type: 'something_unrelated' });
+    expect(res.status).toBe(204);
+  });
+
+  test('responds 204 when body is missing entirely', async () => {
+    const app = createApp(createStore());
+    const res = await post(app, '/api/events', {});
+    expect(res.status).toBe(204);
+  });
+});
