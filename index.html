@@ -245,6 +245,47 @@
     // requestAnimationFrame handle — kept so the loop can be paused on gameover.
     let rafId = null;
 
+    // ── Experiment telemetry (client-side event pings) ───────────────────────
+    //
+    // Fire-and-forget pings to the server so it can count a handful of
+    // browser-only events (game_over_shown, play_again_click, page_reload)
+    // through its OpenTelemetry instrumentation. Never affects gameplay: any
+    // failure here (network, storage, etc.) is silently swallowed.
+
+    const MENDEL_GAME_OVER_FLAG = 'mendelGameOverShown';
+
+    function sendMendelEvent(eventName) {
+      try {
+        const payload = JSON.stringify({ event: eventName });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/client-events', new Blob([payload], { type: 'application/json' }));
+        } else {
+          fetch('/api/client-events', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload,
+            keepalive: true,
+            credentials: 'same-origin',
+          }).catch(() => {});
+        }
+      } catch (err) {
+        // Telemetry must never break gameplay.
+      }
+    }
+
+    // A full browser page reload while the game-over overlay was showing
+    // leaves this sessionStorage flag set — it's only cleared by the in-page
+    // 'Play Again' restart — so finding it set here means the page just
+    // reloaded instead of restarting without a navigation.
+    try {
+      if (sessionStorage.getItem(MENDEL_GAME_OVER_FLAG) === '1') {
+        sessionStorage.removeItem(MENDEL_GAME_OVER_FLAG);
+        sendMendelEvent('page_reload');
+      }
+    } catch (err) {
+      // sessionStorage may be unavailable (e.g. private browsing) — ignore.
+    }
+
     // ── Input ─────────────────────────────────────────────────────────────────
     //
     // Boolean map of currently-held keys.  Checked each frame in update().
@@ -359,6 +400,9 @@
     function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
       // Remove any pre-existing overlay (defensive guard)
       removeGameOverOverlay();
+
+      try { sessionStorage.setItem(MENDEL_GAME_OVER_FLAG, '1'); } catch (err) { /* ignore */ }
+      sendMendelEvent('game_over_shown');
 
       const overlay = document.createElement('div');
       overlay.id = 'pong-overlay';
@@ -535,6 +579,10 @@
      * Called by the 'Play Again' button click and the Space keyboard shortcut.
      */
     function startNewGame() {
+      if (game.phase === 'gameover') {
+        try { sessionStorage.removeItem(MENDEL_GAME_OVER_FLAG); } catch (err) { /* ignore */ }
+        sendMendelEvent('play_again_click');
+      }
       removeGameOverOverlay();
       resetGame();
       // Clear the key map so a held-Space doesn't immediately trigger movement
