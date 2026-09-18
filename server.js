@@ -1,45 +1,52 @@
 'use strict';
 
 /**
- * server.js — Express API with ephemeral in-process storage and Google OAuth.
+ * server.js — Express API backed by MySQL (via Prisma) and Google OAuth.
  *
- * Storage backend: plain JavaScript Map objects (no external services, no
- * database).  All data is lost when the process exits, which is intentional
- * for the ephemeral-local-storage variation this app builds on.
+ * Storage backend: MySQL, accessed exclusively through a shared Prisma
+ * Client instance (lib/prisma.js). Connection info comes solely from the
+ * DATABASE_URL environment variable — see prisma/schema.prisma. There is no
+ * in-memory or SQLite fallback: a fresh MySQL instance is made schema-ready
+ * by running `prisma migrate deploy` at container startup (see Dockerfile),
+ * which applies the single migration checked into prisma/migrations/.
  *
  * Authentication: Google OAuth 2.0 via passport + passport-google-oauth20.
- * A successful OAuth round-trip upserts a user record (keyed by Google's
- * stable `sub` id) in the ephemeral store and establishes an HttpOnly
- * session cookie (express-session, in-memory store) so the login survives
- * page reloads for the lifetime of the process / cookie.
+ * A successful OAuth round-trip upserts a User row (keyed by Google's
+ * stable `sub` id) and establishes an HttpOnly session cookie
+ * (express-session) so the login survives page reloads. Pong has no
+ * username/password login of its own — there is no password column on
+ * User and this app never touches bcrypt — Google Sign-In is the only way
+ * to establish an identity that high scores and preferences can hang off.
  *
- * Requires registering the app in Google Cloud Console and setting
- * GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (and optionally an explicit
- * GOOGLE_CALLBACK_URL) environment variables. When deploying behind a
- * TLS-terminating proxy (e.g. Fly.io), the app must trust that proxy's
- * X-Forwarded-Proto header — otherwise the callback URL passport builds for
- * the OAuth redirect is silently downgraded to "http://…", which no longer
- * matches the "https://…" URI registered in Google Cloud Console and Google
- * rejects the request with "Error 400: redirect_uri_mismatch".
+ * Data model (see prisma/schema.prisma)
+ * ──────────────────────────────────────
+ *   User        Google `sub` id (primary key), email, display name, avatar.
+ *   Preference  One row per user (FK → User.id): theme / sound / paddle
+ *               color settings.
+ *   HighScore   One row per user (FK → User.id): that user's personal best.
  *
  * Endpoints
  * ─────────
  *   GET  /auth/google           Redirect to the Google consent screen.
  *   GET  /auth/google/callback  OAuth callback — exchanges code for profile,
- *                                upserts the user, establishes the session.
+ *                                upserts the User row, establishes the
+ *                                session.
  *   GET  /auth/logout           Destroy the session (logout).
  *   GET  /me                    Returns the logged-in user (or { user: null }).
  *
- *   POST /api/login              Legacy stub login — accepts any username,
- *                                 returns a session token (kept for backward
- *                                 compatibility with earlier variations).
- *   GET  /api/scores             List all high scores (sorted desc by score).
- *   POST /api/scores             Create or update a high score entry. If the
- *                                 caller has an authenticated Google session
- *                                 and no `player` is supplied, the player is
- *                                 derived from the logged-in user's identity.
- *   GET  /api/scores/:player     Get the high score for a specific player.
- *   DELETE /api/scores/:player   Delete the high score for a specific player.
+ *   GET    /api/preferences      Returns the logged-in user's preferences
+ *                                 (defaults if none have been saved yet).
+ *   PUT    /api/preferences      Create or update the logged-in user's
+ *                                 preferences.
+ *
+ *   GET    /api/scores           List high scores (sorted desc by score).
+ *   POST   /api/scores           Create or update the logged-in user's high
+ *                                 score. Requires an authenticated Google
+ *                                 session — every HighScore row is tied to a
+ *                                 User by foreign key, so there is no way to
+ *                                 record a score for an anonymous player.
+ *   GET    /api/scores/:userId   Get the high score for a specific user id.
+ *   DELETE /api/scores/:userId   Delete the high score for a specific user id.
  *
  *   GET  /health                 Basic health check (200 OK).
  *
@@ -48,8 +55,9 @@
  *                                 clicked, a page reload after game-over),
  *                                 counted via telemetry.js. No other effect.
  *
- * The module exports { app, store } so unit tests can inject their own store
- * and inspect state without starting a real HTTP server.
+ * The module exports { createApp, defaultPrisma } — createApp accepts any
+ * Prisma-Client-shaped object, so unit tests can inject a lightweight fake
+ * instead of talking to a real MySQL instance.
  */
 
 const express        = require('express');
@@ -59,33 +67,21 @@ const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const telemetry      = require('./telemetry');
-
-// ── Ephemeral store ────────────────────────────────────────────────────────
-//
-// Maps kept in memory for the lifetime of the process:
-//   sessions  : token → { username, createdAt }             (legacy stub login)
-//   scores    : username (lowercase) → { player, score, updatedAt }
-//   users     : Google `sub` id → { id, email, name, avatar, createdAt, updatedAt }
-//
-// Factory function so tests can create isolated instances.
-
-function createStore() {
-  return {
-    sessions: new Map(),
-    scores:   new Map(),
-    users:    new Map(),
-  };
-}
-
-// Module-level default store (used by the real server).
-const defaultStore = createStore();
+const defaultPrisma  = require('./lib/prisma');
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
-// Accepting a store parameter makes every endpoint independently testable
-// without touching the shared module-level state.
+// Accepting a `prisma` parameter makes every endpoint independently
+// testable against a lightweight fake instead of a real MySQL instance.
+//
+// `options.testAuth`, if provided, is a middleware inserted right after
+// passport's session middleware that can set `req.user` directly — a
+// testing seam only, so unit tests can exercise the login-gated routes
+// (POST /api/scores, /api/preferences) without a real Google OAuth
+// round-trip or hand-signing session cookies. Production startup (below)
+// never passes it.
 
-function createApp(store = defaultStore) {
+function createApp(prisma = defaultPrisma, options = {}) {
   const app = express();
 
   // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
@@ -104,9 +100,11 @@ function createApp(store = defaultStore) {
 
   // ── Session middleware (HttpOnly cookie, in-memory store) ────────────────
   //
-  // SESSION_SECRET should be set in production. If it isn't, a random secret
-  // is generated per-process — sessions simply won't survive a restart,
-  // which matches the ephemeral-storage philosophy of the rest of this app.
+  // Sessions themselves stay in-process (express-session's default
+  // MemoryStore) — only durable data (users, preferences, high scores) lives
+  // in MySQL. SESSION_SECRET should be set in production; if it isn't, a
+  // random secret is generated per-process, so sessions simply won't survive
+  // a restart.
 
   const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
@@ -127,6 +125,10 @@ function createApp(store = defaultStore) {
   app.use(passport.initialize());
   app.use(passport.session());
 
+  if (typeof options.testAuth === 'function') {
+    app.use(options.testAuth);
+  }
+
   // ── Experiment telemetry (isolated OpenTelemetry metrics) ────────────────
   //
   // Counts requests / participants / declared events for the live
@@ -137,34 +139,35 @@ function createApp(store = defaultStore) {
   // ── Google OAuth (passport) ──────────────────────────────────────────────
 
   /**
-   * Upsert a user record keyed by Google's stable `sub` id (mapped to
-   * `profile.id` by passport-google-oauth20).
+   * Upsert a User row keyed by Google's stable `sub` id (mapped to
+   * `profile.id` by passport-google-oauth20). Fields Google didn't return
+   * this time (e.g. avatar on a re-login where the scope changed) fall back
+   * to whatever is already stored rather than being blanked out.
    */
-  function upsertGoogleUser(profile) {
+  async function upsertGoogleUser(profile) {
     const id     = profile.id;
     const email  = (profile.emails && profile.emails[0] && profile.emails[0].value) || null;
     const name   = profile.displayName || null;
     const avatar = (profile.photos && profile.photos[0] && profile.photos[0].value) || null;
 
-    const existing = store.users.get(id);
-    const user = {
-      id,
-      email:     email  || (existing && existing.email)  || null,
-      name:      name   || (existing && existing.name)   || null,
-      avatar:    avatar || (existing && existing.avatar) || null,
-      createdAt: (existing && existing.createdAt) || Date.now(),
-      updatedAt: Date.now(),
-    };
+    const updateData = {};
+    if (email)  updateData.email  = email;
+    if (name)   updateData.name   = name;
+    if (avatar) updateData.avatar = avatar;
 
-    store.users.set(id, user);
-    return user;
+    return prisma.user.upsert({
+      where:  { id },
+      update: updateData,
+      create: { id, email, name, avatar },
+    });
   }
 
   passport.serializeUser((user, done) => done(null, user.id));
 
   passport.deserializeUser((id, done) => {
-    const user = store.users.get(id);
-    done(null, user || false);
+    prisma.user.findUnique({ where: { id } })
+      .then((user) => done(null, user || false))
+      .catch((err) => done(err));
   });
 
   // GOOGLE_CALLBACK_URL may be:
@@ -191,12 +194,9 @@ function createApp(store = defaultStore) {
         callbackURL:  GOOGLE_CALLBACK_URL,
       },
       (accessToken, refreshToken, profile, done) => {
-        try {
-          const user = upsertGoogleUser(profile);
-          done(null, user);
-        } catch (err) {
-          done(err);
-        }
+        upsertGoogleUser(profile)
+          .then((user) => done(null, user))
+          .catch((err) => done(err));
       },
     ));
   }
@@ -237,7 +237,7 @@ function createApp(store = defaultStore) {
 
   // ── GET /auth/google/callback ─────────────────────────────────────────────
   //
-  // Exchanges the authorization code for a profile, upserts the user record,
+  // Exchanges the authorization code for a profile, upserts the User row,
   // and establishes the session before redirecting back to the app.
 
   app.get('/auth/google/callback', (req, res, next) => {
@@ -275,115 +275,189 @@ function createApp(store = defaultStore) {
     return res.status(200).json({ user: null });
   });
 
-  // ── POST /api/login ──────────────────────────────────────────────────────
+  // ── Auth guard helper ────────────────────────────────────────────────────
+
+  function requireLogin(req, res) {
+    if (req.isAuthenticated && req.isAuthenticated() && req.user) {
+      return true;
+    }
+    res.status(401).json({ error: 'login required' });
+    return false;
+  }
+
+  // ── GET /api/preferences ─────────────────────────────────────────────────
   //
-  // Legacy stub authentication (kept for backward compatibility): any
-  // non-empty username is accepted and returns a random session token.
+  // Returns the logged-in user's saved preferences, or the schema defaults
+  // if none have been saved yet.
 
-  app.post('/api/login', (req, res) => {
-    const { username } = req.body || {};
+  app.get('/api/preferences', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
 
-    if (!username || typeof username !== 'string' || username.trim() === '') {
-      return res.status(400).json({ error: 'username is required' });
+    try {
+      const pref = await prisma.preference.findUnique({ where: { userId: req.user.id } });
+      return res.status(200).json({
+        preferences: pref || { theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' },
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ── PUT /api/preferences ─────────────────────────────────────────────────
+  //
+  // Create or update the logged-in user's preferences.
+  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: string }
+
+  app.put('/api/preferences', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    const body = req.body || {};
+    const data = {};
+
+    if (body.theme !== undefined) {
+      if (typeof body.theme !== 'string' || body.theme.trim() === '') {
+        return res.status(400).json({ error: 'theme must be a non-empty string' });
+      }
+      data.theme = body.theme.trim();
     }
 
-    const player = username.trim().toLowerCase();
-    const token  = crypto.randomBytes(16).toString('hex');
-    store.sessions.set(token, { username: player, createdAt: Date.now() });
+    if (body.soundEnabled !== undefined) {
+      if (typeof body.soundEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'soundEnabled must be a boolean' });
+      }
+      data.soundEnabled = body.soundEnabled;
+    }
 
-    return res.status(200).json({ token, username: player });
+    if (body.paddleColor !== undefined) {
+      if (typeof body.paddleColor !== 'string' || body.paddleColor.trim() === '') {
+        return res.status(400).json({ error: 'paddleColor must be a non-empty string' });
+      }
+      data.paddleColor = body.paddleColor.trim();
+    }
+
+    try {
+      const pref = await prisma.preference.upsert({
+        where:  { userId: req.user.id },
+        update: data,
+        create: { userId: req.user.id, ...data },
+      });
+      return res.status(200).json({ preferences: pref });
+    } catch (err) {
+      return next(err);
+    }
   });
 
   // ── GET /api/scores ───────────────────────────────────────────────────────
   //
-  // Returns all stored high scores sorted by score descending.
+  // Returns high scores sorted by score descending.
   // Optional query param: ?limit=N  (max 100)
 
-  app.get('/api/scores', (req, res) => {
+  app.get('/api/scores', async (req, res, next) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 100);
 
-    const entries = Array.from(store.scores.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
+    try {
+      const rows = await prisma.highScore.findMany({
+        orderBy: { score: 'desc' },
+        take:    limit,
+        include: { user: true },
+      });
 
-    return res.status(200).json({ scores: entries });
+      const scores = rows.map(toScoreEntry);
+      return res.status(200).json({ scores });
+    } catch (err) {
+      return next(err);
+    }
   });
 
   // ── POST /api/scores ──────────────────────────────────────────────────────
   //
-  // Create or update (upsert) a high score for the given player.
-  // Only updates if the new score is strictly higher than the stored one.
-  // Body: { player?: string, score: number }
-  //
-  // If `player` is omitted and the request carries an authenticated Google
-  // OAuth session (see /auth/google), the player identity is derived from
-  // the logged-in user (email, then name, then Google id) — this is what
-  // the 'Save Score' button in the UI relies on.
+  // Create or update (upsert) the logged-in user's high score. Only updates
+  // if the new score is strictly higher than the stored one. Requires an
+  // authenticated Google session — HighScore.userId is a foreign key to
+  // User.id, so there is no such thing as an anonymous high score.
+  // Body: { score: number }
 
-  app.post('/api/scores', (req, res) => {
-    const body  = req.body || {};
-    const score = body.score;
-    let player  = body.player;
+  app.post('/api/scores', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
 
-    const hasExplicitPlayer = typeof player === 'string' && player.trim() !== '';
-
-    if (!hasExplicitPlayer && req.isAuthenticated && req.isAuthenticated() && req.user) {
-      player = req.user.email || req.user.name || req.user.id;
-    }
-
-    if (!player || typeof player !== 'string' || player.trim() === '') {
-      return res.status(400).json({ error: 'player is required' });
-    }
+    const score = req.body && req.body.score;
 
     if (typeof score !== 'number' || !Number.isFinite(score) || score < 0) {
       return res.status(400).json({ error: 'score must be a non-negative finite number' });
     }
 
-    const key      = player.trim().toLowerCase();
-    const existing = store.scores.get(key);
+    try {
+      const userId  = req.user.id;
+      const existing = await prisma.highScore.findUnique({ where: { userId } });
 
-    // Only store if it's a new personal best (or first entry)
-    if (!existing || score > existing.score) {
-      const entry = { player: key, score, updatedAt: Date.now() };
-      store.scores.set(key, entry);
-      return res.status(200).json({ updated: true, entry });
+      if (existing && score <= existing.score) {
+        return res.status(200).json({ updated: false, entry: toScoreEntry({ ...existing, user: req.user }) });
+      }
+
+      const row = await prisma.highScore.upsert({
+        where:  { userId },
+        update: { score },
+        create: { userId, score },
+      });
+
+      return res.status(200).json({ updated: true, entry: toScoreEntry({ ...row, user: req.user }) });
+    } catch (err) {
+      return next(err);
     }
-
-    return res.status(200).json({ updated: false, entry: existing });
   });
 
-  // ── GET /api/scores/:player ───────────────────────────────────────────────
+  // ── GET /api/scores/:userId ───────────────────────────────────────────────
   //
-  // Retrieve the high score for a specific player.
+  // Retrieve the high score for a specific user id (Google `sub`).
 
-  app.get('/api/scores/:player', (req, res) => {
-    const key   = req.params.player.trim().toLowerCase();
-    const entry = store.scores.get(key);
+  app.get('/api/scores/:userId', async (req, res, next) => {
+    try {
+      const row = await prisma.highScore.findUnique({
+        where:   { userId: req.params.userId },
+        include: { user: true },
+      });
 
-    if (!entry) {
-      return res.status(404).json({ error: 'player not found' });
+      if (!row) {
+        return res.status(404).json({ error: 'player not found' });
+      }
+
+      return res.status(200).json({ entry: toScoreEntry(row) });
+    } catch (err) {
+      return next(err);
     }
-
-    return res.status(200).json({ entry });
   });
 
-  // ── DELETE /api/scores/:player ────────────────────────────────────────────
+  // ── DELETE /api/scores/:userId ────────────────────────────────────────────
   //
-  // Remove the high score entry for the given player.
+  // Remove the high score entry for the given user id.
 
-  app.delete('/api/scores/:player', (req, res) => {
-    const key     = req.params.player.trim().toLowerCase();
-    const existed = store.scores.has(key);
-
-    if (!existed) {
-      return res.status(404).json({ error: 'player not found' });
+  app.delete('/api/scores/:userId', async (req, res, next) => {
+    try {
+      await prisma.highScore.delete({ where: { userId: req.params.userId } });
+      return res.status(200).json({ deleted: true, userId: req.params.userId });
+    } catch (err) {
+      // Prisma throws P2025 ("Record to delete does not exist") on a miss.
+      if (err && err.code === 'P2025') {
+        return res.status(404).json({ error: 'player not found' });
+      }
+      return next(err);
     }
-
-    store.scores.delete(key);
-    return res.status(200).json({ deleted: true, player: key });
   });
 
   return app;
+}
+
+/**
+ * Shapes a HighScore row (optionally with an included/attached `user`) into
+ * the { player, score, updatedAt } entry the API has always returned —
+ * `player` is the best available human-readable identity (name, then email,
+ * then the raw Google id).
+ */
+function toScoreEntry(row) {
+  const user   = row.user || {};
+  const player = user.name || user.email || row.userId;
+  const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
+  return { player, userId: row.userId, score: row.score, updatedAt };
 }
 
 // ── Start server (when run directly) ──────────────────────────────────────
@@ -391,11 +465,11 @@ function createApp(store = defaultStore) {
 if (require.main === module) {
   const PORT = parseInt(process.env.PORT, 10) || 3000;
   const HOST = '0.0.0.0';
-  const app  = createApp(defaultStore);
+  const app  = createApp(defaultPrisma);
 
   app.listen(PORT, HOST, () => {
     console.log(`Pong server listening on ${HOST}:${PORT}`);
-    console.log('Storage: ephemeral in-process Map (data lost on restart)');
+    console.log('Storage: MySQL via Prisma (DATABASE_URL)');
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
       console.log('Google OAuth: NOT configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)');
     } else {
@@ -404,4 +478,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createApp, createStore };
+module.exports = { createApp, defaultPrisma };
