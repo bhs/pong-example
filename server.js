@@ -43,6 +43,11 @@
  *
  *   GET  /health                 Basic health check (200 OK).
  *
+ *   POST /api/client-events      Fire-and-forget pings for browser-only
+ *                                 events (game-over shown, Play Again
+ *                                 clicked, a page reload after game-over),
+ *                                 counted via telemetry.js. No other effect.
+ *
  * The module exports { app, store } so unit tests can inject their own store
  * and inspect state without starting a real HTTP server.
  */
@@ -53,6 +58,7 @@ const crypto         = require('crypto');
 const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const telemetry      = require('./telemetry');
 
 // ── Ephemeral store ────────────────────────────────────────────────────────
 //
@@ -120,6 +126,13 @@ function createApp(store = defaultStore) {
 
   app.use(passport.initialize());
   app.use(passport.session());
+
+  // ── Experiment telemetry (isolated OpenTelemetry metrics) ────────────────
+  //
+  // Counts requests / participants / declared events for the live
+  // control-vs-variation comparison. Entirely inert when the MENDEL_METRICS_*
+  // / MENDEL_EXPERIMENT_ID environment variables aren't configured.
+  app.use(telemetry.middleware);
 
   // ── Google OAuth (passport) ──────────────────────────────────────────────
 
@@ -195,6 +208,20 @@ function createApp(store = defaultStore) {
 
   app.get('/health', (req, res) => {
     return res.status(200).json({ status: 'ok' });
+  });
+
+  // ── POST /api/client-events ───────────────────────────────────────────────
+  //
+  // Fire-and-forget pings from the client for the handful of events that can
+  // only be observed in the browser (the game-over screen being shown,
+  // 'Play Again' being triggered, a full page reload while it was showing).
+  // Only known event names are counted (via the experiment telemetry); the
+  // endpoint has no other side effect and always responds 204.
+
+  app.post('/api/client-events', (req, res) => {
+    const eventName = req.body && req.body.event;
+    telemetry.recordClientEvent(eventName, req);
+    return res.status(204).end();
   });
 
   // ── GET /auth/google ──────────────────────────────────────────────────────
