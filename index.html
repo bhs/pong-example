@@ -191,12 +191,71 @@
 
     // ── State ─────────────────────────────────────────────────────────────────
     //
-    // All mutable game state lives in plain objects at module scope.
+    // All mutable game state lives in small, independent modules below
+    // (ball / paddle / score / rally / game phase), each owning only its own
+    // slice and each registering its own 'game:restart' listener.
+    //
+    // ── GameController (event-driven restart) ───────────────────────────────
+    //
+    // A tiny in-file pub/sub hub. Instead of a monolithic "reset everything"
+    // pass, the controller only ever broadcasts a single 'game:restart'
+    // CustomEvent — every module below (ball / paddle / score / rally / game
+    // phase) independently listens for it and resets *only* its own local
+    // state. Nothing here needs to know what ball.js or paddle.js contain,
+    // which is what makes it easy to bolt on more listeners later (e.g. a
+    // multiplayer reset, or a pause/resume module) without touching this file.
+    //
+    // `running` is the flag the main loop checks each frame: false pauses
+    // requestAnimationFrame scheduling (game-over) and true resumes it
+    // (restart) — no full re-initialization pass is required either way.
+    const GameController = Object.assign(new EventTarget(), {
+      running: true,
+
+      /**
+       * Wire up the Space-key restart shortcut once. This is deliberately
+       * the only restart trigger registered here — the 'Play Again' button
+       * itself is created fresh inside a new overlay each game-over, so it
+       * attaches its own click listener directly (see showGameOverOverlay).
+       * Both paths ultimately call startNewGame(), which removes the
+       * overlay, broadcasts 'game:restart', and resumes the RAF loop.
+       */
+      init() {
+        window.addEventListener('keydown', (e) => {
+          if (e.code === 'Space' && !this.running) {
+            startNewGame();
+          }
+        });
+      },
+
+      /** Pause the RAF loop (called once when a game-over is reached). */
+      pause() {
+        this.running = false;
+      },
+
+      /** Broadcast a restart request, then resume the loop. */
+      restart() {
+        this.dispatchEvent(new CustomEvent('game:restart'));
+        this.running = true;
+      },
+    });
+
+    // ── Preferences ───────────────────────────────────────────────────────────
+    //
+    // Settings that must survive a restart untouched. No 'game:restart'
+    // listener below ever writes to this object — restart only resets
+    // gameplay state (ball / paddle / score / rally / phase), never
+    // configuration — which is exactly what keeps preferences stable across
+    // a full restart cycle.
+    const preferences = {
+      scoreToWin: SCORE_WIN,
+      aiLerp:     AI_LERP,
+    };
+
+    // ── Ball module ───────────────────────────────────────────────────────────
+    //
     // Ball velocity is stored as a speed scalar + angle in radians so that
     // deflection and reflection logic operates directly on the angle.
     // vx / vy are kept in sync via syncBallVelocity() for collision maths.
-    //
-    // resetBall() re-initialises the ball each point; resetGame() resets scores.
 
     const ball = {
       x:     CANVAS_W / 2 - BALL_SIZE / 2,
@@ -209,13 +268,25 @@
       h:     BALL_SIZE,
     };
 
+    // On restart the ball only resets its own position/velocity — it has no
+    // opinion on scores, paddle positions, or preferences.
+    GameController.addEventListener('game:restart', () => {
+      ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
+      ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
+      ball.speed = 0;
+      ball.angle = 0;
+      ball.vx    = 0;
+      ball.vy    = 0;
+    });
+
+    // ── Paddle module ─────────────────────────────────────────────────────────
+    //
     // Left paddle — controlled by the player (W / S or Arrow-Up / Arrow-Down)
     const playerPaddle = {
       x: 30,
       y: CANVAS_H / 2 - PADDLE_H / 2,
       w: PADDLE_W,
       h: PADDLE_H,
-      score: 0,
     };
 
     // Right paddle — controlled by the AI
@@ -224,23 +295,58 @@
       y: CANVAS_H / 2 - PADDLE_H / 2,
       w: PADDLE_W,
       h: PADDLE_H,
-      score: 0,
     };
 
-    // gameState can be: 'playing' | 'scored' | 'gameover'
-    // (replaces the original 'won' phase; the overlay handles that display layer)
+    // On restart, paddles only re-centre themselves vertically.
+    GameController.addEventListener('game:restart', () => {
+      playerPaddle.y = CANVAS_H / 2 - PADDLE_H / 2;
+      aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
+    });
+
+    // ── Score module ──────────────────────────────────────────────────────────
+    //
+    // Scores live in their own module-scoped object, decoupled from the
+    // paddles, so a restart can zero them out without the paddle module
+    // needing to know scores exist at all.
+    const scoreboard = {
+      player: 0,
+      ai:     0,
+    };
+
+    // On restart the score module only zeroes its own two counters.
+    GameController.addEventListener('game:restart', () => {
+      scoreboard.player = 0;
+      scoreboard.ai     = 0;
+    });
+
+    // ── Game-phase module ─────────────────────────────────────────────────────
+    //
+    // gamePhase can be: 'playing' | 'scored' | 'gameover'
     const game = {
       phase:      'scored',   // start in 'scored' so the ball resets at t=0
       winner:     null,       // 'player' | 'ai' | null
       pauseTimer: 1.2,        // seconds to wait before serving next ball
     };
 
-    // Rally state — tracks consecutive paddle hits for difficulty escalation
-    // and the short score-flash effect.
+    GameController.addEventListener('game:restart', () => {
+      game.winner     = null;
+      game.phase      = 'scored';
+      game.pauseTimer = 1.5;
+    });
+
+    // ── Rally module ──────────────────────────────────────────────────────────
+    //
+    // Tracks consecutive paddle hits for difficulty escalation and the short
+    // score-flash effect.
     const rally = {
       rallyCount:  0,   // hits since last score; resets each point
       flashFrames: 0,   // counts down from FLASH_FRAMES to 0 after scoring
     };
+
+    GameController.addEventListener('game:restart', () => {
+      rally.rallyCount  = 0;
+      rally.flashFrames = 0;
+    });
 
     // requestAnimationFrame handle — kept so the loop can be paused on gameover.
     let rafId = null;
@@ -257,15 +363,14 @@
       if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
         e.preventDefault();
       }
-      // Space triggers restart when overlay is visible (accessibility shortcut)
-      if (e.code === 'Space' && game.phase === 'gameover') {
-        startNewGame();
-      }
     });
 
     window.addEventListener('keyup', (e) => {
       keys[e.code] = false;
     });
+
+    // Wire up the Space-key / Play-Again restart triggers (see above).
+    GameController.init();
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -328,19 +433,71 @@
     }
 
     /**
-     * Reset both paddles and scores; start fresh.
+     * Ask every module to reset its own local state for a fresh game.
+     *
+     * Rather than reaching into ball / paddle / score / rally / game and
+     * mutating each one directly, this broadcasts a single 'game:restart'
+     * event via the GameController — the listeners registered alongside
+     * each module (above) do the actual resetting. Preferences are never
+     * touched by any of them.
      */
     function resetGame() {
-      playerPaddle.y = CANVAS_H / 2 - PADDLE_H / 2;
-      aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
-      playerPaddle.score = 0;
-      aiPaddle.score     = 0;
-      game.winner     = null;
-      game.phase      = 'scored';
-      game.pauseTimer = 1.5;
-      rally.rallyCount  = 0;
-      rally.flashFrames = 0;
+      GameController.restart();
     }
+
+    // ── Live-traffic experiment instrumentation ─────────────────────────────
+    //
+    // Reports the declared events for this hop's experiment (see
+    // mendel-metrics.js on the server):
+    //   game_over_shown   — the overlay above was just displayed
+    //   play_again_click  — Play Again was clicked, or Space was pressed
+    //   page_reload       — the page was reloaded while a game-over overlay
+    //                        was showing, instead of using Play Again
+    //
+    // sessionStorage (survives a reload, cleared per-tab) is used to detect
+    // the "reload instead of Play Again" case: the flag is set the moment
+    // the overlay appears and cleared the moment Play Again is used. If the
+    // flag is still set on the very next page load, a reload happened first.
+
+    const GAME_OVER_FLAG_KEY = 'pong_game_over_shown';
+
+    /** POST a declared event type to the server. Never throws. */
+    function reportEvent(type) {
+      try {
+        fetch('/api/events', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ type }),
+          keepalive: true,
+        }).catch(() => {});
+      } catch (err) {
+        // never let telemetry break the game
+      }
+    }
+
+    function markGameOverShown() {
+      try { sessionStorage.setItem(GAME_OVER_FLAG_KEY, '1'); } catch (err) {}
+      reportEvent('game_over_shown');
+    }
+
+    function clearGameOverFlag() {
+      try { sessionStorage.removeItem(GAME_OVER_FLAG_KEY); } catch (err) {}
+    }
+
+    // Run once at script load: if the flag from a previous game-over is
+    // still set, the player reloaded the page instead of clicking Play
+    // Again (or pressing Space).
+    (function detectReloadAfterGameOver() {
+      try {
+        if (sessionStorage.getItem(GAME_OVER_FLAG_KEY) === '1') {
+          reportEvent('page_reload');
+          sessionStorage.removeItem(GAME_OVER_FLAG_KEY);
+        }
+      } catch (err) {
+        // sessionStorage unavailable (e.g. privacy mode) — nothing to detect
+      }
+    })();
 
     // ── DOM Overlay ───────────────────────────────────────────────────────────
     //
@@ -359,6 +516,7 @@
     function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
       // Remove any pre-existing overlay (defensive guard)
       removeGameOverOverlay();
+      markGameOverShown();
 
       const overlay = document.createElement('div');
       overlay.id = 'pong-overlay';
@@ -496,7 +654,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ score: playerPaddle.score }),
+          body: JSON.stringify({ score: scoreboard.player }),
         });
         btn.textContent = res.ok ? 'Saved!' : 'Failed';
       } catch (err) {
@@ -535,6 +693,8 @@
      * Called by the 'Play Again' button click and the Space keyboard shortcut.
      */
     function startNewGame() {
+      reportEvent('play_again_click');
+      clearGameOverFlag();
       removeGameOverOverlay();
       resetGame();
       // Clear the key map so a held-Space doesn't immediately trigger movement
@@ -555,8 +715,10 @@
 
     function update(dt) {
       // ── Phase: gameover ──────────────────────────────────────────────────────
-      // The RAF loop is paused when gameover; nothing to update.
-      if (game.phase === 'gameover') return;
+      // The main loop checks GameController.running each frame and stops
+      // scheduling itself once it's false, so update() is not even called
+      // while paused — this check just guards a stray call defensively.
+      if (game.phase === 'gameover' || !GameController.running) return;
 
       // ── Phase: scored (brief pause before next serve) ────────────────────
       if (game.phase === 'scored') {
@@ -566,7 +728,7 @@
         game.pauseTimer -= dt;
         if (game.pauseTimer <= 0) {
           // Serve toward the player who just conceded (or random on first serve)
-          const dir = aiPaddle.score > playerPaddle.score ? -1 : 1;
+          const dir = scoreboard.ai > scoreboard.player ? -1 : 1;
           resetBall(dir);
           game.phase = 'playing';
         }
@@ -589,7 +751,7 @@
       const ballCentreY   = ball.y + BALL_SIZE / 2;
       const aiCentreY     = aiPaddle.y + PADDLE_H / 2;
       const aiDiff        = ballCentreY - aiCentreY;
-      const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
+      const effectiveLerp = preferences.aiLerp + rally.rallyCount * AI_LERP_RALLY_INC;
       const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
       aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - PADDLE_H);
 
@@ -642,10 +804,10 @@
 
       // ── Ball exits left → AI scores ───────────────────────────────────────
       if (ball.x + BALL_SIZE < 0) {
-        aiPaddle.score += 1;
+        scoreboard.ai += 1;
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
-        if (aiPaddle.score >= SCORE_WIN) {
+        if (scoreboard.ai >= preferences.scoreToWin) {
           game.phase  = 'gameover';
           game.winner = 'ai';
         } else {
@@ -656,10 +818,10 @@
 
       // ── Ball exits right → player scores ─────────────────────────────────
       if (ball.x > CANVAS_W) {
-        playerPaddle.score += 1;
+        scoreboard.player += 1;
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
-        if (playerPaddle.score >= SCORE_WIN) {
+        if (scoreboard.player >= preferences.scoreToWin) {
           game.phase  = 'gameover';
           game.winner = 'player';
         } else {
@@ -706,8 +868,8 @@
       ctx.font = 'bold 48px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillText(playerPaddle.score, CANVAS_W / 4, 20);
-      ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
+      ctx.fillText(scoreboard.player, CANVAS_W / 4, 20);
+      ctx.fillText(scoreboard.ai, (CANVAS_W / 4) * 3, 20);
 
       // Player paddle
       ctx.fillStyle = '#fff';
@@ -740,8 +902,11 @@
     // performance.now() and is used to compute delta-time (dt, in seconds).
     // Delta-time is capped at 100 ms to avoid large jumps after tab switches.
     //
-    // When game.phase becomes 'gameover' the loop stops scheduling itself and
-    // shows the HTML overlay instead.
+    // The loop checks GameController.running each frame — it's set to false
+    // the moment game.phase becomes 'gameover' (pausing the loop and showing
+    // the HTML overlay) and back to true by GameController.restart() (Play
+    // Again click / Space press), which resumes scheduling without needing
+    // a full re-initialization pass.
 
     let lastTime = null;
 
@@ -755,12 +920,16 @@
       update(dt);
       render();
 
-      if (game.phase === 'gameover') {
+      if (game.phase === 'gameover' && GameController.running) {
         // Pause the loop and present the DOM overlay
-        rafId = null;
+        GameController.pause();
         const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
-        showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score);
-        return; // do NOT schedule next frame
+        showGameOverOverlay(winnerLabel, scoreboard.player, scoreboard.ai);
+      }
+
+      if (!GameController.running) {
+        rafId = null;
+        return; // do NOT schedule next frame while paused
       }
 
       rafId = requestAnimationFrame(loop);

@@ -1,0 +1,20 @@
+{
+  "assignment_unit": "device",
+  "dissonance": "Clicking Play Again (or pressing Space) instantly resets the ball, paddles and score in place, with no flash and no reload — the browser tab, URL, sign-in session and any in-session preferences stay exactly as they were. Take this away and Play Again would need a full page reload to start a fresh match, showing a brief blank flash and re-running page load work (auth check, asset fetch) every time, and any in-session preference could be lost in the process.",
+  "metrics": [
+    {
+      "name": "play_again_click",
+      "per": "game_over_shown",
+      "role": "primary",
+      "better": "higher",
+      "description": "Counts how often players click the Play Again button (or press Space) after the game-over screen is shown, divided by how many times the game-over screen was shown."
+    },
+    {
+      "name": "page_reload",
+      "per": "game_over_shown",
+      "role": "guardrail",
+      "better": "lower",
+      "description": "Counts full browser page reloads that occur after a game-over screen is shown, which should stay near zero since restart should happen without reloading."
+    }
+  ]
+}

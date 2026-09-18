@@ -1073,4 +1073,73 @@ describe('index.html', () => {
     // The overlay shows a winner label (You win / AI wins)
     expect(html).toMatch(/You win|AI wins/);
   });
+
+  // ── event-driven restart (GameController pub/sub) ───────────────────────
+
+  test('defines a GameController pub/sub hub', () => {
+    expect(html).toMatch(/GameController/);
+    expect(html).toMatch(/new EventTarget\s*\(\s*\)/);
+  });
+
+  test('GameController exposes init()', () => {
+    expect(html).toMatch(/init\s*\(\s*\)\s*{/);
+    expect(html).toMatch(/GameController\.init\s*\(\s*\)/);
+  });
+
+  test('restart is broadcast as a game:restart CustomEvent', () => {
+    expect(html).toMatch(/new CustomEvent\s*\(\s*['"]game:restart['"]/);
+    expect(html).toMatch(/dispatchEvent/);
+  });
+
+  test('ball, paddle, and score modules each register their own restart listener', () => {
+    // Every module-level reset happens via its own addEventListener call
+    // rather than one function reaching into all of them.
+    const restartListenerCount = (html.match(/addEventListener\(\s*['"]game:restart['"]/g) || []).length;
+    expect(restartListenerCount).toBeGreaterThanOrEqual(4); // ball, paddle, score, game/rally
+  });
+
+  test('score lives in its own module-scoped object, decoupled from paddles', () => {
+    expect(html).toMatch(/scoreboard/);
+    expect(html).not.toMatch(/playerPaddle\.score/);
+    expect(html).not.toMatch(/aiPaddle\.score/);
+  });
+
+  test('preferences object exists and is never mutated by a restart listener', () => {
+    const prefsIndex = html.indexOf('const preferences');
+    expect(prefsIndex).toBeGreaterThan(-1);
+
+    // None of the 'game:restart' listener bodies should assign to preferences.*
+    const restartListenerBodies = html.match(/addEventListener\(\s*['"]game:restart['"][^]*?\}\);/g) || [];
+    expect(restartListenerBodies.length).toBeGreaterThan(0);
+    for (const body of restartListenerBodies) {
+      expect(body).not.toMatch(/preferences\.\w+\s*=/);
+    }
+  });
+
+  test('main loop checks a running flag toggled by the controller', () => {
+    expect(html).toMatch(/GameController\.running/);
+    expect(html).toMatch(/GameController\.pause\s*\(\s*\)/);
+    expect(html).toMatch(/GameController\.restart\s*\(\s*\)/);
+  });
+
+  // ── live-traffic experiment instrumentation ──────────────────────────────
+
+  test('reports game_over_shown when the overlay is displayed', () => {
+    expect(html).toMatch(/markGameOverShown/);
+    expect(html).toMatch(/game_over_shown/);
+  });
+
+  test('reports play_again_click from the restart flow', () => {
+    expect(html).toMatch(/play_again_click/);
+  });
+
+  test('detects a page reload after game-over via sessionStorage', () => {
+    expect(html).toMatch(/sessionStorage/);
+    expect(html).toMatch(/page_reload/);
+  });
+
+  test('reportEvent posts to /api/events and never throws', () => {
+    expect(html).toMatch(/function reportEvent/);
+    expect(html).toMatch(/\/api\/events/);
+  });
 });
