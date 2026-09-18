@@ -24,16 +24,15 @@ EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=5 \
   CMD wget -q --spider "http://127.0.0.1:${PORT:-3000}/health" || exit 1
 
-# On startup: if DATABASE_URL is configured, apply exactly the migration(s)
-# checked into prisma/migrations/ against it — `prisma migrate deploy` only
+# On startup: always apply exactly the migration(s) checked into
+# prisma/migrations/ against DATABASE_URL — `prisma migrate deploy` only
 # ever runs migrations that are already committed to this repo; it never
 # generates new ones and never falls back to `prisma db push`. A fresh
 # managed MySQL instance is schema-ready after this with zero manual steps.
 #
-# If DATABASE_URL is NOT set (e.g. this repo's own test container, which
-# intentionally runs with no database attached), skip the migration step
-# instead of letting the `prisma migrate deploy` CLI hard-fail on the
-# missing env var before the process ever starts. lib/prisma.js already
-# tolerates a missing DATABASE_URL at require-time, so the Express server
-# itself still boots fine either way.
-CMD ["sh", "-c", "if [ -n \"$DATABASE_URL\" ]; then npx prisma migrate deploy || exit 1; fi; exec node server.js"]
+# DATABASE_URL is a required secret (see .mendel/requirements.json) — there
+# is no skip-if-unset fallback. If it's missing, `prisma migrate deploy`
+# fails fast with a clear "Environment variable not found: DATABASE_URL"
+# error and the container stops instead of silently starting a server that
+# can't reach a database.
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node server.js"]
