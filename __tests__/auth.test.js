@@ -3,15 +3,17 @@
 /**
  * __tests__/auth.test.js
  *
- * Unit tests for the Google OAuth / session endpoints added on top of the
- * ephemeral-local-storage Express API. Each suite creates its own isolated
- * store. Google credentials are intentionally left unset in this test run,
- * so /auth/google* endpoints exercise their "not configured" guard rather
+ * Unit tests for the Google OAuth / session endpoints on top of the
+ * Prisma/MySQL-backed Express API. Each suite creates its own isolated
+ * fake Prisma client (see __tests__/helpers/fakePrisma.js). Google
+ * credentials are intentionally left unset in this test run, so
+ * /auth/google* endpoints exercise their "not configured" guard rather
  * than performing a real OAuth round-trip (which would require network
  * access to Google and cannot be part of a self-contained unit test).
  */
 
-const { createApp, createStore } = require('../server');
+const { createApp } = require('../server');
+const { createFakePrisma } = require('./helpers/fakePrisma');
 
 // ── Minimal HTTP request helper (mirrors __tests__/server.test.js) ────────
 
@@ -56,14 +58,14 @@ function makeRequest(app, method, url, body = null, extraHeaders = {}) {
   });
 }
 
-function get(app, url, headers)         { return makeRequest(app, 'GET', url, null, headers); }
-function post(app, url, body)  { return makeRequest(app, 'POST', url, body); }
+function get(app, url, headers)  { return makeRequest(app, 'GET', url, null, headers); }
+function post(app, url, body)    { return makeRequest(app, 'POST', url, body); }
 
 // ── GET /health ─────────────────────────────────────────────────────────────
 
 describe('GET /health', () => {
   test('returns 200 with status ok', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakePrisma());
     const res = await get(app, '/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
@@ -74,10 +76,20 @@ describe('GET /health', () => {
 
 describe('GET /me', () => {
   test('returns { user: null } when there is no session', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakePrisma());
     const res = await get(app, '/me');
     expect(res.status).toBe(200);
     expect(res.body.user).toBeNull();
+  });
+
+  test('returns the logged-in user via the testAuth seam', async () => {
+    const user = { id: 'google-sub-1', email: 'a@example.com', name: 'A', avatar: null };
+    const app  = createApp(createFakePrisma(), {
+      testAuth: (req, res, next) => { req.user = user; req.isAuthenticated = () => true; next(); },
+    });
+    const res = await get(app, '/me');
+    expect(res.status).toBe(200);
+    expect(res.body.user).toEqual(user);
   });
 });
 
@@ -98,7 +110,7 @@ describe('GET /auth/google', () => {
   });
 
   test('returns 503 when Google OAuth credentials are not configured', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakePrisma());
     const res = await get(app, '/auth/google');
     expect(res.status).toBe(503);
     expect(res.body.error).toBeTruthy();
@@ -131,7 +143,7 @@ describe('GET /auth/google behind a TLS-terminating proxy', () => {
   });
 
   test('builds an https:// redirect_uri when X-Forwarded-Proto is https', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakePrisma());
     const res = await get(app, '/auth/google', {
       Host:               'pong-game-0e30d7df.fly.dev',
       'X-Forwarded-Proto': 'https',
@@ -155,7 +167,7 @@ describe('GET /auth/google/callback', () => {
   });
 
   test('returns 503 when Google OAuth credentials are not configured', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakePrisma());
     const res = await get(app, '/auth/google/callback');
     expect(res.status).toBe(503);
     expect(res.body.error).toBeTruthy();
@@ -166,44 +178,31 @@ describe('GET /auth/google/callback', () => {
 
 describe('GET /auth/logout', () => {
   test('redirects to / even without an active session', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakePrisma());
     const res = await get(app, '/auth/logout');
     expect(res.status).toBe(302);
     expect(res.headers.location).toBe('/');
   });
 });
 
-// ── POST /api/scores (unauthenticated fallback) ─────────────────────────────
+// ── POST /api/scores (unauthenticated) ──────────────────────────────────────
 
 describe('POST /api/scores without a Google session', () => {
-  test('still requires an explicit player when not logged in', async () => {
-    const app = createApp(createStore());
+  test('requires an authenticated session (no anonymous high scores)', async () => {
+    const app = createApp(createFakePrisma());
     const res = await post(app, '/api/scores', { score: 42 });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
     expect(res.body.error).toBeTruthy();
-  });
-
-  test('accepts an explicit player as before (backward compatible)', async () => {
-    const app = createApp(createStore());
-    const res = await post(app, '/api/scores', { player: 'eve', score: 42 });
-    expect(res.status).toBe(200);
-    expect(res.body.entry.player).toBe('eve');
   });
 });
 
-// ── createStore (users map) ──────────────────────────────────────────────────
+// ── User upsert semantics (via the fake Prisma client) ──────────────────────
 
-describe('createStore users map', () => {
-  test('store has a users Map for Google-authenticated identities', () => {
-    const s = createStore();
-    expect(s.users).toBeInstanceOf(Map);
-    expect(s.users.size).toBe(0);
-  });
-
-  test('independent stores do not share users', () => {
-    const s1 = createStore();
-    const s2 = createStore();
-    s1.users.set('google-sub-1', { id: 'google-sub-1', email: 'a@example.com' });
-    expect(s2.users.has('google-sub-1')).toBe(false);
+describe('Google user upsert', () => {
+  test('fake Prisma keeps independent user maps per instance', () => {
+    const p1 = createFakePrisma();
+    const p2 = createFakePrisma();
+    p1.__users.set('google-sub-1', { id: 'google-sub-1', email: 'a@example.com' });
+    expect(p2.__users.has('google-sub-1')).toBe(false);
   });
 });
