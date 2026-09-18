@@ -1,22 +1,33 @@
 'use strict';
 
 /**
- * server.js — Express API with ephemeral in-process storage and Google OAuth.
+ * server.js — Express API backed by MySQL (via Knex) and Google OAuth.
  *
- * Storage backend: plain JavaScript Map objects (no external services, no
- * database).  All data is lost when the process exits, which is intentional
- * for the ephemeral-local-storage variation this app builds on.
+ * Storage backend: MySQL, accessed exclusively through the thin query
+ * functions in db/queries.js, which in turn use the single Knex client in
+ * db/knex.js. The MySQL connection string is read purely from
+ * process.env.DATABASE_URL (see knexfile.js) — there is nothing else to
+ * configure. On startup (see the bottom of this file) the server calls
+ * knex.migrate.latest() before it starts listening, so migrations in
+ * ./migrations apply automatically against any fresh managed MySQL
+ * instance. DATABASE_URL isn't required for the process itself to start,
+ * though: if it's unset, or the migration fails because the database isn't
+ * reachable yet, the server logs that and starts listening anyway (so
+ * /health still comes up) — only the MySQL-backed routes are affected
+ * until a working DATABASE_URL is configured.
  *
  * Authentication: Google OAuth 2.0 via passport + passport-google-oauth20.
- * A successful OAuth round-trip upserts a user record (keyed by Google's
- * stable `sub` id) in the ephemeral store and establishes an HttpOnly
+ * A successful OAuth round-trip finds-or-creates a user row (keyed by
+ * Google's stable `sub` id) via db/queries.js and establishes an HttpOnly
  * session cookie (express-session, in-memory store) so the login survives
- * page reloads for the lifetime of the process / cookie.
+ * page reloads for the lifetime of the session cookie. There is no
+ * password column anywhere in the schema and no bcrypt in this codebase:
+ * authentication is delegated entirely to Google.
  *
  * Requires registering the app in Google Cloud Console and setting
  * GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (and optionally an explicit
  * GOOGLE_CALLBACK_URL) environment variables. When deploying behind a
- * TLS-terminating proxy (e.g. Fly.io), the app must trust that proxy's
+ * TLS-terminating proxy, the app must trust that proxy's
  * X-Forwarded-Proto header — otherwise the callback URL passport builds for
  * the OAuth redirect is silently downgraded to "http://…", which no longer
  * matches the "https://…" URI registered in Google Cloud Console and Google
@@ -26,13 +37,14 @@
  * ─────────
  *   GET  /auth/google           Redirect to the Google consent screen.
  *   GET  /auth/google/callback  OAuth callback — exchanges code for profile,
- *                                upserts the user, establishes the session.
+ *                                finds-or-creates the user, starts the session.
  *   GET  /auth/logout           Destroy the session (logout).
  *   GET  /me                    Returns the logged-in user (or { user: null }).
  *
  *   POST /api/login              Legacy stub login — accepts any username,
  *                                 returns a session token (kept for backward
- *                                 compatibility with earlier variations).
+ *                                 compatibility with earlier variations; this
+ *                                 token is not persisted to MySQL).
  *   GET  /api/scores             List all high scores (sorted desc by score).
  *   POST /api/scores             Create or update a high score entry. If the
  *                                 caller has an authenticated Google session
@@ -41,6 +53,10 @@
  *   GET  /api/scores/:player     Get the high score for a specific player.
  *   DELETE /api/scores/:player   Delete the high score for a specific player.
  *
+ *   GET  /api/preferences/:key   Get a preference for the logged-in user.
+ *   POST /api/preferences        Set (upsert) a preference for the logged-in
+ *                                 user. Body: { key: string, value: string }.
+ *
  *   GET  /health                 Basic health check (200 OK).
  *
  *   POST /api/client-events      Fire-and-forget pings for browser-only
@@ -48,8 +64,9 @@
  *                                 clicked, a page reload after game-over),
  *                                 counted via telemetry.js. No other effect.
  *
- * The module exports { app, store } so unit tests can inject their own store
- * and inspect state without starting a real HTTP server.
+ * The module exports { createApp } so unit tests can inject their own
+ * `queries` implementation (see __tests__/helpers/fakeQueries.js) and
+ * exercise every route without a real MySQL connection.
  */
 
 const express        = require('express');
@@ -59,54 +76,43 @@ const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const telemetry      = require('./telemetry');
-
-// ── Ephemeral store ────────────────────────────────────────────────────────
-//
-// Maps kept in memory for the lifetime of the process:
-//   sessions  : token → { username, createdAt }             (legacy stub login)
-//   scores    : username (lowercase) → { player, score, updatedAt }
-//   users     : Google `sub` id → { id, email, name, avatar, createdAt, updatedAt }
-//
-// Factory function so tests can create isolated instances.
-
-function createStore() {
-  return {
-    sessions: new Map(),
-    scores:   new Map(),
-    users:    new Map(),
-  };
-}
-
-// Module-level default store (used by the real server).
-const defaultStore = createStore();
+const defaultQueries = require('./db/queries');
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
-// Accepting a store parameter makes every endpoint independently testable
-// without touching the shared module-level state.
+// Accepting a `queries` parameter (defaulting to the real Knex-backed
+// implementation) makes every endpoint independently testable against an
+// in-memory fake without touching MySQL.
 
-function createApp(store = defaultStore) {
+function createApp(queries = defaultQueries) {
   const app = express();
 
-  // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
-  // reverse proxy in front of this process). Without this, Express derives
-  // req.protocol from the raw (plaintext) connection it receives — which is
-  // always "http" once the proxy has terminated TLS — instead of honouring
-  // the X-Forwarded-Proto header the proxy sets. That mismatch is exactly
-  // what causes Google's "redirect_uri_mismatch": passport-oauth2 builds the
-  // callback URL it sends to Google from req.protocol + req.get('host'), so
-  // an untrusted proxy silently downgrades the redirect_uri from
+  // Trust the first proxy hop (e.g. a TLS-terminating reverse proxy in
+  // front of this process). Without this, Express derives req.protocol
+  // from the raw (plaintext) connection it receives — which is always
+  // "http" once the proxy has terminated TLS — instead of honouring the
+  // X-Forwarded-Proto header the proxy sets. That mismatch is exactly what
+  // causes Google's "redirect_uri_mismatch": passport-oauth2 builds the
+  // callback URL it sends to Google from req.protocol + req.get('host'),
+  // so an untrusted proxy silently downgrades the redirect_uri from
   // "https://…/auth/google/callback" to "http://…/auth/google/callback",
   // which no longer matches the URI registered in Google Cloud Console.
   app.set('trust proxy', 1);
 
   app.use(express.json());
 
+  // ── Legacy stub-login tokens ─────────────────────────────────────────────
+  //
+  // POST /api/login (kept for backward compatibility) hands out a random
+  // token per call. These tokens are never looked up anywhere else in this
+  // app and are intentionally NOT part of the MySQL schema — they live only
+  // for the lifetime of this app instance, same as before.
+  const legacySessions = new Map();
+
   // ── Session middleware (HttpOnly cookie, in-memory store) ────────────────
   //
   // SESSION_SECRET should be set in production. If it isn't, a random secret
-  // is generated per-process — sessions simply won't survive a restart,
-  // which matches the ephemeral-storage philosophy of the rest of this app.
+  // is generated per-process — sessions simply won't survive a restart.
 
   const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
@@ -136,35 +142,12 @@ function createApp(store = defaultStore) {
 
   // ── Google OAuth (passport) ──────────────────────────────────────────────
 
-  /**
-   * Upsert a user record keyed by Google's stable `sub` id (mapped to
-   * `profile.id` by passport-google-oauth20).
-   */
-  function upsertGoogleUser(profile) {
-    const id     = profile.id;
-    const email  = (profile.emails && profile.emails[0] && profile.emails[0].value) || null;
-    const name   = profile.displayName || null;
-    const avatar = (profile.photos && profile.photos[0] && profile.photos[0].value) || null;
-
-    const existing = store.users.get(id);
-    const user = {
-      id,
-      email:     email  || (existing && existing.email)  || null,
-      name:      name   || (existing && existing.name)   || null,
-      avatar:    avatar || (existing && existing.avatar) || null,
-      createdAt: (existing && existing.createdAt) || Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    store.users.set(id, user);
-    return user;
-  }
-
   passport.serializeUser((user, done) => done(null, user.id));
 
   passport.deserializeUser((id, done) => {
-    const user = store.users.get(id);
-    done(null, user || false);
+    queries.getUserById(id)
+      .then((user) => done(null, user || false))
+      .catch((err) => done(err));
   });
 
   // GOOGLE_CALLBACK_URL may be:
@@ -172,10 +155,10 @@ function createApp(store = defaultStore) {
   //     is resolved by passport-oauth2 against the incoming request's
   //     protocol + host (correct now that 'trust proxy' is set above); or
   //   - set explicitly to a fully-qualified URL (recommended in production),
-  //     e.g. "https://pong-game-0e30d7df.fly.dev/auth/google/callback" — this
-  //     MUST exactly match (scheme, host, path) an "Authorized redirect URI"
-  //     registered for the OAuth client in Google Cloud Console, or Google
-  //     will reject the request with "Error 400: redirect_uri_mismatch".
+  //     e.g. "https://example.com/auth/google/callback" — this MUST exactly
+  //     match (scheme, host, path) an "Authorized redirect URI" registered
+  //     for the OAuth client in Google Cloud Console, or Google will reject
+  //     the request with "Error 400: redirect_uri_mismatch".
   const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID;
   const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
   const GOOGLE_CALLBACK_URL  = process.env.GOOGLE_CALLBACK_URL || '/auth/google/callback';
@@ -191,12 +174,14 @@ function createApp(store = defaultStore) {
         callbackURL:  GOOGLE_CALLBACK_URL,
       },
       (accessToken, refreshToken, profile, done) => {
-        try {
-          const user = upsertGoogleUser(profile);
-          done(null, user);
-        } catch (err) {
-          done(err);
-        }
+        const googleId = profile.id;
+        const email     = (profile.emails && profile.emails[0] && profile.emails[0].value) || null;
+        const name      = profile.displayName || null;
+        const avatar    = (profile.photos && profile.photos[0] && profile.photos[0].value) || null;
+
+        queries.findOrCreateUserByGoogleId({ googleId, email, name, avatar })
+          .then((user) => done(null, user))
+          .catch((err) => done(err));
       },
     ));
   }
@@ -237,8 +222,8 @@ function createApp(store = defaultStore) {
 
   // ── GET /auth/google/callback ─────────────────────────────────────────────
   //
-  // Exchanges the authorization code for a profile, upserts the user record,
-  // and establishes the session before redirecting back to the app.
+  // Exchanges the authorization code for a profile, finds-or-creates the
+  // user row, and establishes the session before redirecting back to the app.
 
   app.get('/auth/google/callback', (req, res, next) => {
     if (!googleOAuthConfigured) {
@@ -269,8 +254,8 @@ function createApp(store = defaultStore) {
 
   app.get('/me', (req, res) => {
     if (req.isAuthenticated && req.isAuthenticated() && req.user) {
-      const { id, email, name, avatar } = req.user;
-      return res.status(200).json({ user: { id, email, name, avatar } });
+      const { id, email, name, avatar_url } = req.user;
+      return res.status(200).json({ user: { id, email, name, avatar: avatar_url } });
     }
     return res.status(200).json({ user: null });
   });
@@ -289,7 +274,7 @@ function createApp(store = defaultStore) {
 
     const player = username.trim().toLowerCase();
     const token  = crypto.randomBytes(16).toString('hex');
-    store.sessions.set(token, { username: player, createdAt: Date.now() });
+    legacySessions.set(token, { username: player, createdAt: Date.now() });
 
     return res.status(200).json({ token, username: player });
   });
@@ -299,14 +284,14 @@ function createApp(store = defaultStore) {
   // Returns all stored high scores sorted by score descending.
   // Optional query param: ?limit=N  (max 100)
 
-  app.get('/api/scores', (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 100);
-
-    const entries = Array.from(store.scores.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
-
-    return res.status(200).json({ scores: entries });
+  app.get('/api/scores', async (req, res, next) => {
+    try {
+      const limit   = Math.min(parseInt(req.query.limit, 10) || 100, 100);
+      const entries = await queries.listHighScores(limit);
+      return res.status(200).json({ scores: entries });
+    } catch (err) {
+      return next(err);
+    }
   });
 
   // ── POST /api/scores ──────────────────────────────────────────────────────
@@ -320,67 +305,132 @@ function createApp(store = defaultStore) {
   // the logged-in user (email, then name, then Google id) — this is what
   // the 'Save Score' button in the UI relies on.
 
-  app.post('/api/scores', (req, res) => {
-    const body  = req.body || {};
-    const score = body.score;
-    let player  = body.player;
+  app.post('/api/scores', async (req, res, next) => {
+    try {
+      const body  = req.body || {};
+      const score = body.score;
+      let player  = body.player;
 
-    const hasExplicitPlayer = typeof player === 'string' && player.trim() !== '';
+      const hasExplicitPlayer = typeof player === 'string' && player.trim() !== '';
+      const authed = Boolean(req.isAuthenticated && req.isAuthenticated() && req.user);
 
-    if (!hasExplicitPlayer && req.isAuthenticated && req.isAuthenticated() && req.user) {
-      player = req.user.email || req.user.name || req.user.id;
+      if (!hasExplicitPlayer && authed) {
+        player = req.user.email || req.user.name || String(req.user.id);
+      }
+
+      if (!player || typeof player !== 'string' || player.trim() === '') {
+        return res.status(400).json({ error: 'player is required' });
+      }
+
+      if (typeof score !== 'number' || !Number.isFinite(score) || score < 0) {
+        return res.status(400).json({ error: 'score must be a non-negative finite number' });
+      }
+
+      const key    = player.trim().toLowerCase();
+      const userId = authed ? req.user.id : null;
+
+      const { updated, entry } = await queries.upsertHighScore(key, score, userId);
+      return res.status(200).json({ updated, entry });
+    } catch (err) {
+      return next(err);
     }
-
-    if (!player || typeof player !== 'string' || player.trim() === '') {
-      return res.status(400).json({ error: 'player is required' });
-    }
-
-    if (typeof score !== 'number' || !Number.isFinite(score) || score < 0) {
-      return res.status(400).json({ error: 'score must be a non-negative finite number' });
-    }
-
-    const key      = player.trim().toLowerCase();
-    const existing = store.scores.get(key);
-
-    // Only store if it's a new personal best (or first entry)
-    if (!existing || score > existing.score) {
-      const entry = { player: key, score, updatedAt: Date.now() };
-      store.scores.set(key, entry);
-      return res.status(200).json({ updated: true, entry });
-    }
-
-    return res.status(200).json({ updated: false, entry: existing });
   });
 
   // ── GET /api/scores/:player ───────────────────────────────────────────────
   //
   // Retrieve the high score for a specific player.
 
-  app.get('/api/scores/:player', (req, res) => {
-    const key   = req.params.player.trim().toLowerCase();
-    const entry = store.scores.get(key);
+  app.get('/api/scores/:player', async (req, res, next) => {
+    try {
+      const key   = req.params.player.trim().toLowerCase();
+      const entry = await queries.getHighScore(key);
 
-    if (!entry) {
-      return res.status(404).json({ error: 'player not found' });
+      if (!entry) {
+        return res.status(404).json({ error: 'player not found' });
+      }
+
+      return res.status(200).json({ entry });
+    } catch (err) {
+      return next(err);
     }
-
-    return res.status(200).json({ entry });
   });
 
   // ── DELETE /api/scores/:player ────────────────────────────────────────────
   //
   // Remove the high score entry for the given player.
 
-  app.delete('/api/scores/:player', (req, res) => {
-    const key     = req.params.player.trim().toLowerCase();
-    const existed = store.scores.has(key);
+  app.delete('/api/scores/:player', async (req, res, next) => {
+    try {
+      const key     = req.params.player.trim().toLowerCase();
+      const deleted = await queries.deleteHighScore(key);
 
-    if (!existed) {
-      return res.status(404).json({ error: 'player not found' });
+      if (!deleted) {
+        return res.status(404).json({ error: 'player not found' });
+      }
+
+      return res.status(200).json({ deleted: true, player: key });
+    } catch (err) {
+      return next(err);
     }
+  });
 
-    store.scores.delete(key);
-    return res.status(200).json({ deleted: true, player: key });
+  // ── GET /api/preferences/:key ─────────────────────────────────────────────
+  //
+  // Returns { key, value } for the logged-in user's preference, or 404 if
+  // it has never been set. Requires an authenticated Google session.
+
+  app.get('/api/preferences/:key', async (req, res, next) => {
+    try {
+      if (!(req.isAuthenticated && req.isAuthenticated() && req.user)) {
+        return res.status(401).json({ error: 'authentication required' });
+      }
+
+      const value = await queries.getPreference(req.user.id, req.params.key);
+
+      if (value === null) {
+        return res.status(404).json({ error: 'preference not found' });
+      }
+
+      return res.status(200).json({ key: req.params.key, value });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ── POST /api/preferences ─────────────────────────────────────────────────
+  //
+  // Create or update (upsert) a preference for the logged-in user.
+  // Body: { key: string, value: string }. Requires an authenticated Google
+  // session.
+
+  app.post('/api/preferences', async (req, res, next) => {
+    try {
+      if (!(req.isAuthenticated && req.isAuthenticated() && req.user)) {
+        return res.status(401).json({ error: 'authentication required' });
+      }
+
+      const { key, value } = req.body || {};
+
+      if (!key || typeof key !== 'string') {
+        return res.status(400).json({ error: 'key is required' });
+      }
+
+      const pref = await queries.setPreference(req.user.id, key, value == null ? null : String(value));
+      return res.status(200).json(pref);
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ── Error handler ──────────────────────────────────────────────────────────
+  //
+  // Catches errors passed via next(err) from the async route handlers above
+  // (e.g. a MySQL connection failure) so a single query problem returns a
+  // clean 500 instead of crashing the process.
+
+  app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+    console.error(err);
+    return res.status(500).json({ error: 'internal server error' });
   });
 
   return app;
@@ -391,17 +441,46 @@ function createApp(store = defaultStore) {
 if (require.main === module) {
   const PORT = parseInt(process.env.PORT, 10) || 3000;
   const HOST = '0.0.0.0';
-  const app  = createApp(defaultStore);
+  const app  = createApp();
 
-  app.listen(PORT, HOST, () => {
-    console.log(`Pong server listening on ${HOST}:${PORT}`);
-    console.log('Storage: ephemeral in-process Map (data lost on restart)');
-    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-      console.log('Google OAuth: NOT configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)');
-    } else {
-      console.log('Google OAuth: configured');
-    }
-  });
+  function startListening() {
+    app.listen(PORT, HOST, () => {
+      console.log(`Pong server listening on ${HOST}:${PORT}`);
+      if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+        console.log('Google OAuth: NOT configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)');
+      } else {
+        console.log('Google OAuth: configured');
+      }
+    });
+  }
+
+  // Apply any pending migrations before accepting traffic, so a fresh
+  // managed MySQL instance is always brought up to the current schema
+  // (see ./migrations) without a separate manual step. DATABASE_URL isn't
+  // required for the process to boot, though: mirroring the optional
+  // Google OAuth wiring above, a missing/unreachable database only
+  // disables the MySQL-backed routes (they'll return a 500 if actually
+  // called) rather than crashing the whole server — that keeps `node
+  // server.js` startable (e.g. for health checks, or in environments that
+  // haven't provisioned a database yet) instead of exiting non-zero the
+  // moment DATABASE_URL isn't set to a reachable MySQL instance.
+  if (!process.env.DATABASE_URL) {
+    console.log('Storage: MySQL via Knex — DATABASE_URL is not set, skipping migrations');
+    console.log('  (routes that touch the database will fail until DATABASE_URL is configured)');
+    startListening();
+  } else {
+    const knex = require('./db/knex');
+    knex.migrate.latest()
+      .then(() => {
+        console.log('Storage: MySQL via Knex (DATABASE_URL) — migrations applied');
+        startListening();
+      })
+      .catch((err) => {
+        console.error('Database migration failed:', err.message);
+        console.error('  Starting server anyway; routes that touch the database will fail until this is resolved.');
+        startListening();
+      });
+  }
 }
 
-module.exports = { createApp, createStore };
+module.exports = { createApp };

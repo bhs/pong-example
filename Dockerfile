@@ -2,7 +2,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install dependencies (express, express-session, passport, passport-google-oauth20)
+# Install dependencies (express, express-session, passport, passport-google-oauth20,
+# knex, mysql2)
 COPY package.json ./
 RUN npm install
 
@@ -10,6 +11,12 @@ RUN npm install
 COPY . .
 
 # The app reads PORT at runtime (defaulting to 3000 if unset) and binds 0.0.0.0.
+# It reads its MySQL connection from DATABASE_URL (a connection string, e.g.
+# "mysql://user:password@host:3306/dbname" — see knexfile.js) and runs
+# `knex.migrate.latest()` against it before listening. DATABASE_URL isn't
+# required for the process to start, though: if it's unset or the database
+# is unreachable, the server still starts and answers /health — only the
+# MySQL-backed routes are affected until a working DATABASE_URL is provided.
 ENV PORT=3000
 EXPOSE 3000
 

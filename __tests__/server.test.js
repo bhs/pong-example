@@ -3,16 +3,16 @@
 /**
  * __tests__/server.test.js
  *
- * Unit tests for the ephemeral-local-storage Express API.
- * Each test suite creates its own isolated store so tests don't share state.
+ * Unit tests for the MySQL-backed (Knex) Express API. Each test suite
+ * creates its own isolated in-memory fake of db/queries.js (see
+ * __tests__/helpers/fakeQueries.js) and injects it via createApp(queries),
+ * so these tests never touch a real MySQL connection.
  */
 
-const { createApp, createStore } = require('../server');
+const { createApp } = require('../server');
+const { createFakeQueries } = require('./helpers/fakeQueries');
 
 // ── Minimal HTTP request helper ────────────────────────────────────────────
-//
-// We drive the Express app directly via its `handle` method rather than
-// opening a real TCP port, keeping tests fast and self-contained.
 
 function makeRequest(app, method, url, body = null, query = '') {
   return new Promise((resolve, reject) => {
@@ -70,7 +70,7 @@ describe('POST /api/login', () => {
   let app;
 
   beforeEach(() => {
-    app = createApp(createStore());
+    app = createApp(createFakeQueries());
   });
 
   test('returns 200 with token and username for valid username', async () => {
@@ -126,11 +126,11 @@ describe('POST /api/login', () => {
 // ── GET /api/scores ────────────────────────────────────────────────────────
 
 describe('GET /api/scores', () => {
-  let app, store;
+  let app, queries;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    queries = createFakeQueries();
+    app     = createApp(queries);
   });
 
   test('returns empty scores array when store is empty', async () => {
@@ -140,8 +140,8 @@ describe('GET /api/scores', () => {
   });
 
   test('returns all scores when store has entries', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
-    store.scores.set('bob',   { player: 'bob',   score: 200, updatedAt: Date.now() });
+    await queries.upsertHighScore('alice', 100);
+    await queries.upsertHighScore('bob', 200);
 
     const res = await get(app, '/api/scores');
     expect(res.status).toBe(200);
@@ -149,9 +149,9 @@ describe('GET /api/scores', () => {
   });
 
   test('returns scores sorted by score descending', async () => {
-    store.scores.set('alice', { player: 'alice', score: 50,  updatedAt: Date.now() });
-    store.scores.set('bob',   { player: 'bob',   score: 200, updatedAt: Date.now() });
-    store.scores.set('carol', { player: 'carol', score: 100, updatedAt: Date.now() });
+    await queries.upsertHighScore('alice', 50);
+    await queries.upsertHighScore('bob', 200);
+    await queries.upsertHighScore('carol', 100);
 
     const res = await get(app, '/api/scores');
     const scores = res.body.scores.map((e) => e.score);
@@ -160,7 +160,7 @@ describe('GET /api/scores', () => {
 
   test('respects the ?limit query parameter', async () => {
     for (let i = 0; i < 10; i++) {
-      store.scores.set(`player${i}`, { player: `player${i}`, score: i * 10, updatedAt: Date.now() });
+      await queries.upsertHighScore(`player${i}`, i * 10);
     }
 
     const res = await get(app, '/api/scores', 'limit=3');
@@ -171,7 +171,7 @@ describe('GET /api/scores', () => {
   test('caps limit at 100', async () => {
     // Populate 5 entries; limit=200 → capped at 100, returns all 5
     for (let i = 0; i < 5; i++) {
-      store.scores.set(`p${i}`, { player: `p${i}`, score: i, updatedAt: Date.now() });
+      await queries.upsertHighScore(`p${i}`, i);
     }
 
     const res = await get(app, '/api/scores', 'limit=200');
@@ -183,11 +183,11 @@ describe('GET /api/scores', () => {
 // ── POST /api/scores ───────────────────────────────────────────────────────
 
 describe('POST /api/scores', () => {
-  let app, store;
+  let app, queries;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    queries = createFakeQueries();
+    app     = createApp(queries);
   });
 
   test('creates a new score entry and returns updated:true', async () => {
@@ -198,10 +198,11 @@ describe('POST /api/scores', () => {
     expect(res.body.entry.score).toBe(150);
   });
 
-  test('stores the score in the Map', async () => {
+  test('stores the score', async () => {
     await post(app, '/api/scores', { player: 'alice', score: 99 });
-    expect(store.scores.has('alice')).toBe(true);
-    expect(store.scores.get('alice').score).toBe(99);
+    const entry = await queries.getHighScore('alice');
+    expect(entry).toBeTruthy();
+    expect(entry.score).toBe(99);
   });
 
   test('updates the score when new score is higher', async () => {
@@ -226,7 +227,8 @@ describe('POST /api/scores', () => {
 
   test('lowercases and trims player name', async () => {
     await post(app, '/api/scores', { player: '  BOB  ', score: 77 });
-    expect(store.scores.has('bob')).toBe(true);
+    const entry = await queries.getHighScore('bob');
+    expect(entry).toBeTruthy();
   });
 
   test('returns 400 when player is missing', async () => {
@@ -271,15 +273,15 @@ describe('POST /api/scores', () => {
 // ── GET /api/scores/:player ────────────────────────────────────────────────
 
 describe('GET /api/scores/:player', () => {
-  let app, store;
+  let app, queries;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    queries = createFakeQueries();
+    app     = createApp(queries);
   });
 
   test('returns the entry for a known player', async () => {
-    store.scores.set('alice', { player: 'alice', score: 300, updatedAt: Date.now() });
+    await queries.upsertHighScore('alice', 300);
     const res = await get(app, '/api/scores/alice');
     expect(res.status).toBe(200);
     expect(res.body.entry.player).toBe('alice');
@@ -287,7 +289,7 @@ describe('GET /api/scores/:player', () => {
   });
 
   test('is case-insensitive (player name is lowercased)', async () => {
-    store.scores.set('alice', { player: 'alice', score: 300, updatedAt: Date.now() });
+    await queries.upsertHighScore('alice', 300);
     const res = await get(app, '/api/scores/ALICE');
     expect(res.status).toBe(200);
     expect(res.body.entry.player).toBe('alice');
@@ -303,25 +305,26 @@ describe('GET /api/scores/:player', () => {
 // ── DELETE /api/scores/:player ─────────────────────────────────────────────
 
 describe('DELETE /api/scores/:player', () => {
-  let app, store;
+  let app, queries;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    queries = createFakeQueries();
+    app     = createApp(queries);
   });
 
   test('deletes an existing entry and returns deleted:true', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
+    await queries.upsertHighScore('alice', 100);
     const res = await del(app, '/api/scores/alice');
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(true);
     expect(res.body.player).toBe('alice');
   });
 
-  test('removes the entry from the Map', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
+  test('removes the entry', async () => {
+    await queries.upsertHighScore('alice', 100);
     await del(app, '/api/scores/alice');
-    expect(store.scores.has('alice')).toBe(false);
+    const entry = await queries.getHighScore('alice');
+    expect(entry).toBeNull();
   });
 
   test('returns 404 when player does not exist', async () => {
@@ -331,32 +334,26 @@ describe('DELETE /api/scores/:player', () => {
   });
 
   test('is case-insensitive', async () => {
-    store.scores.set('bob', { player: 'bob', score: 50, updatedAt: Date.now() });
+    await queries.upsertHighScore('bob', 50);
     const res = await del(app, '/api/scores/BOB');
     expect(res.status).toBe(200);
-    expect(store.scores.has('bob')).toBe(false);
+    const entry = await queries.getHighScore('bob');
+    expect(entry).toBeNull();
   });
 });
 
-// ── createStore isolation ──────────────────────────────────────────────────
+// ── fakeQueries isolation ──────────────────────────────────────────────────
 
-describe('createStore', () => {
-  test('creates independent store instances', () => {
-    const s1 = createStore();
-    const s2 = createStore();
-    s1.scores.set('alice', { player: 'alice', score: 1, updatedAt: 0 });
-    expect(s2.scores.has('alice')).toBe(false);
+describe('createFakeQueries', () => {
+  test('creates independent instances', async () => {
+    const q1 = createFakeQueries();
+    const q2 = createFakeQueries();
+    await q1.upsertHighScore('alice', 1);
+    expect(await q2.getHighScore('alice')).toBeNull();
   });
 
-  test('store has sessions and scores Maps', () => {
-    const s = createStore();
-    expect(s.sessions).toBeInstanceOf(Map);
-    expect(s.scores).toBeInstanceOf(Map);
-  });
-
-  test('both Maps start empty', () => {
-    const s = createStore();
-    expect(s.sessions.size).toBe(0);
-    expect(s.scores.size).toBe(0);
+  test('starts with no scores', async () => {
+    const q = createFakeQueries();
+    expect(await q.listHighScores()).toEqual([]);
   });
 });

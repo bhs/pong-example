@@ -1,0 +1,5 @@
+{
+  "up_instructions": "npx knex migrate:latest --knexfile knexfile.js (also run automatically by server.js via knex.migrate.latest() on startup, against process.env.DATABASE_URL)",
+  "down_instructions": "npx knex migrate:rollback --knexfile knexfile.js",
+  "notes": "Migration files live in ./migrations (20240601000001_create_users.js, 20240601000002_create_preferences.js, 20240601000003_create_high_scores.js). Each wraps a single, auditable CREATE TABLE statement in knex.raw(). users has no password/bcrypt column since auth is delegated to Google OAuth; preferences and high_scores each carry a foreign key back to users.id."
+}

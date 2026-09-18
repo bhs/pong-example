@@ -3,15 +3,17 @@
 /**
  * __tests__/auth.test.js
  *
- * Unit tests for the Google OAuth / session endpoints added on top of the
- * ephemeral-local-storage Express API. Each suite creates its own isolated
- * store. Google credentials are intentionally left unset in this test run,
- * so /auth/google* endpoints exercise their "not configured" guard rather
- * than performing a real OAuth round-trip (which would require network
- * access to Google and cannot be part of a self-contained unit test).
+ * Unit tests for the Google OAuth / session endpoints, backed by the
+ * in-memory fake of db/queries.js (see __tests__/helpers/fakeQueries.js)
+ * so no real MySQL connection is required. Google credentials are
+ * intentionally left unset in this test run, so /auth/google* endpoints
+ * exercise their "not configured" guard rather than performing a real
+ * OAuth round-trip (which would require network access to Google and
+ * cannot be part of a self-contained unit test).
  */
 
-const { createApp, createStore } = require('../server');
+const { createApp } = require('../server');
+const { createFakeQueries } = require('./helpers/fakeQueries');
 
 // ── Minimal HTTP request helper (mirrors __tests__/server.test.js) ────────
 
@@ -63,7 +65,7 @@ function post(app, url, body)  { return makeRequest(app, 'POST', url, body); }
 
 describe('GET /health', () => {
   test('returns 200 with status ok', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await get(app, '/health');
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('ok');
@@ -74,7 +76,7 @@ describe('GET /health', () => {
 
 describe('GET /me', () => {
   test('returns { user: null } when there is no session', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await get(app, '/me');
     expect(res.status).toBe(200);
     expect(res.body.user).toBeNull();
@@ -98,7 +100,7 @@ describe('GET /auth/google', () => {
   });
 
   test('returns 503 when Google OAuth credentials are not configured', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await get(app, '/auth/google');
     expect(res.status).toBe(503);
     expect(res.body.error).toBeTruthy();
@@ -108,8 +110,8 @@ describe('GET /auth/google', () => {
 // ── GET /auth/google — redirect_uri honours X-Forwarded-Proto ───────────────
 //
 // Regression test for "Error 400: redirect_uri_mismatch": when the app runs
-// behind a TLS-terminating proxy (e.g. Fly.io), Express must trust the
-// proxy's X-Forwarded-Proto / X-Forwarded-Host headers so the redirect_uri
+// behind a TLS-terminating proxy, Express must trust the proxy's
+// X-Forwarded-Proto / X-Forwarded-Host headers so the redirect_uri
 // passport sends to Google is "https://…" (matching what's registered in
 // Google Cloud Console) instead of silently downgrading to "http://…".
 
@@ -131,7 +133,7 @@ describe('GET /auth/google behind a TLS-terminating proxy', () => {
   });
 
   test('builds an https:// redirect_uri when X-Forwarded-Proto is https', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await get(app, '/auth/google', {
       Host:               'pong-game-0e30d7df.fly.dev',
       'X-Forwarded-Proto': 'https',
@@ -155,7 +157,7 @@ describe('GET /auth/google/callback', () => {
   });
 
   test('returns 503 when Google OAuth credentials are not configured', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await get(app, '/auth/google/callback');
     expect(res.status).toBe(503);
     expect(res.body.error).toBeTruthy();
@@ -166,7 +168,7 @@ describe('GET /auth/google/callback', () => {
 
 describe('GET /auth/logout', () => {
   test('redirects to / even without an active session', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await get(app, '/auth/logout');
     expect(res.status).toBe(302);
     expect(res.headers.location).toBe('/');
@@ -177,33 +179,68 @@ describe('GET /auth/logout', () => {
 
 describe('POST /api/scores without a Google session', () => {
   test('still requires an explicit player when not logged in', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await post(app, '/api/scores', { score: 42 });
     expect(res.status).toBe(400);
     expect(res.body.error).toBeTruthy();
   });
 
   test('accepts an explicit player as before (backward compatible)', async () => {
-    const app = createApp(createStore());
+    const app = createApp(createFakeQueries());
     const res = await post(app, '/api/scores', { player: 'eve', score: 42 });
     expect(res.status).toBe(200);
     expect(res.body.entry.player).toBe('eve');
   });
 });
 
-// ── createStore (users map) ──────────────────────────────────────────────────
+// ── GET / POST /api/preferences (require authentication) ────────────────────
 
-describe('createStore users map', () => {
-  test('store has a users Map for Google-authenticated identities', () => {
-    const s = createStore();
-    expect(s.users).toBeInstanceOf(Map);
-    expect(s.users.size).toBe(0);
+describe('GET /api/preferences/:key without a session', () => {
+  test('returns 401 when not logged in', async () => {
+    const app = createApp(createFakeQueries());
+    const res = await get(app, '/api/preferences/theme');
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBeTruthy();
+  });
+});
+
+describe('POST /api/preferences without a session', () => {
+  test('returns 401 when not logged in', async () => {
+    const app = createApp(createFakeQueries());
+    const res = await post(app, '/api/preferences', { key: 'theme', value: 'dark' });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBeTruthy();
+  });
+});
+
+// ── db/queries.js find-or-create semantics (via the fake) ───────────────────
+
+describe('findOrCreateUserByGoogleId (fake queries)', () => {
+  test('creates a user on first sign-in, keyed by Google sub id', async () => {
+    const queries = createFakeQueries();
+    const user = await queries.findOrCreateUserByGoogleId({
+      googleId: 'google-sub-1',
+      email:    'a@example.com',
+      name:     'Alice',
+      avatar:   'https://example.com/a.png',
+    });
+
+    expect(user.google_id).toBe('google-sub-1');
+    expect(user.email).toBe('a@example.com');
+    expect(user).not.toHaveProperty('password');
   });
 
-  test('independent stores do not share users', () => {
-    const s1 = createStore();
-    const s2 = createStore();
-    s1.users.set('google-sub-1', { id: 'google-sub-1', email: 'a@example.com' });
-    expect(s2.users.has('google-sub-1')).toBe(false);
+  test('finds the same user on a repeat sign-in instead of creating a new one', async () => {
+    const queries = createFakeQueries();
+    const first  = await queries.findOrCreateUserByGoogleId({ googleId: 'google-sub-1', email: 'a@example.com' });
+    const second = await queries.findOrCreateUserByGoogleId({ googleId: 'google-sub-1', email: 'a@example.com' });
+    expect(second.id).toBe(first.id);
+  });
+
+  test('independent fakes do not share users', async () => {
+    const q1 = createFakeQueries();
+    const q2 = createFakeQueries();
+    await q1.findOrCreateUserByGoogleId({ googleId: 'google-sub-1', email: 'a@example.com' });
+    expect(await q2.getUserById(1)).toBeNull();
   });
 });
