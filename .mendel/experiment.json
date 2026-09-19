@@ -1,0 +1,11 @@
+{
+  "assignment_unit": "user",
+  "assignment_key": {"source": "cookie", "name": "connect.sid"},
+  "dissonance": "The line under the board that shows 'Best rally this game: N hits' after a finished game disappears, and their longest rally is no longer remembered alongside their high score.",
+  "metric": {
+    "name": "game_started",
+    "per": "visit",
+    "better": "higher",
+    "description": "Counts how many times a player starts a new game divided by the number of page visits, capturing whether showing the best-rally readout after game-over encourages replay."
+  }
+}

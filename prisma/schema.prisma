@@ -64,12 +64,23 @@ model Preference {
 
 // A single player's best score. One row per user (enforced by the unique
 // `userId`) — a new submission only overwrites it when strictly higher.
+//
+// longestRally is that same player's longest-ever rally (consecutive
+// paddle hits without a miss, tracked client-side per game — see
+// game-logic.js's `rally.maxRally`) — an independent running best,
+// bumped in the same POST /api/scores write whenever a finished game's
+// rally exceeds it, regardless of whether that game also beat `score`.
+// The physical column is prefixed `mendel_exp_` (this table is shared by
+// every concurrently-running variation of this hop, each applying its own
+// migration against the same database) while the Prisma field name stays
+// unprefixed for application code.
 model HighScore {
-  id        Int      @id @default(autoincrement())
-  userId    String   @unique
-  score     Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           Int      @id @default(autoincrement())
+  userId       String   @unique
+  score        Int
+  longestRally Int      @default(0) @map("mendel_exp_longest_rally")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

@@ -23,7 +23,11 @@
  *   User        Google `sub` id (primary key), email, display name, avatar.
  *   Preference  One row per user (FK → User.id): theme / sound / paddle
  *               color settings.
- *   HighScore   One row per user (FK → User.id): that user's personal best.
+ *   HighScore   One row per user (FK → User.id): that user's personal best
+ *               score, plus `longestRally` — that same player's longest-ever
+ *               rally (consecutive paddle hits without a miss), an
+ *               independent running best bumped in the same write whenever
+ *               it's exceeded, regardless of whether `score` also improved.
  *   GameHistory One row per finished game (FK → User.id): score, duration,
  *               finishedAt. Independent of HighScore — written alongside it
  *               on every game-completion, never read by it.
@@ -62,7 +66,8 @@
  *
  *   POST /api/client-events      Fire-and-forget pings for browser-only
  *                                 events (game-over shown, Play Again
- *                                 clicked, a page reload after game-over),
+ *                                 clicked, a page reload after game-over,
+ *                                 a page visit, a new game starting),
  *                                 counted via telemetry.js. No other effect.
  *
  * The module exports { createApp, defaultPrisma } — createApp accepts any
@@ -174,6 +179,22 @@ function createApp(prisma = defaultPrisma, options = {}) {
 
   passport.serializeUser((user, done) => done(null, user.id));
 
+  // ── Best-rally display bucketing ─────────────────────────────────────────
+  //
+  // The "Best rally" readout under the canvas (see index.html) is only shown
+  // to a deterministic 50% of signed-in players — a lightweight built-in
+  // feature gate, unrelated to the separate live-traffic experiment
+  // telemetry in telemetry.js. Hashing the player's stable Google `sub` id
+  // (rather than flipping a coin per request) means the same player always
+  // lands in the same bucket, on every device and every session, with no
+  // extra column or cookie required.
+
+  function isBestRallyBucketed(userId) {
+    if (!userId) return false;
+    const digest = crypto.createHash('sha256').update(String(userId)).digest();
+    return digest[0] % 2 === 0; // ~50/50 split, stable per user id
+  }
+
   passport.deserializeUser((id, done) => {
     prisma.user.findUnique({ where: { id } })
       .then((user) => done(null, user || false))
@@ -276,13 +297,19 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // ── GET /me ────────────────────────────────────────────────────────────────
   //
   // Returns the logged-in user (id / email / name / avatar) or { user: null }.
+  // Also returns `bestRallyBucket` — whether this signed-in player is in the
+  // ~50% shown the "Best rally" readout after game-over (see
+  // isBestRallyBucketed above); always false when signed out.
 
   app.get('/me', (req, res) => {
     if (req.isAuthenticated && req.isAuthenticated() && req.user) {
       const { id, email, name, avatar } = req.user;
-      return res.status(200).json({ user: { id, email, name, avatar } });
+      return res.status(200).json({
+        user: { id, email, name, avatar },
+        bestRallyBucket: isBestRallyBucketed(id),
+      });
     }
-    return res.status(200).json({ user: null });
+    return res.status(200).json({ user: null, bestRallyBucket: false });
   });
 
   // ── Auth guard helper ────────────────────────────────────────────────────
@@ -382,18 +409,24 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // ── POST /api/scores ──────────────────────────────────────────────────────
   //
   // Create or update (upsert) the logged-in user's high score. Only updates
-  // if the new score is strictly higher than the stored one. Requires an
-  // authenticated Google session — HighScore.userId is a foreign key to
-  // User.id, so there is no such thing as an anonymous high score.
+  // `score` if the new score is strictly higher than the stored one, and
+  // only updates `longestRally` if the new value is strictly higher than the
+  // stored one — the two are independent running bests, both written by a
+  // single upsert call whenever either improves. Requires an authenticated
+  // Google session — HighScore.userId is a foreign key to User.id, so there
+  // is no such thing as an anonymous high score.
   //
   // Every call also inserts a GameHistory row for this finished game,
   // regardless of whether it beat the high score — HighScore and GameHistory
   // are independent tables; this endpoint is simply the one place a finished
   // game is reported, so both writes happen here, side by side.
   //
-  // Body: { score: number, duration?: number }
-  //   duration - game length in seconds (non-negative integer); defaults to 0
-  //              when omitted so older clients keep working.
+  // Body: { score: number, duration?: number, longestRally?: number }
+  //   duration     - game length in seconds (non-negative integer); defaults
+  //                  to 0 when omitted so older clients keep working.
+  //   longestRally - longest rally (consecutive paddle hits) reached during
+  //                  this game (non-negative integer); defaults to 0 when
+  //                  omitted so older clients keep working.
 
   app.post('/api/scores', async (req, res, next) => {
     if (!requireLogin(req, res)) return;
@@ -412,6 +445,13 @@ function createApp(prisma = defaultPrisma, options = {}) {
     }
     duration = Math.round(duration);
 
+    let longestRally = req.body && req.body.longestRally;
+    if (longestRally === undefined || longestRally === null) {
+      longestRally = 0;
+    } else if (typeof longestRally !== 'number' || !Number.isInteger(longestRally) || longestRally < 0) {
+      return res.status(400).json({ error: 'longestRally must be a non-negative integer' });
+    }
+
     try {
       const userId  = req.user.id;
       const existing = await prisma.highScore.findUnique({ where: { userId } });
@@ -420,17 +460,24 @@ function createApp(prisma = defaultPrisma, options = {}) {
       // score beats the existing HighScore row.
       await prisma.gameHistory.create({ data: { userId, score, duration } });
 
-      if (existing && score <= existing.score) {
+      const existingLongestRally = existing ? (existing.longestRally || 0) : 0;
+      const scoreImproved  = !existing || score > existing.score;
+      const rallyImproved  = longestRally > existingLongestRally;
+
+      if (!scoreImproved && !rallyImproved) {
         return res.status(200).json({ updated: false, entry: toScoreEntry({ ...existing, user: req.user }) });
       }
 
       const row = await prisma.highScore.upsert({
         where:  { userId },
-        update: { score },
-        create: { userId, score },
+        update: {
+          score:        scoreImproved ? score : existing.score,
+          longestRally: rallyImproved ? longestRally : existingLongestRally,
+        },
+        create: { userId, score, longestRally },
       });
 
-      return res.status(200).json({ updated: true, entry: toScoreEntry({ ...row, user: req.user }) });
+      return res.status(200).json({ updated: scoreImproved, entry: toScoreEntry({ ...row, user: req.user }) });
     } catch (err) {
       return next(err);
     }
@@ -502,15 +549,22 @@ function createApp(prisma = defaultPrisma, options = {}) {
 
 /**
  * Shapes a HighScore row (optionally with an included/attached `user`) into
- * the { player, score, updatedAt } entry the API has always returned —
+ * the { player, score, longestRally, updatedAt } entry the API returns —
  * `player` is the best available human-readable identity (name, then email,
- * then the raw Google id).
+ * then the raw Google id). `longestRally` defaults to 0 for rows written
+ * before that column existed.
  */
 function toScoreEntry(row) {
   const user   = row.user || {};
   const player = user.name || user.email || row.userId;
   const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
-  return { player, userId: row.userId, score: row.score, updatedAt };
+  return {
+    player,
+    userId: row.userId,
+    score: row.score,
+    longestRally: row.longestRally || 0,
+    updatedAt,
+  };
 }
 
 /**
