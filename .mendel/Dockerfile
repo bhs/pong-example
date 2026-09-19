@@ -2,6 +2,12 @@
 #   docker build -f .mendel/Dockerfile --target migrate .
 #   docker build -f .mendel/Dockerfile --target adapter .
 #
+# The files that, when changed, mean this Dockerfile and .mendel/phase/
+# should be written again (not the migrations themselves, and not
+# prisma/schema.prisma, since an ordinary schema change edits both of those
+# and must not make this file look stale):
+# depends-on: lib/prisma.js package.json
+#
 # Pong now stores users, preferences and high scores in MySQL through Prisma
 # (see prisma/schema.prisma and lib/prisma.js). The application applies
 # prisma/migrations/ against DATABASE_URL at startup with
@@ -70,9 +76,11 @@ CMD ["sh", "-c", "prisma migrate deploy"]
 
 # ---- adapter ---------------------------------------------------------
 # Reports, from the application's own point of view, which persistent
-# stores it has. Built on top of the migrate stage so it shares exactly the
-# same runtime, drivers and generated Prisma Client — it adds only the
-# /mendel/phase executable.
+# stores it has, and provides the sandbox-build / sandbox-drop steps used
+# to rehearse a migration beside production before it is applied for real.
+# Built on top of the migrate stage so it shares exactly the same runtime,
+# drivers and generated Prisma Client — it adds only the /mendel/phase
+# executable.
 FROM migrate AS adapter
 
 COPY .mendel/phase/phase.js /mendel/phase
