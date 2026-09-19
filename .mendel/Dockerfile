@@ -76,8 +76,11 @@ CMD ["sh", "-c", "prisma migrate deploy"]
 
 # ---- adapter ---------------------------------------------------------
 # Reports, from the application's own point of view, which persistent
-# stores it has, and provides the sandbox-build / sandbox-drop steps used
-# to rehearse a migration beside production before it is applied for real.
+# stores it has, and provides the sandbox-build / sandbox-drop /
+# sandbox-describe / sandbox-up / sandbox-down steps used to rehearse a
+# migration beside production before it is applied for real: a sandbox is
+# built beside the store of record, described, migrated up, described,
+# migrated down, described again, and dropped.
 # Built on top of the migrate stage so it shares exactly the same runtime,
 # drivers and generated Prisma Client — it adds only the /mendel/phase
 # executable.
