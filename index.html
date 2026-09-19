@@ -904,6 +904,18 @@
         ctx.fillText('Get ready…', CANVAS_W / 2, CANVAS_H / 2);
       }
 
+      // ── Control hints label ───────────────────────────────────────────────
+      // Drawn directly on the canvas each frame (rather than as a DOM element)
+      // so it stays part of the same rendering path as the score/'Get ready…'
+      // text above. Positioned just below the play field, inside the canvas
+      // bounds. Slightly brighter and nudged up when gameover so it remains
+      // legible/visible underneath the semi-transparent HTML overlay.
+      ctx.fillStyle = game.phase === 'gameover' ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.2)';
+      ctx.font = '13px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('W / S or ↑ / ↓ to move', CANVAS_W / 2, CANVAS_H - (game.phase === 'gameover' ? 12 : 6));
+
       // When gameover, the canvas shows the final frozen frame so that the
       // semi-transparent HTML overlay renders above a recognisable game state.
     }
