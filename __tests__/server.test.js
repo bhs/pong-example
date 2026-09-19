@@ -266,6 +266,48 @@ describe('POST /api/scores', () => {
     const res = await post(app, '/api/scores', { score: 10, duration: -5 });
     expect(res.status).toBe(400);
   });
+
+  test('stores longestRally alongside score on first submission', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: 7 });
+    expect(res.status).toBe(200);
+    expect(res.body.entry.longestRally).toBe(7);
+    expect(prisma.__highScores.get(ALICE.id).longestRally).toBe(7);
+  });
+
+  test('defaults longestRally to 0 when omitted', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10 });
+    expect(prisma.__highScores.get(ALICE.id).longestRally).toBe(0);
+  });
+
+  test('bumps longestRally even when the score does not beat the high score', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 200, longestRally: 3 });
+    const res = await post(app, '/api/scores', { score: 50, longestRally: 9 });
+    expect(res.body.updated).toBe(false);            // score did not improve
+    expect(res.body.entry.score).toBe(200);           // score untouched
+    expect(res.body.entry.longestRally).toBe(9);       // rally still bumped
+  });
+
+  test('does NOT lower longestRally when a later game has a shorter rally', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10, longestRally: 12 });
+    const res = await post(app, '/api/scores', { score: 20, longestRally: 4 });
+    expect(res.body.entry.longestRally).toBe(12);
+  });
+
+  test('returns 400 when longestRally is negative', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: -1 });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when longestRally is not an integer', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: 1.5 });
+    expect(res.status).toBe(400);
+  });
 });
 
 // ── GET /api/scores/:userId ────────────────────────────────────────────────

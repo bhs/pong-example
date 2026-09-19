@@ -82,6 +82,12 @@ describe('GET /me', () => {
     expect(res.body.user).toBeNull();
   });
 
+  test('returns bestRallyBucket: false when signed out', async () => {
+    const app = createApp(createFakePrisma());
+    const res = await get(app, '/me');
+    expect(res.body.bestRallyBucket).toBe(false);
+  });
+
   test('returns the logged-in user via the testAuth seam', async () => {
     const user = { id: 'google-sub-1', email: 'a@example.com', name: 'A', avatar: null };
     const app  = createApp(createFakePrisma(), {
@@ -90,6 +96,17 @@ describe('GET /me', () => {
     const res = await get(app, '/me');
     expect(res.status).toBe(200);
     expect(res.body.user).toEqual(user);
+  });
+
+  test('bestRallyBucket is a boolean, deterministic for the same signed-in user id', async () => {
+    const user = { id: 'google-sub-deterministic', email: 'a@example.com', name: 'A', avatar: null };
+    const app  = createApp(createFakePrisma(), {
+      testAuth: (req, res, next) => { req.user = user; req.isAuthenticated = () => true; next(); },
+    });
+    const first  = await get(app, '/me');
+    const second = await get(app, '/me');
+    expect(typeof first.body.bestRallyBucket).toBe('boolean');
+    expect(second.body.bestRallyBucket).toBe(first.body.bestRallyBucket);
   });
 });
 
