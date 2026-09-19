@@ -185,6 +185,45 @@
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+
+        /* ── Recent Games panel ──────────────────────────────────────────── */
+        #pong-recent-games {
+          position: fixed;
+          top: 58px;
+          right: 16px;
+          z-index: 20;
+          width: 220px;
+          padding: 12px 14px;
+          background: rgba(0, 0, 0, 0.55);
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 6px;
+          font-family: monospace;
+          color: rgba(255,255,255,0.85);
+        }
+        #pong-recent-games h2 {
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: rgba(255,255,255,0.5);
+          margin-bottom: 8px;
+        }
+        #pong-recent-games ul {
+          list-style: none;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          max-height: 200px;
+          overflow-y: auto;
+        }
+        #pong-recent-games li {
+          display: flex;
+          justify-content: space-between;
+          font-size: 0.8rem;
+        }
+        #pong-recent-games .empty {
+          font-size: 0.75rem;
+          color: rgba(255,255,255,0.4);
+        }
       `;
       document.head.appendChild(style);
     })();
@@ -241,6 +280,12 @@
       rallyCount:  0,   // hits since last score; resets each point
       flashFrames: 0,   // counts down from FLASH_FRAMES to 0 after scoring
     };
+
+    // Total elapsed play time (seconds) for the current game — accumulated
+    // in update() while game.phase === 'playing', reset by resetGame().
+    // Sent alongside the score when the player clicks 'Save Score' so
+    // GameHistory rows carry a real duration.
+    let gameElapsedSeconds = 0;
 
     // requestAnimationFrame handle — kept so the loop can be paused on gameover.
     let rafId = null;
@@ -381,6 +426,7 @@
       game.pauseTimer = 1.5;
       rally.rallyCount  = 0;
       rally.flashFrames = 0;
+      gameElapsedSeconds = 0;
     }
 
     // ── DOM Overlay ───────────────────────────────────────────────────────────
@@ -540,9 +586,10 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ score: playerPaddle.score }),
+          body: JSON.stringify({ score: playerPaddle.score, duration: Math.round(gameElapsedSeconds) }),
         });
         btn.textContent = res.ok ? 'Saved!' : 'Failed';
+        if (res.ok) refreshRecentGames();
       } catch (err) {
         btn.textContent = 'Failed';
       } finally {
@@ -564,15 +611,92 @@
         const data = await res.json();
         if (data && data.user) {
           renderSignedIn(bar, data.user);
+          refreshRecentGames();
         } else {
           renderSignedOut(bar);
+          removeRecentGamesPanel();
         }
       } catch (err) {
         renderSignedOut(bar);
+        removeRecentGamesPanel();
       }
     }
 
     initAuthBar();
+
+    // ── Recent Games panel ────────────────────────────────────────────────
+    //
+    // A small fixed panel, shown only while signed in, listing the
+    // authenticated player's 10 most recent finished games (score, duration,
+    // finished-at) fetched from GET /api/game-history. Refreshed each time a
+    // score is successfully saved.
+
+    /**
+     * Create (or return the existing) recent-games panel element.
+     */
+    function getRecentGamesPanel() {
+      let panel = document.getElementById('pong-recent-games');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'pong-recent-games';
+        document.body.appendChild(panel);
+      }
+      return panel;
+    }
+
+    /**
+     * Remove the recent-games panel from the DOM if present (signed-out state).
+     */
+    function removeRecentGamesPanel() {
+      const existing = document.getElementById('pong-recent-games');
+      if (existing) existing.remove();
+    }
+
+    /**
+     * Render the panel from an array of { score, duration, finishedAt } entries.
+     */
+    function renderRecentGames(games) {
+      const panel = getRecentGamesPanel();
+      panel.innerHTML = '';
+
+      const heading = document.createElement('h2');
+      heading.textContent = 'Recent Games';
+      panel.appendChild(heading);
+
+      if (!games || games.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'empty';
+        empty.textContent = 'No games played yet';
+        panel.appendChild(empty);
+        return;
+      }
+
+      const list = document.createElement('ul');
+      games.forEach((g) => {
+        const item = document.createElement('li');
+        const when = new Date(g.finishedAt);
+        const timeLabel = isNaN(when.getTime()) ? '' : when.toLocaleTimeString();
+        item.innerHTML =
+          `<span>Score ${g.score}</span><span>${g.duration}s · ${timeLabel}</span>`;
+        list.appendChild(item);
+      });
+      panel.appendChild(list);
+    }
+
+    /**
+     * Fetch GET /api/game-history and render the panel. Silently does
+     * nothing on failure (e.g. session expired) rather than breaking gameplay.
+     */
+    async function refreshRecentGames() {
+      try {
+        const res = await fetch('/api/game-history', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        renderRecentGames(data.games || []);
+      } catch (err) {
+        // Non-critical — leave whatever was last rendered (or nothing).
+      }
+    }
 
     /**
      * Tear down the current overlay, reset all state, and restart the animation loop.
@@ -622,6 +746,8 @@
       }
 
       // ── Phase: playing ───────────────────────────────────────────────────
+
+      gameElapsedSeconds += dt;
 
       // Player paddle movement — boolean key map, clamped to canvas bounds
       if (keys['KeyW'] || keys['ArrowUp']) {

@@ -238,6 +238,34 @@ describe('POST /api/scores', () => {
     expect(res.status).toBe(200);
     expect(res.body.entry.score).toBe(0);
   });
+
+  test('also records a GameHistory row, independent of the HighScore update', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 100, duration: 42 });
+    expect(prisma.__gameHistory).toHaveLength(1);
+    expect(prisma.__gameHistory[0]).toMatchObject({ userId: ALICE.id, score: 100, duration: 42 });
+  });
+
+  test('records a GameHistory row even when the score does not beat the high score', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 200 });
+    const res = await post(app, '/api/scores', { score: 50, duration: 10 });
+    expect(res.body.updated).toBe(false);
+    expect(prisma.__gameHistory).toHaveLength(2);
+    expect(prisma.__gameHistory[1]).toMatchObject({ userId: ALICE.id, score: 50, duration: 10 });
+  });
+
+  test('defaults duration to 0 when omitted', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10 });
+    expect(prisma.__gameHistory[0].duration).toBe(0);
+  });
+
+  test('returns 400 when duration is negative', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, duration: -5 });
+    expect(res.status).toBe(400);
+  });
 });
 
 // ── GET /api/scores/:userId ────────────────────────────────────────────────
@@ -374,5 +402,55 @@ describe('PUT /api/preferences', () => {
     const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
     const res = await put(app, '/api/preferences', { paddleColor: 42 });
     expect(res.status).toBe(400);
+  });
+});
+
+// ── GET /api/game-history ───────────────────────────────────────────────────
+
+describe('GET /api/game-history', () => {
+  test('requires an authenticated session', async () => {
+    const app = createApp(createFakePrisma());
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(401);
+  });
+
+  test('returns an empty list when the player has no history', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(200);
+    expect(res.body.games).toEqual([]);
+  });
+
+  test('returns only the logged-in player\'s games, newest first', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    prisma.__gameHistory.push(
+      { id: 1, userId: ALICE.id, score: 5,  duration: 30, finishedAt: new Date(Date.now() - 3000) },
+      { id: 2, userId: BOB.id,   score: 9,  duration: 20, finishedAt: new Date(Date.now() - 2000) },
+      { id: 3, userId: ALICE.id, score: 7,  duration: 45, finishedAt: new Date(Date.now() - 1000) },
+    );
+
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(200);
+    expect(res.body.games).toHaveLength(2);
+    expect(res.body.games.map((g) => g.score)).toEqual([7, 5]);
+  });
+
+  test('caps results at 10 most recent games', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    for (let i = 0; i < 15; i++) {
+      prisma.__gameHistory.push({
+        id: i, userId: ALICE.id, score: i, duration: i,
+        finishedAt: new Date(Date.now() - i * 1000),
+      });
+    }
+
+    const res = await get(app, '/api/game-history');
+    expect(res.body.games).toHaveLength(10);
+    // Newest first: i=0 was "just now", i=14 was 14s ago.
+    expect(res.body.games[0].score).toBe(0);
   });
 });

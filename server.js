@@ -24,6 +24,9 @@
  *   Preference  One row per user (FK → User.id): theme / sound / paddle
  *               color settings.
  *   HighScore   One row per user (FK → User.id): that user's personal best.
+ *   GameHistory One row per finished game (FK → User.id): score, duration,
+ *               finishedAt. Independent of HighScore — written alongside it
+ *               on every game-completion, never read by it.
  *
  * Endpoints
  * ─────────
@@ -45,8 +48,15 @@
  *                                 session — every HighScore row is tied to a
  *                                 User by foreign key, so there is no way to
  *                                 record a score for an anonymous player.
+ *                                 Also records a GameHistory row for this
+ *                                 finished game (see below) — the two tables
+ *                                 are written independently of one another.
  *   GET    /api/scores/:userId   Get the high score for a specific user id.
  *   DELETE /api/scores/:userId   Delete the high score for a specific user id.
+ *
+ *   GET    /api/game-history      Returns the logged-in user's 10 most
+ *                                 recent finished games (newest first).
+ *                                 Requires an authenticated Google session.
  *
  *   GET  /health                 Basic health check (200 OK).
  *
@@ -375,7 +385,15 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // if the new score is strictly higher than the stored one. Requires an
   // authenticated Google session — HighScore.userId is a foreign key to
   // User.id, so there is no such thing as an anonymous high score.
-  // Body: { score: number }
+  //
+  // Every call also inserts a GameHistory row for this finished game,
+  // regardless of whether it beat the high score — HighScore and GameHistory
+  // are independent tables; this endpoint is simply the one place a finished
+  // game is reported, so both writes happen here, side by side.
+  //
+  // Body: { score: number, duration?: number }
+  //   duration - game length in seconds (non-negative integer); defaults to 0
+  //              when omitted so older clients keep working.
 
   app.post('/api/scores', async (req, res, next) => {
     if (!requireLogin(req, res)) return;
@@ -386,9 +404,21 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return res.status(400).json({ error: 'score must be a non-negative finite number' });
     }
 
+    let duration = req.body && req.body.duration;
+    if (duration === undefined || duration === null) {
+      duration = 0;
+    } else if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) {
+      return res.status(400).json({ error: 'duration must be a non-negative finite number' });
+    }
+    duration = Math.round(duration);
+
     try {
       const userId  = req.user.id;
       const existing = await prisma.highScore.findUnique({ where: { userId } });
+
+      // GameHistory is written unconditionally — independent of whether this
+      // score beats the existing HighScore row.
+      await prisma.gameHistory.create({ data: { userId, score, duration } });
 
       if (existing && score <= existing.score) {
         return res.status(200).json({ updated: false, entry: toScoreEntry({ ...existing, user: req.user }) });
@@ -444,6 +474,29 @@ function createApp(prisma = defaultPrisma, options = {}) {
     }
   });
 
+  // ── GET /api/game-history ─────────────────────────────────────────────────
+  //
+  // Returns the logged-in user's 10 most recently finished games, newest
+  // first. Requires an authenticated Google session — GameHistory has no
+  // notion of an anonymous player.
+
+  app.get('/api/game-history', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    try {
+      const rows = await prisma.gameHistory.findMany({
+        where:   { userId: req.user.id },
+        orderBy: { finishedAt: 'desc' },
+        take:    10,
+      });
+
+      const games = rows.map(toGameHistoryEntry);
+      return res.status(200).json({ games });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
   return app;
 }
 
@@ -458,6 +511,15 @@ function toScoreEntry(row) {
   const player = user.name || user.email || row.userId;
   const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
   return { player, userId: row.userId, score: row.score, updatedAt };
+}
+
+/**
+ * Shapes a GameHistory row into the { score, duration, finishedAt } entry
+ * returned by GET /api/game-history.
+ */
+function toGameHistoryEntry(row) {
+  const finishedAt = row.finishedAt instanceof Date ? row.finishedAt.getTime() : row.finishedAt;
+  return { id: row.id, score: row.score, duration: row.duration, finishedAt };
 }
 
 // ── Start server (when run directly) ──────────────────────────────────────
