@@ -3,21 +3,31 @@
 
 /**
  * /mendel/phase — reports which persistent stores this application has, and
- * builds/drops a structural sandbox beside them for rehearsing a migration.
+ * builds/drops/describes/runs a structural sandbox beside them for
+ * rehearsing a migration.
  *
  * It selects its database exactly the way the application does (see
  * lib/prisma.js and prisma/schema.prisma): the single environment variable
  * DATABASE_URL, a MySQL connection string. There is no other config file or
  * variable to read here, and none is invented. Every command below connects
- * with that same credential.
+ * with that same credential (sandbox-up and sandbox-down connect it to the
+ * sandbox database instead of the application's own, by swapping only the
+ * path component of that same URL — see sandboxDatabaseUrl below).
  *
  * Usage:
  *   /mendel/phase probe
  *   /mendel/phase sandbox-build <name>
  *   /mendel/phase sandbox-drop <name>
+ *   /mendel/phase sandbox-describe <name>
+ *   /mendel/phase sandbox-up <name>     (reads migration_contract's "up" as JSON on stdin)
+ *   /mendel/phase sandbox-down <name>   (reads migration_contract's "down" as JSON on stdin)
  */
 
 const { URL } = require('url');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
 
 // Sandbox names must fall under this prefix, and must be safe to splice
 // directly into a backtick-quoted MySQL identifier (hence the restricted
@@ -50,19 +60,29 @@ const GRANT_PRIVILEGES = [
   'DELETE'
 ];
 
-// A constant description of the one migration format a future "apply" /
-// "rehearse" / "reverse" command (not implemented here) will accept for
-// this repository's MySQL store of record. It never changes based on what
-// probe finds — it describes what this program accepts, not the schema it
-// observed.
+// The name probe reports for this application's one store of record. Reused
+// by sandbox-describe below to prefix each collection name with it (per
+// migration_contract, collections are named "<store>.<table>" whenever
+// there is more than one store of record — this application only ever has
+// one, but the prefix is applied unconditionally for that same reason).
+const RECORD_STORE_NAME = 'db';
+
+// A constant description of the one migration format the sandbox-up /
+// sandbox-down steps below accept (and that a future "apply this for real"
+// command, not implemented here, will accept too) for this repository's
+// MySQL store of record. It never changes based on what probe finds — it
+// describes what this program accepts, not the schema it observed.
 //
 // `up` names a new Prisma migration the way this repository already writes
 // them (see prisma/migrations/20240115000000_init/): a migration directory
 // name and the migration.sql it contains, which `prisma migrate deploy`
 // (the same command the migrate stage and this application's own
-// entrypoint run) applies straight from prisma/migrations/. Prisma Migrate
-// has no concept of a down-migration to prefer instead, so `down` carries
-// the plain SQL that reverses `up`'s SQL against the MySQL server directly.
+// entrypoint run) applies straight from prisma/migrations/ — sandbox-up
+// runs exactly that command against a temporary copy of prisma/migrations/
+// with this migration added, pointed at the sandbox database. Prisma
+// Migrate has no concept of a down-migration to prefer instead, so `down`
+// carries the plain SQL that reverses `up`'s SQL, run directly against the
+// MySQL server by sandbox-down (and, later, for real).
 const MIGRATION_CONTRACT = {
   schema: {
     $defs: {
@@ -137,9 +157,50 @@ const MIGRATION_CONTRACT = {
 // (see .mendel/Dockerfile). This file is copied to /mendel/phase, outside
 // /app, so it is required by its absolute path rather than relying on
 // node_modules resolution from its own directory.
-function loadPrismaClient() {
+//
+// With `url` given, connects to that URL instead of DATABASE_URL — used by
+// sandbox-down to run against the sandbox database while everything else
+// (driver, engine, credential) stays exactly what the application uses.
+function loadPrismaClient(url) {
   const { PrismaClient } = require('/app/node_modules/@prisma/client');
+  if (url) {
+    return new PrismaClient({ datasources: { db: { url } } });
+  }
   return new PrismaClient();
+}
+
+// The sandbox's own connection string: the application's DATABASE_URL with
+// only its path (the database name) replaced — same host, port, credential
+// and every other part, since a sandbox lives on the same server as the
+// store of record it sits beside.
+function sandboxDatabaseUrl(name) {
+  const parsed = new URL(process.env.DATABASE_URL);
+  parsed.pathname = `/${name}`;
+  return parsed.toString();
+}
+
+// Reads all of stdin and returns it as a string.
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { data += chunk; });
+    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('error', reject);
+  });
+}
+
+// Splits a semicolon-terminated block of SQL statements (the form
+// migration_contract's sqlStatements $def describes) into individual
+// statements. Needed because, like CREATE TRIGGER elsewhere in this file,
+// this program's only available MySQL client (Prisma Client) sends each
+// $executeRawUnsafe call over the server-side prepared-statement protocol,
+// which does not accept more than one statement per call.
+function splitSqlStatements(sql) {
+  return sql
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
 }
 
 // The database name the application itself reaches, parsed out of
@@ -245,7 +306,7 @@ async function probe() {
     const match = /^(\d+\.\d+\.\d+)/.exec(versionString);
     const version = match ? match[1] : versionString;
 
-    const stores = [{ name: 'db', engine, version, role: 'record' }];
+    const stores = [{ name: RECORD_STORE_NAME, engine, version, role: 'record' }];
     const output = { stores };
     // Any reported store of role "record" must come with the migration
     // contract describing the one migration format this program accepts.
@@ -443,6 +504,265 @@ async function sandboxDrop(name) {
   }
 }
 
+// Describes every collection in the sandbox `name` as it is on the server
+// right now, changing nothing. See the module docstring for why this reads
+// via the same production connection rather than one scoped to the sandbox
+// database: information_schema is queried with an explicit schema filter,
+// the same way sandbox-build reads production's own structure above.
+async function sandboxDescribe(name) {
+  let appDb;
+  try {
+    appDb = parseAppDatabaseName();
+  } catch (err) {
+    process.stderr.write(`phase sandbox-describe: ${err.message}\n`);
+    process.exit(1);
+  }
+  validateSandboxName('sandbox-describe', name, appDb);
+
+  const conn = loadPrismaClient();
+  try {
+    const tables = await conn.$queryRawUnsafe(
+      'SELECT TABLE_NAME AS name, TABLE_TYPE AS type FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME',
+      name
+    );
+
+    const collections = {};
+    for (const table of tables) {
+      const isBaseTable = table.type === 'BASE TABLE';
+
+      // fields: every column, in the server's own declared order, with its
+      // type exactly as the server states it (information_schema.COLUMNS
+      // reports COLUMN_TYPE consistently every time, so this text never
+      // drifts between two reads of the same structure).
+      const fieldRows = await conn.$queryRawUnsafe(
+        'SELECT COLUMN_NAME AS col, COLUMN_TYPE AS type FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION',
+        name,
+        table.name
+      );
+      const fields = {};
+      for (const row of fieldRows) {
+        fields[row.col] = row.type;
+      }
+
+      // identity: the primary key, in column order. Views have none.
+      let identity = [];
+      if (isBaseTable) {
+        const pkRows = await conn.$queryRawUnsafe(
+          "SELECT COLUMN_NAME AS col FROM information_schema.KEY_COLUMN_USAGE " +
+          "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION",
+          name,
+          table.name
+        );
+        identity = pkRows.map((row) => row.col);
+      }
+
+      // indexes: every index but the primary key (that's `identity`, not a
+      // named index), by name, with its columns and uniqueness — enough
+      // that a change to either changes the text.
+      const indexes = {};
+      if (isBaseTable) {
+        const indexRows = await conn.$queryRawUnsafe(
+          "SELECT INDEX_NAME AS idx, NON_UNIQUE AS nonUnique, COLUMN_NAME AS col FROM information_schema.STATISTICS " +
+          "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME <> 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+          name,
+          table.name
+        );
+        const grouped = new Map();
+        for (const row of indexRows) {
+          if (!grouped.has(row.idx)) {
+            grouped.set(row.idx, { nonUnique: Number(row.nonUnique), columns: [] });
+          }
+          grouped.get(row.idx).columns.push(row.col);
+        }
+        for (const indexName of [...grouped.keys()].sort()) {
+          const { nonUnique, columns } = grouped.get(indexName);
+          const kind = nonUnique === 0 ? 'UNIQUE' : 'INDEX';
+          indexes[indexName] = `${kind} (${columns.map((c) => `\`${c}\``).join(', ')})`;
+        }
+      }
+
+      // constraints: foreign keys — what they reference and their
+      // ON DELETE/ON UPDATE actions, read from the server's own catalogue.
+      const constraints = {};
+      if (isBaseTable) {
+        const fkRows = await conn.$queryRawUnsafe(
+          'SELECT kcu.CONSTRAINT_NAME AS name, kcu.COLUMN_NAME AS col, ' +
+          'kcu.REFERENCED_TABLE_NAME AS refTable, kcu.REFERENCED_COLUMN_NAME AS refCol, ' +
+          'rc.UPDATE_RULE AS updateRule, rc.DELETE_RULE AS deleteRule ' +
+          'FROM information_schema.KEY_COLUMN_USAGE kcu ' +
+          'JOIN information_schema.REFERENTIAL_CONSTRAINTS rc ' +
+          '  ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND rc.TABLE_NAME = kcu.TABLE_NAME ' +
+          'WHERE kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL ' +
+          'ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION',
+          name,
+          table.name
+        );
+        const grouped = new Map();
+        for (const row of fkRows) {
+          if (!grouped.has(row.name)) {
+            grouped.set(row.name, {
+              refTable: row.refTable,
+              updateRule: row.updateRule,
+              deleteRule: row.deleteRule,
+              columns: [],
+              refColumns: []
+            });
+          }
+          const group = grouped.get(row.name);
+          group.columns.push(row.col);
+          group.refColumns.push(row.refCol);
+        }
+        for (const fkName of [...grouped.keys()].sort()) {
+          const group = grouped.get(fkName);
+          constraints[fkName] =
+            `FOREIGN KEY (${group.columns.map((c) => `\`${c}\``).join(', ')}) ` +
+            `REFERENCES \`${group.refTable}\` (${group.refColumns.map((c) => `\`${c}\``).join(', ')}) ` +
+            `ON DELETE ${group.deleteRule} ON UPDATE ${group.updateRule}`;
+        }
+      }
+
+      // With more than one store of record, each collection is named with
+      // its store's name and a dot in front — this application has only
+      // one store of record, but the same naming is applied unconditionally.
+      collections[`${RECORD_STORE_NAME}.${table.name}`] = { fields, identity, indexes, constraints };
+    }
+
+    // Stable key order, so the same structure always serializes to the
+    // same text.
+    const ordered = {};
+    for (const key of Object.keys(collections).sort()) {
+      ordered[key] = collections[key];
+    }
+
+    process.stdout.write(JSON.stringify({ collections: ordered }) + '\n');
+    await conn.$disconnect();
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`phase sandbox-describe: ${err.message || err}\n`);
+    try {
+      await conn.$disconnect();
+    } catch (_) {
+      /* already broken */
+    }
+    process.exit(1);
+  }
+}
+
+// Runs migration_contract's "up" (a Prisma migration name + its SQL, read
+// as JSON from stdin) through this repository's own migration tool, inside
+// the sandbox `name` instead of production. It does this the same way the
+// migrate stage and this application's own startup apply a migration for
+// real — `prisma migrate deploy` — except pointed at the sandbox database,
+// and given a temporary copy of prisma/migrations/ with this one migration
+// added, so this image's own copy of the repository is never written to
+// (the same image rehearses the next migration afterwards).
+async function sandboxUp(name) {
+  let appDb;
+  try {
+    appDb = parseAppDatabaseName();
+  } catch (err) {
+    process.stderr.write(`phase sandbox-up: ${err.message}\n`);
+    process.exit(1);
+  }
+  validateSandboxName('sandbox-up', name, appDb);
+
+  let up;
+  try {
+    up = JSON.parse(await readStdin());
+  } catch (err) {
+    process.stderr.write(`phase sandbox-up: stdin was not valid JSON: ${err.message}\n`);
+    process.exit(1);
+  }
+  if (!up || typeof up !== 'object' || typeof up.migration_name !== 'string' || typeof up.sql !== 'string') {
+    process.stderr.write(
+      'phase sandbox-up: expected {"migration_name": ..., "sql": ...} on stdin, per ' +
+      'migration_contract.schema.properties.up.\n'
+    );
+    process.exit(1);
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'phase-sandbox-up-'));
+  try {
+    const tmpPrisma = path.join(tmpRoot, 'prisma');
+    fs.cpSync('/app/prisma', tmpPrisma, { recursive: true });
+
+    const migrationDir = path.join(tmpPrisma, 'migrations', up.migration_name);
+    fs.mkdirSync(migrationDir, { recursive: true });
+    fs.writeFileSync(path.join(migrationDir, 'migration.sql'), up.sql);
+
+    const result = spawnSync(
+      'prisma',
+      ['migrate', 'deploy', '--schema', path.join(tmpPrisma, 'schema.prisma')],
+      { env: { ...process.env, DATABASE_URL: sandboxDatabaseUrl(name) }, encoding: 'utf8' }
+    );
+
+    if (result.error) {
+      process.stderr.write(`phase sandbox-up: could not run prisma migrate deploy: ${result.error.message}\n`);
+      process.exit(1);
+    }
+    if (result.status !== 0) {
+      process.stderr.write(
+        `phase sandbox-up: prisma migrate deploy failed:\n${(result.stdout || '') + (result.stderr || '')}`
+      );
+      process.exit(1);
+    }
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`phase sandbox-up: ${err.message || err}\n`);
+    process.exit(1);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+// Runs migration_contract's "down" (plain SQL, read as JSON from stdin)
+// directly against the sandbox `name`'s database — Prisma Migrate has no
+// down-migration of its own to run instead, so this runs the SQL the same
+// way it will be run for real: statement by statement (see
+// splitSqlStatements) against the MySQL server, through the same driver
+// and credential the application uses, just pointed at the sandbox.
+async function sandboxDown(name) {
+  let appDb;
+  try {
+    appDb = parseAppDatabaseName();
+  } catch (err) {
+    process.stderr.write(`phase sandbox-down: ${err.message}\n`);
+    process.exit(1);
+  }
+  validateSandboxName('sandbox-down', name, appDb);
+
+  let down;
+  try {
+    down = JSON.parse(await readStdin());
+  } catch (err) {
+    process.stderr.write(`phase sandbox-down: stdin was not valid JSON: ${err.message}\n`);
+    process.exit(1);
+  }
+  if (!down || typeof down !== 'object' || typeof down.sql !== 'string') {
+    process.stderr.write(
+      'phase sandbox-down: expected {"sql": ...} on stdin, per migration_contract.schema.properties.down.\n'
+    );
+    process.exit(1);
+  }
+
+  const conn = loadPrismaClient(sandboxDatabaseUrl(name));
+  try {
+    for (const statement of splitSqlStatements(down.sql)) {
+      await conn.$executeRawUnsafe(statement);
+    }
+    await conn.$disconnect();
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`phase sandbox-down: ${err.message || err}\n`);
+    try {
+      await conn.$disconnect();
+    } catch (_) {
+      /* already broken */
+    }
+    process.exit(1);
+  }
+}
+
 const args = process.argv.slice(2);
 
 if (args.length === 1 && args[0] === 'probe') {
@@ -451,10 +771,18 @@ if (args.length === 1 && args[0] === 'probe') {
   sandboxBuild(args[1]);
 } else if (args.length === 2 && args[0] === 'sandbox-drop') {
   sandboxDrop(args[1]);
+} else if (args.length === 2 && args[0] === 'sandbox-describe') {
+  sandboxDescribe(args[1]);
+} else if (args.length === 2 && args[0] === 'sandbox-up') {
+  sandboxUp(args[1]);
+} else if (args.length === 2 && args[0] === 'sandbox-down') {
+  sandboxDown(args[1]);
 } else {
   process.stderr.write(
     `phase: does not implement ${JSON.stringify(args.join(' '))}; only "probe", ` +
-    `"sandbox-build <name>" and "sandbox-drop <name>" are supported.\n`
+    `"sandbox-build <name>", "sandbox-drop <name>", "sandbox-describe <name>", ` +
+    `"sandbox-up <name>" and "sandbox-down <name>" are supported.\n`
   );
   process.exit(1);
 }
+
