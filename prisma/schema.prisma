@@ -39,8 +39,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  preference Preference?
-  highScore  HighScore?
+  preference   Preference?
+  highScore    HighScore?
+  gameHistory  GameHistory[]
 
   @@map("users")
 }
@@ -74,4 +75,21 @@ model HighScore {
 
   @@index([score])
   @@map("high_scores")
+}
+
+// A single played game's result. Unlike HighScore (one row per user, only
+// ever overwritten by a strictly-higher score), every finished game gets its
+// own row here — the two tables are written independently and neither reads
+// from the other. `duration` is the game length in seconds.
+model GameHistory {
+  id         Int      @id @default(autoincrement())
+  userId     String
+  score      Int
+  duration   Int
+  finishedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, finishedAt])
+  @@map("game_history")
 }

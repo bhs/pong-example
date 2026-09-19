@@ -4,10 +4,10 @@
  * __tests__/helpers/fakePrisma.js
  *
  * A minimal, in-memory stand-in for a Prisma Client that implements just
- * enough of the `user` / `preference` / `highScore` model APIs for
- * server.js's routes to run against in unit tests — no real MySQL instance
- * required. Each call to createFakePrisma() returns an independent set of
- * Maps so tests don't share state.
+ * enough of the `user` / `preference` / `highScore` / `gameHistory` model
+ * APIs for server.js's routes to run against in unit tests — no real MySQL
+ * instance required. Each call to createFakePrisma() returns an independent
+ * set of Maps so tests don't share state.
  */
 
 function notFoundError() {
@@ -17,17 +17,20 @@ function notFoundError() {
 }
 
 function createFakePrisma() {
-  const users       = new Map(); // id -> user row
-  const preferences = new Map(); // userId -> preference row
-  const highScores  = new Map(); // userId -> highScore row
+  const users        = new Map(); // id -> user row
+  const preferences  = new Map(); // userId -> preference row
+  const highScores   = new Map(); // userId -> highScore row
+  const gameHistory  = [];        // array of gameHistory rows (many per user)
 
-  let preferenceAutoId = 1;
-  let highScoreAutoId  = 1;
+  let preferenceAutoId  = 1;
+  let highScoreAutoId   = 1;
+  let gameHistoryAutoId = 1;
 
   return {
     __users: users,
     __preferences: preferences,
     __highScores: highScores,
+    __gameHistory: gameHistory,
 
     user: {
       async findUnique({ where }) {
@@ -99,6 +102,27 @@ function createFakePrisma() {
         const row = highScores.get(where.userId);
         highScores.delete(where.userId);
         return row;
+      },
+    },
+
+    gameHistory: {
+      async create({ data }) {
+        const row = { id: gameHistoryAutoId++, finishedAt: new Date(), ...data };
+        gameHistory.push(row);
+        return row;
+      },
+      async findMany({ where, orderBy, take } = {}) {
+        let rows = gameHistory.slice();
+        if (where && where.userId) {
+          rows = rows.filter((row) => row.userId === where.userId);
+        }
+        if (orderBy && orderBy.finishedAt === 'desc') {
+          rows = rows.sort((a, b) => b.finishedAt - a.finishedAt);
+        }
+        if (typeof take === 'number') {
+          rows = rows.slice(0, take);
+        }
+        return rows;
       },
     },
   };
