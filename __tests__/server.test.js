@@ -266,6 +266,30 @@ describe('POST /api/scores', () => {
     const res = await post(app, '/api/scores', { score: 10, duration: -5 });
     expect(res.status).toBe(400);
   });
+
+  test('accepts and stores longestRally alongside score/duration', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10, duration: 5, longestRally: 12 });
+    expect(prisma.__gameHistory[0]).toMatchObject({ userId: ALICE.id, score: 10, duration: 5, longestRally: 12 });
+  });
+
+  test('defaults longestRally to 0 when omitted', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10 });
+    expect(prisma.__gameHistory[0].longestRally).toBe(0);
+  });
+
+  test('returns 400 when longestRally is negative', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: -3 });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when longestRally is not a number', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: 'lots' });
+    expect(res.status).toBe(400);
+  });
 });
 
 // ── GET /api/scores/:userId ────────────────────────────────────────────────
@@ -452,5 +476,38 @@ describe('GET /api/game-history', () => {
     expect(res.body.games).toHaveLength(10);
     // Newest first: i=0 was "just now", i=14 was 14s ago.
     expect(res.body.games[0].score).toBe(0);
+  });
+
+  test('returns bestRally as 0 when the player has no history', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(200);
+    expect(res.body.bestRally).toBe(0);
+  });
+
+  test('returns bestRally as the all-time max longestRally, scoped to the logged-in player', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    prisma.__gameHistory.push(
+      { id: 1, userId: ALICE.id, score: 5, duration: 30, longestRally: 4,  finishedAt: new Date(Date.now() - 3000) },
+      { id: 2, userId: BOB.id,   score: 9, duration: 20, longestRally: 99, finishedAt: new Date(Date.now() - 2000) },
+      { id: 3, userId: ALICE.id, score: 7, duration: 45, longestRally: 11, finishedAt: new Date(Date.now() - 1000) },
+    );
+
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(200);
+    expect(res.body.bestRally).toBe(11);
+  });
+
+  test('each returned game entry includes its own longestRally', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    prisma.__gameHistory.push(
+      { id: 1, userId: ALICE.id, score: 5, duration: 30, longestRally: 8, finishedAt: new Date() },
+    );
+
+    const res = await get(app, '/api/game-history');
+    expect(res.body.games[0].longestRally).toBe(8);
   });
 });

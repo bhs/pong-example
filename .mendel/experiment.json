@@ -1,0 +1,11 @@
+{
+  "assignment_unit": "user",
+  "assignment_key": {"source": "cookie", "name": "connect.sid"},
+  "dissonance": "After winning or losing a game, the game-over screen no longer shows how long their longest rally was this game or their personal-best rally streak — it goes back to only showing the final score.",
+  "metric": {
+    "name": "game_started",
+    "per": "visit",
+    "better": "higher",
+    "description": "Counts how many times a player starts a new game divided by the number of page visits, capturing whether showing the best-rally readout after game-over encourages replay."
+  }
+}

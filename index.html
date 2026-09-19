@@ -296,10 +296,13 @@
     };
 
     // Rally state — tracks consecutive paddle hits for difficulty escalation
-    // and the short score-flash effect.
+    // and the short score-flash effect. longestRally is a running high-water
+    // mark for the whole game (never reset on a score, only by resetGame())
+    // — it's what gets sent to POST /api/scores alongside score/duration.
     const rally = {
-      rallyCount:  0,   // hits since last score; resets each point
-      flashFrames: 0,   // counts down from FLASH_FRAMES to 0 after scoring
+      rallyCount:   0,   // hits since last score; resets each point
+      longestRally: 0,   // best rallyCount streak observed this game
+      flashFrames:  0,   // counts down from FLASH_FRAMES to 0 after scoring
     };
 
     // Total elapsed play time (seconds) for the current game — accumulated
@@ -310,6 +313,38 @@
 
     // requestAnimationFrame handle — kept so the loop can be paused on gameover.
     let rafId = null;
+
+    // ── Rally readout experiment gate (client-only, 50/50) ──────────────────
+    //
+    // A lightweight config-driven feature flag, independent of gameplay:
+    // decides whether the game-over overlay shows a "longest rally" / best
+    // rally readout. Assigned once per browser (random, 50/50) and persisted
+    // in localStorage so the same player consistently sees or doesn't see
+    // the readout across visits, rather than flip-flopping every game.
+    const RALLY_READOUT_FLAG_KEY = 'mendelRallyReadoutEnabled';
+
+    function isRallyReadoutEnabled() {
+      try {
+        let value = localStorage.getItem(RALLY_READOUT_FLAG_KEY);
+        if (value !== '0' && value !== '1') {
+          value = Math.random() < 0.5 ? '1' : '0';
+          localStorage.setItem(RALLY_READOUT_FLAG_KEY, value);
+        }
+        return value === '1';
+      } catch (err) {
+        // localStorage unavailable (e.g. private browsing) — default off
+        // rather than throwing.
+        return false;
+      }
+    }
+
+    const rallyReadoutEnabled = isRallyReadoutEnabled();
+
+    // The signed-in player's all-time best rally, as last fetched from
+    // GET /api/game-history (bestRally). null until known (signed out, or
+    // not fetched yet) — the overlay simply omits the "personal best" half
+    // of the readout in that case.
+    let lastKnownBestRally = null;
 
     // ── Experiment telemetry (client-side event pings) ───────────────────────
     //
@@ -351,6 +386,9 @@
     } catch (err) {
       // sessionStorage may be unavailable (e.g. private browsing) — ignore.
     }
+
+    // Every page load is a visit, for the game_started-per-visit metric.
+    sendMendelEvent('visit');
 
     // ── Input ─────────────────────────────────────────────────────────────────
     //
@@ -418,6 +456,27 @@
     }
 
     /**
+     * Event-driven hit counter — called from the paddle-collision branches
+     * in update() on every successful return. Bumps the current streak and
+     * keeps rally.longestRally in sync as a running max for the whole game.
+     */
+    function recordRallyHit() {
+      rally.rallyCount += 1;
+      if (rally.rallyCount > rally.longestRally) {
+        rally.longestRally = rally.rallyCount;
+      }
+    }
+
+    /**
+     * Counterpart to recordRallyHit(): called whenever the rally ends (a
+     * point is scored). Resets the current streak only — longestRally
+     * tracks the best streak across the whole game and is left untouched.
+     */
+    function recordRallyMiss() {
+      rally.rallyCount = 0;
+    }
+
+    /**
      * Reset the ball to the centre and launch it in a random direction,
      * away from whichever side just scored (dirSign: +1 = toward AI, -1 = toward player).
      * Resets the rally counter.
@@ -445,8 +504,9 @@
       game.winner     = null;
       game.phase      = 'scored';
       game.pauseTimer = 1.5;
-      rally.rallyCount  = 0;
-      rally.flashFrames = 0;
+      rally.rallyCount   = 0;
+      rally.longestRally = 0;
+      rally.flashFrames  = 0;
       gameElapsedSeconds = 0;
     }
 
@@ -463,8 +523,9 @@
      * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
      * @param {number} playerScore - Final player score
      * @param {number} aiScore     - Final AI score
+     * @param {number} longestRally - Longest rally streak this game (rally.longestRally)
      */
-    function showGameOverOverlay(winnerLabel, playerScore, aiScore) {
+    function showGameOverOverlay(winnerLabel, playerScore, aiScore, longestRally) {
       // Remove any pre-existing overlay (defensive guard)
       removeGameOverOverlay();
 
@@ -484,6 +545,23 @@
       scoreEl.className = 'final-score';
       scoreEl.textContent = `Final score  ${playerScore} – ${aiScore}`;
       overlay.appendChild(scoreEl);
+
+      // Best-rally readout — only for the 50% of players the experiment
+      // flag enables it for. Always shows this game's longest rally; adds
+      // the player's all-time personal best when it's known (signed-in
+      // players, once GET /api/game-history has resolved at least once).
+      if (rallyReadoutEnabled) {
+        const rallyEl = document.createElement('p');
+        rallyEl.className = 'final-score';
+        rallyEl.id = 'pong-rally-readout';
+        let text = `Longest rally  ${longestRally}`;
+        if (typeof lastKnownBestRally === 'number') {
+          const personalBest = Math.max(lastKnownBestRally, longestRally);
+          text += `  •  Personal best  ${personalBest}`;
+        }
+        rallyEl.textContent = text;
+        overlay.appendChild(rallyEl);
+      }
 
       // Play Again button
       const btn = document.createElement('button');
@@ -607,7 +685,11 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ score: playerPaddle.score, duration: Math.round(gameElapsedSeconds) }),
+          body: JSON.stringify({
+            score:        playerPaddle.score,
+            duration:     Math.round(gameElapsedSeconds),
+            longestRally: rally.longestRally,
+          }),
         });
         btn.textContent = res.ok ? 'Saved!' : 'Failed';
         if (res.ok) refreshRecentGames();
@@ -714,6 +796,7 @@
         if (!res.ok) return;
         const data = await res.json();
         renderRecentGames(data.games || []);
+        lastKnownBestRally = typeof data.bestRally === 'number' ? data.bestRally : null;
       } catch (err) {
         // Non-critical — leave whatever was last rendered (or nothing).
       }
@@ -728,6 +811,7 @@
         try { sessionStorage.removeItem(MENDEL_GAME_OVER_FLAG); } catch (err) { /* ignore */ }
         sendMendelEvent('play_again_click');
       }
+      sendMendelEvent('game_started');
       removeGameOverOverlay();
       resetGame();
       // Clear the key map so a held-Space doesn't immediately trigger movement
@@ -817,7 +901,7 @@
         ball.angle  = deflectAngle(relY);
         ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
         syncBallVelocity(ball);
-        rally.rallyCount += 1;
+        recordRallyHit();
       }
 
       // ── Ball vs AI paddle ─────────────────────────────────────────────────
@@ -832,14 +916,14 @@
         ball.angle  = Math.PI - deflectAngle(relY);
         ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
         syncBallVelocity(ball);
-        rally.rallyCount += 1;
+        recordRallyHit();
       }
 
       // ── Ball exits left → AI scores ───────────────────────────────────────
       if (ball.x + BALL_SIZE < 0) {
         aiPaddle.score += 1;
         rally.flashFrames = FLASH_FRAMES;
-        rally.rallyCount  = 0;
+        recordRallyMiss();
         if (aiPaddle.score >= SCORE_WIN) {
           game.phase  = 'gameover';
           game.winner = 'ai';
@@ -853,7 +937,7 @@
       if (ball.x > CANVAS_W) {
         playerPaddle.score += 1;
         rally.flashFrames = FLASH_FRAMES;
-        rally.rallyCount  = 0;
+        recordRallyMiss();
         if (playerPaddle.score >= SCORE_WIN) {
           game.phase  = 'gameover';
           game.winner = 'player';
@@ -954,7 +1038,7 @@
         // Pause the loop and present the DOM overlay
         rafId = null;
         const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
-        showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score);
+        showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score, rally.longestRally);
         return; // do NOT schedule next frame
       }
 
@@ -962,6 +1046,7 @@
     }
 
     // Kick off the animation loop
+    sendMendelEvent('game_started');
     rafId = requestAnimationFrame(loop);
   </script>
 </body>

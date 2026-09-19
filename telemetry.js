@@ -29,7 +29,15 @@ const DURATION_BOUNDARIES_MS = [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 
 // Counters whose events only happen in the browser (or, in versions of this
 // app that don't have the feature at all, never happen). They are declared
 // unconditionally below so the deployment always reports them, even at zero.
-const CLIENT_EVENT_COUNTER_NAMES = ['game_over_shown', 'page_reload', 'play_again_click'];
+//
+// game_started / visit back the game_started-per-visit experiment metric:
+// 'visit' fires once per page load, 'game_started' fires every time a game
+// begins (initial load and every restart) — together they capture whether
+// showing the best-rally readout after game-over encourages replay.
+const CLIENT_EVENT_COUNTER_NAMES = [
+  'game_over_shown', 'page_reload', 'play_again_click',
+  'game_started', 'visit',
+];
 
 const LONG_LIVED_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000; // ~400 days
 
@@ -165,6 +173,8 @@ function createTelemetry() {
       game_over_shown:      meter.createCounter('game_over_shown'),
       page_reload:          meter.createCounter('page_reload'),
       play_again_click:     meter.createCounter('play_again_click'),
+      game_started:         meter.createCounter('game_started'),
+      visit:                meter.createCounter('visit'),
       mendel_participants:  meter.createCounter('mendel_participants'),
       mendel_requests:      meter.createCounter('mendel_requests'),
       mendel_server_errors: meter.createCounter('mendel_server_errors'),

@@ -80,13 +80,17 @@ model HighScore {
 // A single played game's result. Unlike HighScore (one row per user, only
 // ever overwritten by a strictly-higher score), every finished game gets its
 // own row here — the two tables are written independently and neither reads
-// from the other. `duration` is the game length in seconds.
+// from the other. `duration` is the game length in seconds. `longestRally`
+// is the longest consecutive-hit streak observed during the game (0 if the
+// client never reported one), written on the same create() call as
+// score/duration/finishedAt.
 model GameHistory {
-  id         Int      @id @default(autoincrement())
-  userId     String
-  score      Int
-  duration   Int
-  finishedAt DateTime @default(now())
+  id           Int      @id @default(autoincrement())
+  userId       String
+  score        Int
+  duration     Int
+  longestRally Int      @default(0)
+  finishedAt   DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

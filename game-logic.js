@@ -111,14 +111,42 @@ function makeGame() {
  * rallyCount is incremented on each paddle hit and reset each time a point is
  * scored.  It drives the AI difficulty escalation and the ball speed curve.
  *
+ * longestRally is a running high-water mark of rallyCount for the whole
+ * game — unlike rallyCount it is never reset on a score, only when a new
+ * game starts (makeRally() is called again). It's what gets reported to
+ * GameHistory.longestRally alongside score/duration on game completion.
+ *
  * flashFrames counts down from FLASH_FRAMES to 0 after a point is scored,
  * providing a brief tinted-screen flash to give visual feedback.
  */
 function makeRally() {
   return {
-    rallyCount:  0,
-    flashFrames: 0,
+    rallyCount:   0,
+    longestRally: 0,
+    flashFrames:  0,
   };
+}
+
+/**
+ * Event-driven hit counter: called from the paddle-collision branches in
+ * updateBall() on every successful return. Bumps the current streak and
+ * keeps longestRally in sync as a running max — the "listener" the
+ * longest-rally tracking hangs off of.
+ */
+function recordRallyHit(rally) {
+  rally.rallyCount += 1;
+  if (rally.rallyCount > rally.longestRally) {
+    rally.longestRally = rally.rallyCount;
+  }
+}
+
+/**
+ * The counterpart to recordRallyHit(): called whenever the rally ends
+ * (a point is scored). Resets the current streak — longestRally is left
+ * untouched since it tracks the best streak across the whole game.
+ */
+function recordRallyMiss(rally) {
+  rally.rallyCount = 0;
 }
 
 /**
@@ -253,7 +281,7 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     ball.angle    = deflectAngle(relY);      // positive angle → launches right + down/up
     ball.speed    = incrementSpeed(ball.speed);
     syncBallVelocity(ball);
-    rally.rallyCount += 1;
+    recordRallyHit(rally);
   }
 
   // ── Ball vs AI paddle ─────────────────────────────────────────────────────
@@ -268,13 +296,13 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     ball.angle    = Math.PI - deflectAngle(relY);
     ball.speed    = incrementSpeed(ball.speed);
     syncBallVelocity(ball);
-    rally.rallyCount += 1;
+    recordRallyHit(rally);
   }
 
   // ── Ball exits left → AI scores ───────────────────────────────────────────
   if (ball.x + BALL_SIZE < 0) {
     aiPaddle.score += 1;
-    rally.rallyCount  = 0;
+    recordRallyMiss(rally);
     rally.flashFrames = FLASH_FRAMES;
     if (aiPaddle.score >= SCORE_WIN) {
       game.phase  = 'won';
@@ -288,7 +316,7 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
   // ── Ball exits right → player scores ─────────────────────────────────────
   if (ball.x > CANVAS_W) {
     playerPaddle.score += 1;
-    rally.rallyCount  = 0;
+    recordRallyMiss(rally);
     rally.flashFrames = FLASH_FRAMES;
     if (playerPaddle.score >= SCORE_WIN) {
       game.phase  = 'won';
@@ -327,6 +355,11 @@ module.exports = {
   makeAiPaddle,
   makeGame,
   makeRally,
+
+  // Rally hit-counter helpers (event-driven: called from the paddle-collision
+  // branches in updateBall())
+  recordRallyHit,
+  recordRallyMiss,
 
   // Pure helpers
   rand,

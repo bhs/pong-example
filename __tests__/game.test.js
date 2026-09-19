@@ -15,6 +15,8 @@ const {
   makeAiPaddle,
   makeGame,
   makeRally,
+  recordRallyHit,
+  recordRallyMiss,
   rand,
   clamp,
   aabbOverlap,
@@ -277,6 +279,61 @@ describe('makeRally', () => {
     const r = makeRally();
     expect(r.rallyCount).toBe(0);
     expect(r.flashFrames).toBe(0);
+  });
+
+  test('initialises with zero longestRally', () => {
+    const r = makeRally();
+    expect(r.longestRally).toBe(0);
+  });
+});
+
+// ── recordRallyHit / recordRallyMiss ────────────────────────────────────────
+
+describe('recordRallyHit', () => {
+  test('increments rallyCount by one', () => {
+    const r = makeRally();
+    recordRallyHit(r);
+    expect(r.rallyCount).toBe(1);
+    recordRallyHit(r);
+    expect(r.rallyCount).toBe(2);
+  });
+
+  test('raises longestRally to match a new high-water mark', () => {
+    const r = makeRally();
+    recordRallyHit(r);
+    recordRallyHit(r);
+    recordRallyHit(r);
+    expect(r.longestRally).toBe(3);
+  });
+
+  test('longestRally never decreases when rallyCount later drops below its peak', () => {
+    const r = makeRally();
+    recordRallyHit(r);
+    recordRallyHit(r);
+    recordRallyHit(r);
+    expect(r.longestRally).toBe(3);
+    recordRallyMiss(r);
+    recordRallyHit(r);
+    expect(r.rallyCount).toBe(1);
+    expect(r.longestRally).toBe(3);
+  });
+});
+
+describe('recordRallyMiss', () => {
+  test('resets rallyCount to 0', () => {
+    const r = makeRally();
+    recordRallyHit(r);
+    recordRallyHit(r);
+    recordRallyMiss(r);
+    expect(r.rallyCount).toBe(0);
+  });
+
+  test('leaves longestRally untouched', () => {
+    const r = makeRally();
+    recordRallyHit(r);
+    recordRallyHit(r);
+    recordRallyMiss(r);
+    expect(r.longestRally).toBe(2);
   });
 });
 
@@ -595,6 +652,13 @@ describe('updateBall — player paddle collision', () => {
     expect(rally.rallyCount).toBe(1);
   });
 
+  test('longestRally rises alongside rallyCount on a paddle hit', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    expect(rally.longestRally).toBe(0);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.longestRally).toBe(1);
+  });
+
   test('deflection angle after player paddle hit is within [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE]', () => {
     const { ball, player, ai, game, rally } = makeCollisionSetup();
     updateBall(ball, player, ai, game, 1 / 60, rally);
@@ -827,6 +891,26 @@ describe('updateBall — scoring', () => {
 
     updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(rally.rallyCount).toBe(0);
+  });
+
+  test('scoring leaves longestRally untouched', () => {
+    const player = makePlayerPaddle();
+    const ai     = makeAiPaddle();
+    const game   = { phase: 'playing', winner: null, pauseTimer: 0 };
+    const rally  = makeRally();
+    rally.rallyCount   = 5;
+    rally.longestRally = 5;
+    const ball   = {
+      x: -BALL_SIZE - 5,
+      y: CANVAS_H / 2,
+      speed: 100, angle: Math.PI,
+      vx: -100, vy: 0,
+      w: BALL_SIZE, h: BALL_SIZE,
+    };
+
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.rallyCount).toBe(0);
+    expect(rally.longestRally).toBe(5);
   });
 
   test('scoring sets flashFrames to FLASH_FRAMES', () => {

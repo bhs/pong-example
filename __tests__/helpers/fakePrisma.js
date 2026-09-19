@@ -107,7 +107,7 @@ function createFakePrisma() {
 
     gameHistory: {
       async create({ data }) {
-        const row = { id: gameHistoryAutoId++, finishedAt: new Date(), ...data };
+        const row = { id: gameHistoryAutoId++, finishedAt: new Date(), longestRally: 0, ...data };
         gameHistory.push(row);
         return row;
       },
@@ -123,6 +123,19 @@ function createFakePrisma() {
           rows = rows.slice(0, take);
         }
         return rows;
+      },
+      async aggregate({ where, _max } = {}) {
+        let rows = gameHistory.slice();
+        if (where && where.userId) {
+          rows = rows.filter((row) => row.userId === where.userId);
+        }
+        const result = { _max: {} };
+        if (_max && _max.longestRally) {
+          result._max.longestRally = rows.length
+            ? rows.reduce((max, row) => Math.max(max, row.longestRally || 0), 0)
+            : null;
+        }
+        return result;
       },
     },
   };
