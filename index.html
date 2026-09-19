@@ -29,10 +29,27 @@
       /* Crisp pixel rendering for retro look */
       image-rendering: pixelated;
     }
+
+    /* ── Control hints caption ─────────────────────────────────────────────── */
+    /*
+     * Static semantic caption rendered below the canvas, entirely separate
+     * from canvas draw calls. Present at all times regardless of game phase
+     * (playing / scored / gameover) — pure DOM/CSS chrome, no JS involved.
+     */
+    #pong-control-hints {
+      font-size: 0.85rem;
+      color: #888;
+      text-align: center;
+      margin-top: 8px;
+      font-family: monospace;
+    }
   </style>
 </head>
 <body>
-  <canvas id="gameCanvas"></canvas>
+  <div id="pong-stage">
+    <canvas id="gameCanvas"></canvas>
+    <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
+  </div>
 
   <script>
     'use strict';
