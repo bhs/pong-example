@@ -15,7 +15,9 @@
     html, body {
       width: 100%;
       height: 100%;
-      background: #111;
+      /* Slightly darker than the previous flat #111 so the layered-depth
+         shadow below reads clearly against the page. */
+      background-color: #0a0a0c;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -23,9 +25,37 @@
       font-family: monospace;
     }
 
+    /* ── Layered-depth frame ────────────────────────────────────────────────
+     * Purely-presentational wrapper around the canvas that makes it look
+     * like a floating card hovering above the page:
+     *   - a thin gradient "border" (built via padding + background, since a
+     *     real gradient border-image doesn't support border-radius cleanly)
+     *   - two stacked box-shadows: a tight, dark contact shadow for depth
+     *     right under the card, and a larger, soft ambient shadow for lift.
+     * No JS involved; the canvas itself just gains matching rounded corners.
+     */
+    #pong-canvas-frame {
+      position: relative;
+      display: inline-flex;
+      padding: 3px;
+      border-radius: 14px;
+      background: linear-gradient(
+        135deg,
+        rgba(255, 255, 255, 0.22),
+        rgba(255, 255, 255, 0.02) 45%,
+        rgba(255, 255, 255, 0.14)
+      );
+      box-shadow:
+        /* tight contact shadow — grounds the card */
+        0 3px 6px rgba(0, 0, 0, 0.6),
+        /* large soft ambient shadow — reads as lift/hover */
+        0 26px 50px -14px rgba(0, 0, 0, 0.7);
+    }
+
     canvas {
       display: block;
       background: #000;
+      border-radius: 11px;
       /* Crisp pixel rendering for retro look */
       image-rendering: pixelated;
     }
@@ -47,7 +77,9 @@
 </head>
 <body>
   <div id="pong-stage">
-    <canvas id="gameCanvas"></canvas>
+    <div id="pong-canvas-frame">
+      <canvas id="gameCanvas"></canvas>
+    </div>
     <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
   </div>
 
