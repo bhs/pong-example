@@ -1,5 +1,0 @@
-{
-  "up_instructions": "npx prisma migrate deploy (reads DATABASE_URL and applies prisma/migrations/20240115000000_init against it; this is also what the container runs automatically on startup)",
-  "down_instructions": "Manually run: DROP TABLE IF EXISTS `high_scores`; DROP TABLE IF EXISTS `preferences`; DROP TABLE IF EXISTS `users`; (Prisma migrate does not generate down-migrations; this reverses prisma/migrations/20240115000000_init/migration.sql)",
-  "notes": "Schema: prisma/schema.prisma. Migration: prisma/migrations/20240115000000_init/migration.sql. Creates users, preferences, and high_scores tables (MySQL) with preferences.userId and high_scores.userId as foreign keys to users.id."
-}
