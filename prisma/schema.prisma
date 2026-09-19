@@ -39,8 +39,9 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  preference Preference?
-  highScore  HighScore?
+  preference  Preference?
+  highScore   HighScore?
+  gameHistory GameHistory[]
 
   @@map("users")
 }
@@ -74,4 +75,23 @@ model HighScore {
 
   @@index([score])
   @@map("high_scores")
+}
+
+// One row per completed game. Written by GameHistoryService.recordGame()
+// from the game-completion flow (POST /api/scores) — unconditionally, on
+// every finished game, regardless of whether it beat the player's stored
+// HighScore. `player` is the Google `sub` id (same identity HighScore.userId
+// uses), kept under this name to match the column this hop's history log is
+// specified against; it is still a foreign key to `users.id` under the hood.
+model GameHistory {
+  id         Int      @id @default(autoincrement())
+  player     String
+  score      Int
+  duration   Int
+  finishedAt DateTime @default(now())
+
+  user User @relation(fields: [player], references: [id], onDelete: Cascade)
+
+  @@index([player, finishedAt])
+  @@map("game_history")
 }

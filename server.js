@@ -20,10 +20,15 @@
  *
  * Data model (see prisma/schema.prisma)
  * ──────────────────────────────────────
- *   User        Google `sub` id (primary key), email, display name, avatar.
- *   Preference  One row per user (FK → User.id): theme / sound / paddle
- *               color settings.
- *   HighScore   One row per user (FK → User.id): that user's personal best.
+ *   User         Google `sub` id (primary key), email, display name, avatar.
+ *   Preference   One row per user (FK → User.id): theme / sound / paddle
+ *                color settings.
+ *   HighScore    One row per user (FK → User.id): that user's personal best.
+ *   GameHistory  One row per completed game (FK → User.id via `player`):
+ *                score, duration, finishedAt. Owned end-to-end by
+ *                lib/gameHistoryService.js — server.js never queries it
+ *                directly (see lib/gameHistoryService.js,
+ *                lib/gameHistoryRepository.js).
  *
  * Endpoints
  * ─────────
@@ -41,12 +46,22 @@
  *
  *   GET    /api/scores           List high scores (sorted desc by score).
  *   POST   /api/scores           Create or update the logged-in user's high
- *                                 score. Requires an authenticated Google
- *                                 session — every HighScore row is tied to a
+ *                                 score, AND unconditionally log the
+ *                                 completed game to GameHistory (see
+ *                                 lib/gameHistoryService.js). Requires an
+ *                                 authenticated Google session — every
+ *                                 HighScore / GameHistory row is tied to a
  *                                 User by foreign key, so there is no way to
- *                                 record a score for an anonymous player.
+ *                                 record either for an anonymous player.
  *   GET    /api/scores/:userId   Get the high score for a specific user id.
  *   DELETE /api/scores/:userId   Delete the high score for a specific user id.
+ *
+ *   GET    /api/player/summary   Combined read for the logged-in player:
+ *                                 their current high score plus their ten
+ *                                 most recent games, computed together (via
+ *                                 GameHistoryService.getSummary, inside one
+ *                                 Prisma transaction) so both stay in sync
+ *                                 on a single round trip.
  *
  *   GET  /health                 Basic health check (200 OK).
  *
@@ -68,6 +83,7 @@ const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const telemetry      = require('./telemetry');
 const defaultPrisma  = require('./lib/prisma');
+const { createGameHistoryService } = require('./lib/gameHistoryService');
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
@@ -83,6 +99,12 @@ const defaultPrisma  = require('./lib/prisma');
 
 function createApp(prisma = defaultPrisma, options = {}) {
   const app = express();
+
+  // Owns every GameHistory read/write (and the paired HighScore read used
+  // by the combined summary endpoint) — see lib/gameHistoryService.js.
+  // Routes below call this instead of touching prisma.gameHistory /
+  // prisma.highScore inline.
+  const gameHistoryService = createGameHistoryService(prisma);
 
   // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
   // reverse proxy in front of this process). Without this, Express derives
@@ -371,36 +393,79 @@ function createApp(prisma = defaultPrisma, options = {}) {
 
   // ── POST /api/scores ──────────────────────────────────────────────────────
   //
-  // Create or update (upsert) the logged-in user's high score. Only updates
-  // if the new score is strictly higher than the stored one. Requires an
-  // authenticated Google session — HighScore.userId is a foreign key to
-  // User.id, so there is no such thing as an anonymous high score.
-  // Body: { score: number }
+  // Game-completion endpoint. Create or update (upsert) the logged-in
+  // user's high score — only when the new score is strictly higher than the
+  // stored one — AND unconditionally log the just-finished game via
+  // GameHistoryService.recordGame(), so every completed game shows up in
+  // /api/player/summary regardless of whether it was a personal best.
+  // Requires an authenticated Google session — HighScore.userId and
+  // GameHistory.player are both foreign keys to User.id, so there is no
+  // such thing as an anonymous score or history entry.
+  // Body: { score: number, duration?: number }  (duration in seconds)
 
   app.post('/api/scores', async (req, res, next) => {
     if (!requireLogin(req, res)) return;
 
-    const score = req.body && req.body.score;
+    const score    = req.body && req.body.score;
+    const rawDuration = req.body && req.body.duration;
 
     if (typeof score !== 'number' || !Number.isFinite(score) || score < 0) {
       return res.status(400).json({ error: 'score must be a non-negative finite number' });
+    }
+
+    let duration = 0;
+    if (rawDuration !== undefined) {
+      if (typeof rawDuration !== 'number' || !Number.isFinite(rawDuration) || rawDuration < 0) {
+        return res.status(400).json({ error: 'duration must be a non-negative finite number' });
+      }
+      duration = Math.round(rawDuration);
     }
 
     try {
       const userId  = req.user.id;
       const existing = await prisma.highScore.findUnique({ where: { userId } });
 
+      let updated, row;
       if (existing && score <= existing.score) {
-        return res.status(200).json({ updated: false, entry: toScoreEntry({ ...existing, user: req.user }) });
+        updated = false;
+        row = existing;
+      } else {
+        updated = true;
+        row = await prisma.highScore.upsert({
+          where:  { userId },
+          update: { score },
+          create: { userId, score },
+        });
       }
 
-      const row = await prisma.highScore.upsert({
-        where:  { userId },
-        update: { score },
-        create: { userId, score },
-      });
+      // Log the completed game regardless of whether it beat the high
+      // score — this is what makes it show up in the recent-games list.
+      await gameHistoryService.recordGame({ player: userId, score, duration });
 
-      return res.status(200).json({ updated: true, entry: toScoreEntry({ ...row, user: req.user }) });
+      return res.status(200).json({ updated, entry: toScoreEntry({ ...row, user: req.user }) });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ── GET /api/player/summary ───────────────────────────────────────────────
+  //
+  // Combined read for the logged-in player: their current high score plus
+  // their ten most recent games, in one round trip. Computed via
+  // GameHistoryService.getSummary(), which runs both Prisma queries inside
+  // a single transaction so the two halves of the response can't drift out
+  // of sync with a concurrent game completion.
+
+  app.get('/api/player/summary', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    try {
+      const { highScore, recentGames } = await gameHistoryService.getSummary(req.user.id);
+
+      return res.status(200).json({
+        highScore: highScore ? toScoreEntry({ ...highScore, user: req.user }) : null,
+        recentGames: recentGames.map(toHistoryEntry),
+      });
     } catch (err) {
       return next(err);
     }
@@ -458,6 +523,15 @@ function toScoreEntry(row) {
   const player = user.name || user.email || row.userId;
   const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
   return { player, userId: row.userId, score: row.score, updatedAt };
+}
+
+/**
+ * Shapes a GameHistory row into the { score, duration, finishedAt } entry
+ * returned by GET /api/player/summary's recentGames list.
+ */
+function toHistoryEntry(row) {
+  const finishedAt = row.finishedAt instanceof Date ? row.finishedAt.getTime() : row.finishedAt;
+  return { score: row.score, duration: row.duration, finishedAt };
 }
 
 // ── Start server (when run directly) ──────────────────────────────────────

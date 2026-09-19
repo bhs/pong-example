@@ -4,10 +4,11 @@
  * __tests__/helpers/fakePrisma.js
  *
  * A minimal, in-memory stand-in for a Prisma Client that implements just
- * enough of the `user` / `preference` / `highScore` model APIs for
- * server.js's routes to run against in unit tests — no real MySQL instance
- * required. Each call to createFakePrisma() returns an independent set of
- * Maps so tests don't share state.
+ * enough of the `user` / `preference` / `highScore` / `gameHistory` model
+ * APIs (plus `$transaction`) for server.js's routes — and
+ * lib/gameHistoryService.js — to run against in unit tests, no real MySQL
+ * instance required. Each call to createFakePrisma() returns an
+ * independent set of Maps so tests don't share state.
  */
 
 function notFoundError() {
@@ -20,14 +21,17 @@ function createFakePrisma() {
   const users       = new Map(); // id -> user row
   const preferences = new Map(); // userId -> preference row
   const highScores  = new Map(); // userId -> highScore row
+  const gameHistory = []; // array of gameHistory rows
 
-  let preferenceAutoId = 1;
-  let highScoreAutoId  = 1;
+  let preferenceAutoId  = 1;
+  let highScoreAutoId   = 1;
+  let gameHistoryAutoId = 1;
 
-  return {
+  const client = {
     __users: users,
     __preferences: preferences,
     __highScores: highScores,
+    __gameHistory: gameHistory,
 
     user: {
       async findUnique({ where }) {
@@ -101,7 +105,59 @@ function createFakePrisma() {
         return row;
       },
     },
+
+    gameHistory: {
+      async create({ data }) {
+        const row = {
+          id: gameHistoryAutoId++,
+          finishedAt: new Date(),
+          ...data,
+        };
+        gameHistory.push(row);
+        return row;
+      },
+      async findMany({ where, orderBy, take } = {}) {
+        let rows = gameHistory;
+        if (where && where.player !== undefined) {
+          rows = rows.filter((row) => row.player === where.player);
+        }
+        // Accept either a single orderBy clause or an array of them
+        // (applied in priority order) — mirrors Prisma's own API, and lets
+        // callers break ties on finishedAt (same millisecond) with `id`.
+        const clauses = Array.isArray(orderBy) ? orderBy : (orderBy ? [orderBy] : []);
+        rows = rows.slice().sort((a, b) => {
+          for (const clause of clauses) {
+            const [field] = Object.keys(clause);
+            const dir = clause[field] === 'asc' ? 1 : -1;
+            if (a[field] < b[field]) return -1 * dir;
+            if (a[field] > b[field]) return 1 * dir;
+          }
+          return 0;
+        });
+        if (clauses.length === 0) {
+          rows = rows.slice().reverse(); // default: newest-inserted first
+        }
+        if (typeof take === 'number') {
+          rows = rows.slice(0, take);
+        }
+        return rows;
+      },
+    },
+
+    // Interactive-transaction stand-in: real Prisma passes a scoped `tx`
+    // client into the callback; here we just hand back this same client,
+    // since the fake stores have no isolation/locking to model anyway.
+    async $transaction(fn) {
+      if (typeof fn === 'function') {
+        return fn(client);
+      }
+      // Array-of-promises form — not used by this app, but included for
+      // completeness.
+      return Promise.all(fn);
+    },
   };
+
+  return client;
 }
 
 function attachUser(row, include, users) {

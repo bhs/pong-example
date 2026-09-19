@@ -185,6 +185,54 @@
           text-overflow: ellipsis;
           white-space: nowrap;
         }
+
+        /* ── Recent Games panel ──────────────────────────────────────────── */
+        #pong-recent-games {
+          position: fixed;
+          top: 14px;
+          left: 16px;
+          z-index: 20;
+          display: none;
+          flex-direction: column;
+          gap: 6px;
+          padding: 10px 14px;
+          min-width: 170px;
+          max-width: 220px;
+          background: rgba(0, 0, 0, 0.55);
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 6px;
+          font-family: monospace;
+          color: rgba(255,255,255,0.85);
+        }
+        #pong-recent-games h2 {
+          font-size: 0.75rem;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(255,255,255,0.5);
+        }
+        #pong-recent-games .high-score {
+          font-size: 0.85rem;
+          color: #ffe066;
+        }
+        #pong-recent-games ul {
+          list-style: none;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          max-height: 160px;
+          overflow-y: auto;
+        }
+        #pong-recent-games li {
+          font-size: 0.75rem;
+          display: flex;
+          justify-content: space-between;
+          gap: 8px;
+          color: rgba(255,255,255,0.7);
+        }
+        #pong-recent-games .empty {
+          font-size: 0.75rem;
+          color: rgba(255,255,255,0.4);
+        }
       `;
       document.head.appendChild(style);
     })();
@@ -244,6 +292,13 @@
 
     // requestAnimationFrame handle — kept so the loop can be paused on gameover.
     let rafId = null;
+
+    // Wall-clock timestamp (ms) of the current match's first frame, and the
+    // most recently finished match's duration in whole seconds — used to
+    // report how long a completed game took alongside its score. Reset in
+    // resetGame(); read when the game-over overlay is shown.
+    let gameStartedAt = Date.now();
+    let lastGameDurationSeconds = 0;
 
     // ── Experiment telemetry (client-side event pings) ───────────────────────
     //
@@ -381,6 +436,7 @@
       game.pauseTimer = 1.5;
       rally.rallyCount  = 0;
       rally.flashFrames = 0;
+      gameStartedAt = Date.now();
     }
 
     // ── DOM Overlay ───────────────────────────────────────────────────────────
@@ -524,9 +580,12 @@
     }
 
     /**
-     * POST the player's current score to the server. No player name is
-     * sent — the server resolves identity from the HttpOnly session cookie
-     * established during Google OAuth login.
+     * POST the player's current score (and this match's duration) to the
+     * server. No player name is sent — the server resolves identity from
+     * the HttpOnly session cookie established during Google OAuth login.
+     * On success, refreshes the shared player-summary store so the
+     * 'Recent Games' panel and high score stay in sync without a second,
+     * independent fetch.
      *
      * @param {HTMLButtonElement} btn
      */
@@ -540,9 +599,12 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'same-origin',
-          body: JSON.stringify({ score: playerPaddle.score }),
+          body: JSON.stringify({ score: playerPaddle.score, duration: lastGameDurationSeconds }),
         });
         btn.textContent = res.ok ? 'Saved!' : 'Failed';
+        if (res.ok) {
+          playerSummaryStore.refresh();
+        }
       } catch (err) {
         btn.textContent = 'Failed';
       } finally {
@@ -553,9 +615,148 @@
       }
     }
 
+    // ── Player summary hook (shared /api/player/summary state) ──────────────
+    //
+    // A tiny pub/sub "hook": one in-memory cache of the last-fetched
+    // combined summary (current high score + ten most recent games) behind
+    // a refresh() that re-fetches GET /api/player/summary and notifies every
+    // subscriber. Both the 'Recent Games' panel and anything else that cares
+    // about the player's history subscribe to this single store, so a save
+    // triggers exactly one round trip and every listener sees the same,
+    // already-consistent snapshot instead of racing separate fetches.
+
+    function createPlayerSummaryStore() {
+      let state = { signedIn: false, loading: false, highScore: null, recentGames: [] };
+      const listeners = new Set();
+
+      function notify() {
+        listeners.forEach((fn) => fn(state));
+      }
+
+      return {
+        subscribe(fn) {
+          listeners.add(fn);
+          fn(state);
+          return () => listeners.delete(fn);
+        },
+        async refresh() {
+          state = { ...state, signedIn: true, loading: true };
+          notify();
+          try {
+            const res = await fetch('/api/player/summary', { credentials: 'same-origin' });
+            if (res.ok) {
+              const data = await res.json();
+              state = {
+                signedIn: true,
+                loading: false,
+                highScore: data.highScore || null,
+                recentGames: Array.isArray(data.recentGames) ? data.recentGames : [],
+              };
+            } else {
+              state = { signedIn: true, loading: false, highScore: null, recentGames: [] };
+            }
+          } catch (err) {
+            state = { signedIn: true, loading: false, highScore: null, recentGames: [] };
+          }
+          notify();
+          return state;
+        },
+        clear() {
+          state = { signedIn: false, loading: false, highScore: null, recentGames: [] };
+          notify();
+        },
+      };
+    }
+
+    const playerSummaryStore = createPlayerSummaryStore();
+
+    /**
+     * Create (or return the existing) 'Recent Games' panel container.
+     */
+    function getRecentGamesPanel() {
+      let panel = document.getElementById('pong-recent-games');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'pong-recent-games';
+        document.body.appendChild(panel);
+      }
+      return panel;
+    }
+
+    /**
+     * Format a game-history entry's duration as "Xs" / "Ym Zs".
+     */
+    function formatDuration(seconds) {
+      const s = Math.max(0, Math.round(seconds || 0));
+      if (s < 60) return `${s}s`;
+      return `${Math.floor(s / 60)}m ${s % 60}s`;
+    }
+
+    /**
+     * Render the 'Recent Games' panel from the player-summary store's
+     * state. Hidden entirely while signed out; shows a loading hint on the
+     * first fetch and an empty-state message once fetched with no games.
+     *
+     * @param {{signedIn:boolean, loading:boolean, highScore:?object, recentGames:object[]}} state
+     */
+    function renderRecentGamesPanel(state) {
+      const panel = getRecentGamesPanel();
+
+      if (!state.signedIn) {
+        panel.style.display = 'none';
+        return;
+      }
+      panel.style.display = 'flex';
+      panel.innerHTML = '';
+
+      const heading = document.createElement('h2');
+      heading.textContent = 'Recent Games';
+      panel.appendChild(heading);
+
+      if (state.highScore) {
+        const hs = document.createElement('div');
+        hs.className = 'high-score';
+        hs.textContent = `High score: ${state.highScore.score}`;
+        panel.appendChild(hs);
+      }
+
+      if (state.loading && state.recentGames.length === 0) {
+        const loading = document.createElement('div');
+        loading.className = 'empty';
+        loading.textContent = 'Loading…';
+        panel.appendChild(loading);
+        return;
+      }
+
+      if (state.recentGames.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'No games yet — play one!';
+        panel.appendChild(empty);
+        return;
+      }
+
+      const list = document.createElement('ul');
+      state.recentGames.forEach((g) => {
+        const item = document.createElement('li');
+        const left = document.createElement('span');
+        left.textContent = `Score ${g.score}`;
+        const right = document.createElement('span');
+        right.textContent = formatDuration(g.duration);
+        item.appendChild(left);
+        item.appendChild(right);
+        list.appendChild(item);
+      });
+      panel.appendChild(list);
+    }
+
+    playerSummaryStore.subscribe(renderRecentGamesPanel);
+
     /**
      * Fetch the current session's user (if any) from GET /me and render
-     * the appropriate auth bar state. Called once on page load.
+     * the appropriate auth bar state. Called once on page load. When
+     * signed in, also kicks off the first player-summary fetch so the
+     * 'Recent Games' panel populates immediately.
      */
     async function initAuthBar() {
       const bar = getAuthBar();
@@ -564,11 +765,14 @@
         const data = await res.json();
         if (data && data.user) {
           renderSignedIn(bar, data.user);
+          playerSummaryStore.refresh();
         } else {
           renderSignedOut(bar);
+          playerSummaryStore.clear();
         }
       } catch (err) {
         renderSignedOut(bar);
+        playerSummaryStore.clear();
       }
     }
 
@@ -806,6 +1010,7 @@
       if (game.phase === 'gameover') {
         // Pause the loop and present the DOM overlay
         rafId = null;
+        lastGameDurationSeconds = Math.round((Date.now() - gameStartedAt) / 1000);
         const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
         showGameOverOverlay(winnerLabel, playerPaddle.score, aiPaddle.score);
         return; // do NOT schedule next frame

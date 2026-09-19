@@ -1073,4 +1073,26 @@ describe('index.html', () => {
     // The overlay shows a winner label (You win / AI wins)
     expect(html).toMatch(/You win|AI wins/);
   });
+
+  // ── Recent Games panel / player summary hook ─────────────────────────────
+
+  test('fetches the combined /api/player/summary endpoint', () => {
+    expect(html).toMatch(/\/api\/player\/summary/);
+  });
+
+  test('defines a Recent Games panel element', () => {
+    expect(html).toMatch(/pong-recent-games/);
+    expect(html).toMatch(/Recent Games/);
+  });
+
+  test('sends game duration alongside score when saving', () => {
+    expect(html).toMatch(/duration/);
+    expect(html).toMatch(/lastGameDurationSeconds/);
+  });
+
+  test('player summary store is a subscribe/refresh pub-sub hook', () => {
+    expect(html).toMatch(/createPlayerSummaryStore/);
+    expect(html).toMatch(/playerSummaryStore\.subscribe/);
+    expect(html).toMatch(/playerSummaryStore\.refresh/);
+  });
 });
