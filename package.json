@@ -4,7 +4,8 @@
   "description": "HTML5 canvas Pong game with ephemeral users/scores + SQLite-backed style preferences",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node scripts/migrate.js && node server.js",
+    "migrate": "node scripts/migrate.js",
     "test": "jest --forceExit"
   },
   "jest": {
@@ -16,7 +17,8 @@
     "express": "^4.18.2",
     "express-session": "^1.18.0",
     "passport": "^0.7.0",
-    "passport-google-oauth20": "^2.0.0"
+    "passport-google-oauth20": "^2.0.0",
+    "prisma": "^5.19.1"
   },
   "devDependencies": {
     "jest": "^29.7.0"

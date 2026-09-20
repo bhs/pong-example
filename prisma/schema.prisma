@@ -1,0 +1,30 @@
+// prisma/schema.prisma
+//
+// This project uses Prisma *only* as its migration tool — schema changes are
+// expressed here and shipped as SQL files under prisma/migrations/, applied
+// with `prisma migrate deploy` on startup (see scripts/migrate.js and the
+// Dockerfile), the same way the rest of this repository's schema changes are
+// made. There is no generated Prisma Client and no `generator` block: all
+// runtime reads/writes to user_preferences still go through better-sqlite3
+// directly via parameterized queries (see db.js / preferencesRepo.js). This
+// keeps the dedicated-preferences-table-with-cache behaviour — debounced
+// writes, in-memory render vars for instant feedback, LRU-cached reads —
+// completely unchanged; only how the table's schema is created/versioned
+// has moved from an ad-hoc `CREATE TABLE IF NOT EXISTS` at boot to a real,
+// withdrawable migration.
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model UserPreference {
+  userId      String  @id @map("user_id")
+  paddleColor String  @map("paddle_color")
+  ballColor   String  @map("ball_color")
+  bgColor     String  @map("bg_color")
+  presetName  String? @map("preset_name")
+  updatedAt   Int     @map("updated_at")
+
+  @@map("user_preferences")
+}
