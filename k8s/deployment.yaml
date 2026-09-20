@@ -5,9 +5,10 @@ metadata:
   labels:
     app: pong-game
 spec:
-  # A single replica: the style-preferences database is a single SQLite file
-  # on a ReadWriteOnce volume, and SQLite is a single-writer store — scaling
-  # this out would need a shared/networked database instead.
+  # A single replica is fine for the app itself now that style-preferences
+  # persistence lives in an external MySQL 8.4 database (see DATABASE_URL
+  # below) rather than a single-writer SQLite file on a local volume — the
+  # app pods themselves are stateless and can be scaled horizontally.
   replicas: 1
   selector:
     matchLabels:
@@ -25,8 +26,11 @@ spec:
           env:
             - name: PORT
               value: "3000"
-            - name: SQLITE_PATH
-              value: "/app/data/preferences.sqlite3"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pong-game-secrets
+                  key: DATABASE_URL
             - name: GOOGLE_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -45,9 +49,6 @@ spec:
                   name: pong-game-secrets
                   key: SESSION_SECRET
                   optional: true
-          volumeMounts:
-            - name: preferences-data
-              mountPath: /app/data
           readinessProbe:
             httpGet:
               path: /health
@@ -71,7 +72,3 @@ spec:
             limits:
               cpu: "250m"
               memory: "128Mi"
-      volumes:
-        - name: preferences-data
-          persistentVolumeClaim:
-            claimName: pong-game-preferences-data

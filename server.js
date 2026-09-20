@@ -45,7 +45,7 @@
  *                                 (paddle/ball/background color, preset name),
  *                                 or built-in defaults if none saved yet.
  *   PUT  /api/preferences        Upsert the signed-in user's style preferences.
- *                                 Persisted to a dedicated SQLite table (see
+ *                                 Persisted to a dedicated MySQL table (see
  *                                 db.js / preferencesRepo.js), separate from
  *                                 the ephemeral users/scores store below.
  *
@@ -89,14 +89,16 @@ const defaultStore = createStore();
 //
 // Accepting a store parameter makes every endpoint independently testable
 // without touching the shared module-level state. `deps.db` /
-// `deps.prefsRepo` work the same way for the SQLite-backed preferences
-// feature: tests get an isolated in-memory database by default, while the
-// real server (below) passes an explicit persistent one.
+// `deps.prefsRepo` work the same way for the MySQL-backed preferences
+// feature: tests get their own connection pool + LRU cache by default
+// (DATABASE_URL still points at one shared test database — see db.js's
+// resetForTests), while the real server (below) passes an explicit
+// long-lived one.
 
 function createApp(store = defaultStore, deps = {}) {
   const app = express();
 
-  const db        = deps.db        || createDb(':memory:');
+  const db        = deps.db        || createDb();
   const prefsRepo  = deps.prefsRepo || createPreferencesRepo(db);
 
   // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
@@ -265,7 +267,7 @@ function createApp(store = defaultStore, deps = {}) {
     return res.status(200).json({ user: null });
   });
 
-  // ── Style preferences (dedicated SQLite table + LRU cache) ──────────────
+  // ── Style preferences (dedicated MySQL table + LRU cache) ──────────────
   //
   // Resolves the stable identity used as the preferences table's user_id:
   //   - a Google OAuth session (req.user.id), same identity used elsewhere; or
@@ -293,35 +295,39 @@ function createApp(store = defaultStore, deps = {}) {
   //
   // Returns the signed-in user's saved style preferences, or built-in
   // defaults (isDefault: true) if they've never saved any yet. Reads pass
-  // through the LRU cache in preferencesRepo before touching SQLite.
+  // through the LRU cache in preferencesRepo before touching MySQL.
 
-  app.get('/api/preferences', (req, res) => {
+  app.get('/api/preferences', async (req, res, next) => {
     const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ error: 'authentication required' });
     }
 
-    const existing = prefsRepo.getPreferences(userId);
-    if (!existing) {
-      return res.status(200).json({
-        preferences: { ...DEFAULT_PREFERENCES, userId },
-        isDefault: true,
-      });
-    }
+    try {
+      const existing = await prefsRepo.getPreferences(userId);
+      if (!existing) {
+        return res.status(200).json({
+          preferences: { ...DEFAULT_PREFERENCES, userId },
+          isDefault: true,
+        });
+      }
 
-    return res.status(200).json({ preferences: existing, isDefault: false });
+      return res.status(200).json({ preferences: existing, isDefault: false });
+    } catch (err) {
+      return next(err);
+    }
   });
 
   // ── PUT /api/preferences ──────────────────────────────────────────────────
   //
   // Upserts the signed-in user's style preferences. Intended to be called by
   // a debounced client (~500ms after the last color-picker drag event) so
-  // rapid input changes don't hammer SQLite — the in-memory render variables
+  // rapid input changes don't hammer MySQL — the in-memory render variables
   // update instantly on the client regardless of when this call lands.
   // Body: { paddleColor?, ballColor?, bgColor?, presetName? } — all optional,
   // omitted fields keep their previously-saved (or default) value.
 
-  app.put('/api/preferences', (req, res) => {
+  app.put('/api/preferences', async (req, res) => {
     const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ error: 'authentication required' });
@@ -330,7 +336,7 @@ function createApp(store = defaultStore, deps = {}) {
     const { paddleColor, ballColor, bgColor, presetName } = req.body || {};
 
     try {
-      const saved = prefsRepo.upsertPreferences(userId, { paddleColor, ballColor, bgColor, presetName });
+      const saved = await prefsRepo.upsertPreferences(userId, { paddleColor, ballColor, bgColor, presetName });
       return res.status(200).json({ preferences: saved });
     } catch (err) {
       return res.status(400).json({ error: err.message });
@@ -454,9 +460,9 @@ if (require.main === module) {
   const PORT = parseInt(process.env.PORT, 10) || 3000;
   const HOST = '0.0.0.0';
 
-  // Real runs get a persistent, on-disk SQLite database for preferences
-  // (defaults to ./data/preferences.sqlite3, override via SQLITE_PATH) —
-  // unlike the ephemeral users/scores Maps, this survives process restarts.
+  // Real runs get a persistent MySQL-backed store for preferences (connects
+  // via DATABASE_URL, e.g. mysql://user:password@host:3306/dbname) — unlike
+  // the ephemeral users/scores Maps, this survives process restarts.
   const db        = createDb();
   const prefsRepo = createPreferencesRepo(db);
   const app       = createApp(defaultStore, { db, prefsRepo });
@@ -464,7 +470,7 @@ if (require.main === module) {
   app.listen(PORT, HOST, () => {
     console.log(`Pong server listening on ${HOST}:${PORT}`);
     console.log('Storage: ephemeral in-process Map for users/scores (data lost on restart)');
-    console.log(`Storage: persistent SQLite for style preferences (${process.env.SQLITE_PATH || './data/preferences.sqlite3'})`);
+    console.log('Storage: persistent MySQL for style preferences (see DATABASE_URL)');
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
       console.log('Google OAuth: NOT configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)');
     } else {

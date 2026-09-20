@@ -1,56 +1,51 @@
 'use strict';
 
 /**
- * scripts/migrate.js — applies pending Prisma migrations to the on-disk
- * preferences database before the server starts.
+ * scripts/migrate.js — applies pending Prisma migrations to the MySQL
+ * database before the server starts.
  *
- * The schema for user_preferences is now expressed the way the rest of this
+ * The schema for user_preferences is expressed the way the rest of this
  * repository's schema changes are made: as a versioned Prisma migration
  * under prisma/migrations/ (see prisma/schema.prisma), applied with
- * `prisma migrate deploy`. This replaces the old approach of running an
- * ad-hoc `CREATE TABLE IF NOT EXISTS` from db.js on every boot, so the
- * change can now be run and withdrawn like any other migration in this
- * project.
+ * `prisma migrate deploy` against MySQL 8.4.
  *
- * Prisma reads its connection string from DATABASE_URL, but every other
- * piece of this app (db.js, k8s/deployment.yaml, fly.toml) configures the
- * database file location via SQLITE_PATH instead. Rather than requiring
- * every deployment target to keep two env vars in sync, this module derives
- * DATABASE_URL from SQLITE_PATH (falling back to the same default db.js
- * uses) so there's exactly one source of truth for "where is the
- * preferences database file".
+ * DATABASE_URL (a mysql:// connection string) is the single source of truth
+ * for "where is the preferences database" — the same variable Prisma reads,
+ * db.js reads for its own connection pool, and this script passes through
+ * unchanged. There is nothing to derive it from (unlike the old SQLite-file
+ * setup, where a filesystem path stood in for it): a real database the app
+ * cannot run without must fail loudly and immediately if it's missing,
+ * rather than the process limping along with no persistence.
  */
 
-const fs   = require('fs');
-const path = require('path');
 const { execFileSync } = require('child_process');
-
-const { DEFAULT_DB_PATH } = require('../db');
+const path = require('path');
 
 /**
- * Works out the Prisma DATABASE_URL to use for this run, given the current
- * environment. Exported (pure, no side effects) so it can be unit tested
- * without actually invoking the Prisma CLI.
+ * Resolves (and validates) the DATABASE_URL to run migrations against.
+ * Exported (pure, no side effects) so it can be unit tested without
+ * actually invoking the Prisma CLI.
  *
  * @param {NodeJS.ProcessEnv} env
- * @returns {{ sqlitePath: string, absPath: string, databaseUrl: string }}
+ * @returns {{ databaseUrl: string }}
+ * @throws {Error} if DATABASE_URL is not set.
  */
 function resolveDatabaseUrl(env = process.env) {
-  const sqlitePath = env.SQLITE_PATH || DEFAULT_DB_PATH;
-  const absPath     = path.resolve(sqlitePath);
-  const databaseUrl = env.DATABASE_URL || `file:${absPath}`;
-  return { sqlitePath, absPath, databaseUrl };
+  const databaseUrl = env.DATABASE_URL;
+
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is required (e.g. mysql://user:password@host:3306/dbname) — ' +
+      'see prisma/schema.prisma.'
+    );
+  }
+
+  return { databaseUrl };
 }
 
-/** Runs `prisma migrate deploy` against the resolved database file. */
+/** Runs `prisma migrate deploy` against the resolved MySQL database. */
 function runMigrations(env = process.env) {
-  const { absPath, databaseUrl } = resolveDatabaseUrl(env);
-
-  // Prisma's sqlite provider will create the database file itself, but not
-  // missing parent directories (e.g. a freshly-mounted, empty volume) —
-  // make sure it exists first, mirroring what db.js does for direct
-  // connections.
-  fs.mkdirSync(path.dirname(absPath), { recursive: true });
+  const { databaseUrl } = resolveDatabaseUrl(env);
 
   execFileSync('npx', ['prisma', 'migrate', 'deploy'], {
     stdio: 'inherit',

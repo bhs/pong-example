@@ -9,12 +9,23 @@
  * server.js accepts either — this keeps the tests self-contained (no
  * network access needed) while still covering the authenticated path.
  *
- * Each test creates its own isolated store + in-memory SQLite database
- * (via createApp's default deps) so tests never share state or touch disk.
+ * Each test creates its own isolated store (via createApp's default deps,
+ * each call gets its own connection pool + LRU cache). All of them still
+ * point at the same real MySQL 8.4 test database (there's no ':memory:'
+ * equivalent for MySQL), so tests use distinct usernames per test and the
+ * table is truncated once up front to guard against leftovers from a
+ * previous run.
  */
 
 const http = require('http');
 const { createApp, createStore } = require('../server');
+const { createDb, resetForTests } = require('../db');
+
+beforeAll(async () => {
+  const db = createDb();
+  await resetForTests(db);
+  await db.end();
+});
 
 function makeRequest(app, method, url, body = null, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -149,7 +160,7 @@ describe('PUT /api/preferences', () => {
     const { createDb }              = require('../db');
     const { createPreferencesRepo } = require('../preferencesRepo');
 
-    const db        = createDb(':memory:');
+    const db        = createDb();
     const prefsRepo = createPreferencesRepo(db);
     const store      = createStore();
 
@@ -164,5 +175,6 @@ describe('PUT /api/preferences', () => {
     const res  = await get(app2, '/api/preferences', auth);
 
     expect(res.body.preferences.paddleColor).toBe('#654321');
+    await db.end();
   });
 });

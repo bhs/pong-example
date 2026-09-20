@@ -1,4 +1,21 @@
 services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: pong_preferences
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
   app:
     build:
       context: ..
+    environment:
+      DATABASE_URL: "mysql://root@mysql:3306/pong_preferences"
+    depends_on:
+      mysql:
+        condition: service_healthy

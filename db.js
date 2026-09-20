@@ -1,83 +1,68 @@
 'use strict';
 
 /**
- * db.js — persistent SQLite connection for the user_preferences table.
+ * db.js — persistent MySQL connection pool for the user_preferences table.
  *
- * This is a small, dedicated database file separate from the ephemeral
- * users/scores Maps in server.js (see the 'ephemeral-local-storage' hop this
- * app builds on) — style preferences need to survive process restarts and
- * be visible across devices for the same signed-in user, so they're the
- * first piece of state in this app backed by real on-disk storage.
+ * This is a small, dedicated table in production's MySQL 8.4 database
+ * (accessed here directly via mysql2, not through a generated Prisma
+ * Client), separate from the ephemeral users/scores Maps in server.js (see
+ * the 'ephemeral-local-storage' hop this app builds on) — style preferences
+ * need to survive process restarts and be visible across devices for the
+ * same signed-in user, so they're the first piece of state in this app
+ * backed by a real, durable database.
  *
- * The DB file lives at SQLITE_PATH (default: ./data/preferences.sqlite3,
- * relative to this file) so it can be pointed at a mounted volume in
- * production (see k8s/deployment.yaml). Pass ':memory:' for ephemeral,
- * fully-isolated instances in tests.
+ * The connection string is read from DATABASE_URL (e.g.
+ * "mysql://user:password@host:3306/dbname"), the same environment variable
+ * `prisma migrate deploy` uses (see scripts/migrate.js and
+ * prisma/schema.prisma) — one source of truth for "where is the preferences
+ * database", in dev, in tests, and in production.
  *
- * Schema: the user_preferences table itself is *not* created here anymore.
- * It's defined by a Prisma migration (prisma/migrations/, matching
+ * Schema: the user_preferences table itself is not created here. It's
+ * defined by a Prisma migration (prisma/migrations/, matching
  * prisma/schema.prisma) and applied with `prisma migrate deploy` before the
- * server starts (see scripts/migrate.js and the Dockerfile) — the same way
+ * server starts (see scripts/migrate.js and the Dockerfile), the same way
  * the rest of this repository's schema changes are made, so the change can
- * be run and withdrawn like any other migration. The one exception is the
- * ':memory:' database used by tests below: it never sees that migration
- * (there's nothing on disk for `prisma migrate deploy` to point at), so its
- * schema is created inline here purely to keep unit tests fast and
- * self-contained.
+ * be run and withdrawn like any other migration.
  */
 
-const fs       = require('fs');
-const path     = require('path');
-const Database = require('better-sqlite3');
-
-const DEFAULT_DB_PATH = path.join(__dirname, 'data', 'preferences.sqlite3');
+const mysql = require('mysql2/promise');
 
 /**
- * Opens (creating if necessary) the SQLite database and ensures the
- * user_preferences table exists. Safe to call multiple times.
+ * Opens a MySQL connection pool. Connections are established lazily on
+ * first query, so this is cheap to call even before the database is
+ * reachable (callers just need to make sure `prisma migrate deploy` has run
+ * — or will have run — before issuing queries).
  *
- * @param {string} [dbPath] - filesystem path, or ':memory:' for an
- *                             in-memory database (used by tests).
- * @returns {import('better-sqlite3').Database}
+ * @param {string} [databaseUrl] - a mysql:// connection string. Defaults to
+ *                                  process.env.DATABASE_URL. Throws if
+ *                                  neither is set — this app cannot run
+ *                                  without its database, so it fails loudly
+ *                                  and immediately rather than limping along
+ *                                  with no persistence.
+ * @returns {import('mysql2/promise').Pool}
  */
-function createDb(dbPath = process.env.SQLITE_PATH || DEFAULT_DB_PATH) {
-  const isMemory = dbPath === ':memory:';
-
-  if (!isMemory) {
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+function createDb(databaseUrl = process.env.DATABASE_URL) {
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is required (e.g. mysql://user:password@host:3306/dbname) — ' +
+      'see prisma/schema.prisma / scripts/migrate.js.'
+    );
   }
 
-  const db = new Database(dbPath);
-
-  // WAL mode improves concurrent read/write behaviour; harmless for
-  // :memory: databases (better-sqlite3 simply ignores it there).
-  db.pragma('journal_mode = WAL');
-
-  if (isMemory) {
-    // Test-only convenience: on-disk databases get this schema from the
-    // Prisma migration under prisma/migrations/ instead (see the module
-    // doc comment above). Kept in sync with
-    // prisma/migrations/20240115103000_create_user_preferences/migration.sql.
-    //
-    // user_id is not declared with a SQL FOREIGN KEY constraint because the
-    // users/scores data in this app currently lives in an in-process Map
-    // (see server.js's ephemeral store), not in this SQLite database — but
-    // it is logically a foreign key onto that user's stable identity (the
-    // Google OAuth `sub`, or the legacy login username), and every access
-    // in preferencesRepo.js treats it as such.
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS user_preferences (
-        user_id      TEXT PRIMARY KEY,
-        paddle_color TEXT NOT NULL,
-        ball_color   TEXT NOT NULL,
-        bg_color     TEXT NOT NULL,
-        preset_name  TEXT,
-        updated_at   INTEGER NOT NULL
-      );
-    `);
-  }
-
-  return db;
+  return mysql.createPool(databaseUrl);
 }
 
-module.exports = { createDb, DEFAULT_DB_PATH };
+/**
+ * Deletes every row from user_preferences. Test-only convenience so each
+ * test file can start from a clean table without needing a throwaway
+ * database per test the way an in-memory SQLite database used to provide —
+ * MySQL has no equivalent of ':memory:', so isolation here comes from
+ * truncating the (real, migrated) table instead.
+ *
+ * @param {import('mysql2/promise').Pool} db
+ */
+async function resetForTests(db) {
+  await db.query('DELETE FROM user_preferences');
+}
+
+module.exports = { createDb, resetForTests };

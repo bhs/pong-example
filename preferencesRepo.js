@@ -3,12 +3,12 @@
 /**
  * preferencesRepo.js — repository for the user_preferences table.
  *
- * Wraps all SQLite access for style preferences behind get/upsert functions
- * using parameterized (prepared) statements — no string-built SQL. An
- * in-process LruCache (keyed by user_id, short TTL) sits in front of reads
- * to absorb repeat fetches within a session; every write goes straight to
- * SQLite first and only then updates the cache (write-through), so restarts
- * and multi-device logins always see the latest saved values.
+ * Wraps all MySQL access for style preferences behind get/upsert functions
+ * using parameterized queries — no string-built SQL. An in-process LruCache
+ * (keyed by user_id, short TTL) sits in front of reads to absorb repeat
+ * fetches within a session; every write goes straight to MySQL first and
+ * only then updates the cache (write-through), so restarts and multi-device
+ * logins always see the latest saved values.
  */
 
 const { LruCache } = require('./lruCache');
@@ -30,8 +30,33 @@ const PRESETS = Object.freeze({
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
+const SELECT_SQL = `
+  SELECT
+    user_id      AS userId,
+    paddle_color AS paddleColor,
+    ball_color   AS ballColor,
+    bg_color     AS bgColor,
+    preset_name  AS presetName,
+    updated_at   AS updatedAt
+  FROM user_preferences
+  WHERE user_id = ?
+`;
+
+const UPSERT_SQL = `
+  INSERT INTO user_preferences
+    (user_id, paddle_color, ball_color, bg_color, preset_name, updated_at)
+  VALUES
+    (?, ?, ?, ?, ?, ?)
+  ON DUPLICATE KEY UPDATE
+    paddle_color = VALUES(paddle_color),
+    ball_color   = VALUES(ball_color),
+    bg_color     = VALUES(bg_color),
+    preset_name  = VALUES(preset_name),
+    updated_at   = VALUES(updated_at)
+`;
+
 /**
- * @param {import('better-sqlite3').Database} db
+ * @param {import('mysql2/promise').Pool} db
  * @param {object}  [opts]
  * @param {number}  [opts.cacheTtlMs=30000]  - how long a cached row stays fresh.
  * @param {number}  [opts.cacheMaxSize=500]  - max distinct users cached at once.
@@ -39,45 +64,23 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 function createPreferencesRepo(db, { cacheTtlMs = 30000, cacheMaxSize = 500 } = {}) {
   const cache = new LruCache({ ttlMs: cacheTtlMs, maxSize: cacheMaxSize });
 
-  const selectStmt = db.prepare(`
-    SELECT
-      user_id      AS userId,
-      paddle_color AS paddleColor,
-      ball_color   AS ballColor,
-      bg_color     AS bgColor,
-      preset_name  AS presetName,
-      updated_at   AS updatedAt
-    FROM user_preferences
-    WHERE user_id = ?
-  `);
-
-  const upsertStmt = db.prepare(`
-    INSERT INTO user_preferences (user_id, paddle_color, ball_color, bg_color, preset_name, updated_at)
-    VALUES (@userId, @paddleColor, @ballColor, @bgColor, @presetName, @updatedAt)
-    ON CONFLICT(user_id) DO UPDATE SET
-      paddle_color = excluded.paddle_color,
-      ball_color   = excluded.ball_color,
-      bg_color     = excluded.bg_color,
-      preset_name  = excluded.preset_name,
-      updated_at   = excluded.updated_at
-  `);
-
   /**
    * Returns the saved preferences row for `userId`, or null if the user has
    * never saved any (caller decides whether to fall back to defaults).
    * Reads are served from the LRU cache when possible; a miss falls through
-   * to SQLite and populates the cache (including negative results, so a
+   * to MySQL and populates the cache (including negative results, so a
    * user who has never saved anything doesn't cause a DB hit on every page
    * load either).
    */
-  function getPreferences(userId) {
+  async function getPreferences(userId) {
     if (!userId) return null;
 
     const cached = cache.get(userId);
     if (cached !== undefined) return cached;
 
-    const row    = selectStmt.get(userId);
-    const result = row || null;
+    const [rows] = await db.execute(SELECT_SQL, [userId]);
+    const row    = rows[0];
+    const result = row ? normalizeRow(row) : null;
     cache.set(userId, result);
     return result;
   }
@@ -86,13 +89,13 @@ function createPreferencesRepo(db, { cacheTtlMs = 30000, cacheMaxSize = 500 } = 
    * Creates or updates the preferences row for `userId`. Any field omitted
    * from `patch` keeps its previous value (or the built-in default if the
    * user has no existing row yet — i.e. this call also auto-creates the row
-   * on first save). Always writes to SQLite; the cache is updated in the
+   * on first save). Always writes to MySQL; the cache is updated in the
    * same call so subsequent reads are immediately consistent.
    *
    * @param {string} userId
    * @param {{paddleColor?:string, ballColor?:string, bgColor?:string, presetName?:?string}} patch
    */
-  function upsertPreferences(userId, patch = {}) {
+  async function upsertPreferences(userId, patch = {}) {
     if (!userId) throw new Error('userId is required');
 
     for (const field of ['paddleColor', 'ballColor', 'bgColor']) {
@@ -102,7 +105,7 @@ function createPreferencesRepo(db, { cacheTtlMs = 30000, cacheMaxSize = 500 } = 
       }
     }
 
-    const existing = getPreferences(userId) || DEFAULT_PREFERENCES;
+    const existing = (await getPreferences(userId)) || DEFAULT_PREFERENCES;
 
     const next = {
       userId,
@@ -113,7 +116,14 @@ function createPreferencesRepo(db, { cacheTtlMs = 30000, cacheMaxSize = 500 } = 
       updatedAt:   Date.now(),
     };
 
-    upsertStmt.run(next);
+    await db.execute(UPSERT_SQL, [
+      next.userId,
+      next.paddleColor,
+      next.ballColor,
+      next.bgColor,
+      next.presetName,
+      next.updatedAt,
+    ]);
     cache.set(userId, next);
 
     return next;
@@ -125,6 +135,16 @@ function createPreferencesRepo(db, { cacheTtlMs = 30000, cacheMaxSize = 500 } = 
   }
 
   return { getPreferences, upsertPreferences, clearCache, _cache: cache };
+}
+
+/**
+ * MySQL's mysql2 driver returns BIGINT columns as JS `bigint` values (or
+ * strings, depending on driver config) rather than plain numbers — normalize
+ * updated_at back to a plain number so callers/tests can keep treating it as
+ * the epoch-millisecond number Date.now() produced when it was written.
+ */
+function normalizeRow(row) {
+  return { ...row, updatedAt: Number(row.updatedAt) };
 }
 
 module.exports = { createPreferencesRepo, DEFAULT_PREFERENCES, PRESETS, HEX_COLOR_RE };
