@@ -80,7 +80,10 @@ CMD ["sh", "-c", "prisma migrate deploy"]
 # sandbox-describe / sandbox-up / sandbox-down steps used to rehearse a
 # migration beside production before it is applied for real: a sandbox is
 # built beside the store of record, described, migrated up, described,
-# migrated down, described again, and dropped.
+# migrated down, described again, and dropped. It also provides
+# production-describe / production-up / production-down, which apply an
+# admitted migration to production itself and withdraw it if the
+# experiment ends without it.
 # Built on top of the migrate stage so it shares exactly the same runtime,
 # drivers and generated Prisma Client — it adds only the /mendel/phase
 # executable.

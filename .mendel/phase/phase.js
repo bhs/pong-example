@@ -2,9 +2,10 @@
 'use strict';
 
 /**
- * /mendel/phase — reports which persistent stores this application has, and
+ * /mendel/phase — reports which persistent stores this application has,
  * builds/drops/describes/runs a structural sandbox beside them for
- * rehearsing a migration.
+ * rehearsing a migration, and applies/withdraws a migration against
+ * production itself.
  *
  * It selects its database exactly the way the application does (see
  * lib/prisma.js and prisma/schema.prisma): the single environment variable
@@ -21,6 +22,17 @@
  *   /mendel/phase sandbox-describe <name>
  *   /mendel/phase sandbox-up <name>     (reads migration_contract's "up" as JSON on stdin)
  *   /mendel/phase sandbox-down <name>   (reads migration_contract's "down" as JSON on stdin)
+ *   /mendel/phase production-describe
+ *   /mendel/phase production-up         (reads migration_contract's "up" as JSON on stdin)
+ *   /mendel/phase production-down       (reads migration_contract's "down" as JSON on stdin)
+ *
+ * The production-* commands take no <name>: they act on the application's
+ * own database, found exactly the way the application finds it (DATABASE_URL
+ * — see above). They are the only commands here that change production;
+ * production-describe only reads. production-up and production-down share
+ * their implementation with sandbox-up/sandbox-down (see applyMigrationUp
+ * and applyMigrationDown below) — the only difference is which database URL
+ * they run against.
  */
 
 const { URL } = require('url');
@@ -77,12 +89,17 @@ const RECORD_STORE_NAME = 'db';
 // them (see prisma/migrations/20240115000000_init/): a migration directory
 // name and the migration.sql it contains, which `prisma migrate deploy`
 // (the same command the migrate stage and this application's own
-// entrypoint run) applies straight from prisma/migrations/ — sandbox-up
-// runs exactly that command against a temporary copy of prisma/migrations/
-// with this migration added, pointed at the sandbox database. Prisma
-// Migrate has no concept of a down-migration to prefer instead, so `down`
-// carries the plain SQL that reverses `up`'s SQL, run directly against the
-// MySQL server by sandbox-down (and, later, for real).
+// entrypoint run) applies straight from prisma/migrations/ — sandbox-up and
+// production-up both run exactly that command against a temporary copy of
+// prisma/migrations/ with this migration added, pointed at the sandbox
+// database or at DATABASE_URL respectively, so the tool records the
+// migration as applied exactly as it would if it had been committed and
+// deployed normally. Prisma Migrate has no concept of a down-migration to
+// prefer instead, so `down` carries the plain SQL that reverses `up`'s SQL
+// — run directly against the MySQL server by sandbox-down and
+// production-down — plus the same migration_name, so those two commands can
+// delete the row `up` left in Prisma's own `_prisma_migrations` bookkeeping
+// table, leaving the tool as if the migration had never been applied.
 const MIGRATION_CONTRACT = {
   schema: {
     $defs: {
@@ -122,12 +139,16 @@ const MIGRATION_CONTRACT = {
       down: {
         type: 'object',
         additionalProperties: false,
-        required: ['sql'],
+        required: ['migration_name', 'sql'],
         description:
-          'Reverses up.sql completely. Prisma Migrate does not generate or run ' +
-          'down-migrations, so this is run as plain SQL directly against the MySQL ' +
-          'server, never through `prisma migrate deploy`.',
+          'Reverses up.sql completely, then deletes the row up left in Prisma\'s own ' +
+          '_prisma_migrations bookkeeping table (matched by migration_name), so a later ' +
+          'apply of the same migration runs it again instead of finding it already done. ' +
+          'Prisma Migrate does not generate or run down-migrations, so both the SQL and the ' +
+          'bookkeeping deletion are run directly against the MySQL server, never through ' +
+          '`prisma migrate deploy`.',
         properties: {
+          migration_name: { $ref: '#/$defs/migrationName' },
           sql: { $ref: '#/$defs/sqlStatements' }
         }
       }
@@ -137,10 +158,12 @@ const MIGRATION_CONTRACT = {
     'A migration is an object with exactly two required properties, up and down, and ' +
     'nothing else. up.migration_name and up.sql are written to ' +
     'prisma/migrations/<up.migration_name>/migration.sql and applied by running ' +
-    '`prisma migrate deploy` against DATABASE_URL, exactly as this application\'s own ' +
-    'startup and the migrate stage do. down.sql is plain SQL that undoes up.sql ' +
-    "completely, run directly against the MySQL server, since Prisma Migrate has no " +
-    'down-migration of its own to run instead.',
+    '`prisma migrate deploy` against the target database, exactly as this application\'s ' +
+    'own startup and the migrate stage do. down.sql is plain SQL that undoes up.sql ' +
+    'completely, run directly against the MySQL server (Prisma Migrate has no ' +
+    'down-migration of its own to run instead), after which the row up.migration_name left ' +
+    'in _prisma_migrations is deleted, so the tool\'s bookkeeping ends up exactly as if the ' +
+    'migration had never been applied.',
   example: {
     up: {
       migration_name: '20240301000000_add_users_locale',
@@ -148,6 +171,7 @@ const MIGRATION_CONTRACT = {
         'ALTER TABLE `users` ADD COLUMN `locale` VARCHAR(191) NULL;'
     },
     down: {
+      migration_name: '20240301000000_add_users_locale',
       sql: 'ALTER TABLE `users` DROP COLUMN `locale`;'
     }
   }
@@ -504,29 +528,20 @@ async function sandboxDrop(name) {
   }
 }
 
-// Describes every collection in the sandbox `name` as it is on the server
-// right now, changing nothing. See the module docstring for why this reads
-// via the same production connection rather than one scoped to the sandbox
-// database: information_schema is queried with an explicit schema filter,
-// the same way sandbox-build reads production's own structure above.
-async function sandboxDescribe(name) {
-  let appDb;
-  try {
-    appDb = parseAppDatabaseName();
-  } catch (err) {
-    process.stderr.write(`phase sandbox-describe: ${err.message}\n`);
-    process.exit(1);
-  }
-  validateSandboxName('sandbox-describe', name, appDb);
+// Describes every collection in the MySQL database `schemaName` as it is on
+// the server right now, changing nothing — shared by sandbox-describe
+// (schemaName is a sandbox) and production-describe (schemaName is the
+// application's own database), so the two describe the same structure
+// identically. information_schema is queried with an explicit schema
+// filter, the same way sandbox-build reads production's own structure
+// above, rather than by connecting with that database selected as default.
+async function describeSchema(conn, schemaName) {
+  const tables = await conn.$queryRawUnsafe(
+    'SELECT TABLE_NAME AS name, TABLE_TYPE AS type FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME',
+    schemaName
+  );
 
-  const conn = loadPrismaClient();
-  try {
-    const tables = await conn.$queryRawUnsafe(
-      'SELECT TABLE_NAME AS name, TABLE_TYPE AS type FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME',
-      name
-    );
-
-    const collections = {};
+  const collections = {};
     for (const table of tables) {
       const isBaseTable = table.type === 'BASE TABLE';
 
@@ -536,7 +551,7 @@ async function sandboxDescribe(name) {
       // drifts between two reads of the same structure).
       const fieldRows = await conn.$queryRawUnsafe(
         'SELECT COLUMN_NAME AS col, COLUMN_TYPE AS type FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION',
-        name,
+        schemaName,
         table.name
       );
       const fields = {};
@@ -550,7 +565,7 @@ async function sandboxDescribe(name) {
         const pkRows = await conn.$queryRawUnsafe(
           "SELECT COLUMN_NAME AS col FROM information_schema.KEY_COLUMN_USAGE " +
           "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION",
-          name,
+          schemaName,
           table.name
         );
         identity = pkRows.map((row) => row.col);
@@ -564,7 +579,7 @@ async function sandboxDescribe(name) {
         const indexRows = await conn.$queryRawUnsafe(
           "SELECT INDEX_NAME AS idx, NON_UNIQUE AS nonUnique, COLUMN_NAME AS col FROM information_schema.STATISTICS " +
           "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME <> 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX",
-          name,
+          schemaName,
           table.name
         );
         const grouped = new Map();
@@ -594,7 +609,7 @@ async function sandboxDescribe(name) {
           '  ON rc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA AND rc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME AND rc.TABLE_NAME = kcu.TABLE_NAME ' +
           'WHERE kcu.TABLE_SCHEMA = ? AND kcu.TABLE_NAME = ? AND kcu.REFERENCED_TABLE_NAME IS NOT NULL ' +
           'ORDER BY kcu.CONSTRAINT_NAME, kcu.ORDINAL_POSITION',
-          name,
+          schemaName,
           table.name
         );
         const grouped = new Map();
@@ -627,14 +642,33 @@ async function sandboxDescribe(name) {
       collections[`${RECORD_STORE_NAME}.${table.name}`] = { fields, identity, indexes, constraints };
     }
 
-    // Stable key order, so the same structure always serializes to the
-    // same text.
-    const ordered = {};
-    for (const key of Object.keys(collections).sort()) {
-      ordered[key] = collections[key];
-    }
+  // Stable key order, so the same structure always serializes to the
+  // same text.
+  const ordered = {};
+  for (const key of Object.keys(collections).sort()) {
+    ordered[key] = collections[key];
+  }
 
-    process.stdout.write(JSON.stringify({ collections: ordered }) + '\n');
+  return ordered;
+}
+
+// Describes the sandbox `name` by running describeSchema against it,
+// printing the result exactly as production-describe does. Changes
+// nothing.
+async function sandboxDescribe(name) {
+  let appDb;
+  try {
+    appDb = parseAppDatabaseName();
+  } catch (err) {
+    process.stderr.write(`phase sandbox-describe: ${err.message}\n`);
+    process.exit(1);
+  }
+  validateSandboxName('sandbox-describe', name, appDb);
+
+  const conn = loadPrismaClient();
+  try {
+    const collections = await describeSchema(conn, name);
+    process.stdout.write(JSON.stringify({ collections }) + '\n');
     await conn.$disconnect();
     process.exit(0);
   } catch (err) {
@@ -648,40 +682,92 @@ async function sandboxDescribe(name) {
   }
 }
 
-// Runs migration_contract's "up" (a Prisma migration name + its SQL, read
-// as JSON from stdin) through this repository's own migration tool, inside
-// the sandbox `name` instead of production. It does this the same way the
-// migrate stage and this application's own startup apply a migration for
-// real — `prisma migrate deploy` — except pointed at the sandbox database,
-// and given a temporary copy of prisma/migrations/ with this one migration
-// added, so this image's own copy of the repository is never written to
-// (the same image rehearses the next migration afterwards).
-async function sandboxUp(name) {
+// Describes the application's own database — exactly the same code as
+// sandbox-describe (describeSchema above), pointed at appDb instead of a
+// sandbox. Changes nothing.
+async function productionDescribe() {
   let appDb;
   try {
     appDb = parseAppDatabaseName();
   } catch (err) {
-    process.stderr.write(`phase sandbox-up: ${err.message}\n`);
+    process.stderr.write(`phase production-describe: ${err.message}\n`);
     process.exit(1);
   }
-  validateSandboxName('sandbox-up', name, appDb);
 
+  const conn = loadPrismaClient();
+  try {
+    const collections = await describeSchema(conn, appDb);
+    process.stdout.write(JSON.stringify({ collections }) + '\n');
+    await conn.$disconnect();
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`phase production-describe: ${err.message || err}\n`);
+    try {
+      await conn.$disconnect();
+    } catch (_) {
+      /* already broken */
+    }
+    process.exit(1);
+  }
+}
+
+// Reads migration_contract's "up" off stdin and validates its shape —
+// shared by sandbox-up and production-up.
+async function readUpPayload(command) {
   let up;
   try {
     up = JSON.parse(await readStdin());
   } catch (err) {
-    process.stderr.write(`phase sandbox-up: stdin was not valid JSON: ${err.message}\n`);
+    process.stderr.write(`phase ${command}: stdin was not valid JSON: ${err.message}\n`);
     process.exit(1);
   }
   if (!up || typeof up !== 'object' || typeof up.migration_name !== 'string' || typeof up.sql !== 'string') {
     process.stderr.write(
-      'phase sandbox-up: expected {"migration_name": ..., "sql": ...} on stdin, per ' +
+      `phase ${command}: expected {"migration_name": ..., "sql": ...} on stdin, per ` +
       'migration_contract.schema.properties.up.\n'
     );
     process.exit(1);
   }
+  return up;
+}
 
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'phase-sandbox-up-'));
+// Reads migration_contract's "down" off stdin and validates its shape —
+// shared by sandbox-down and production-down.
+async function readDownPayload(command) {
+  let down;
+  try {
+    down = JSON.parse(await readStdin());
+  } catch (err) {
+    process.stderr.write(`phase ${command}: stdin was not valid JSON: ${err.message}\n`);
+    process.exit(1);
+  }
+  if (
+    !down ||
+    typeof down !== 'object' ||
+    typeof down.migration_name !== 'string' ||
+    typeof down.sql !== 'string'
+  ) {
+    process.stderr.write(
+      `phase ${command}: expected {"migration_name": ..., "sql": ...} on stdin, per ` +
+      'migration_contract.schema.properties.down.\n'
+    );
+    process.exit(1);
+  }
+  return down;
+}
+
+// Runs migration_contract's "up" through this repository's own migration
+// tool — `prisma migrate deploy`, the same command the migrate stage and
+// this application's own startup run — against `databaseUrl`, given a
+// temporary copy of prisma/migrations/ with this one migration added, so
+// this image's own copy of the repository is never written to (the same
+// image rehearses the next migration, or applies the next one for real,
+// afterwards). Shared by sandbox-up (databaseUrl points at the sandbox) and
+// production-up (databaseUrl is DATABASE_URL itself), so the tool records
+// the migration as applied exactly as it would if committed and deployed
+// normally.
+function applyMigrationUp(databaseUrl, up) {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'phase-up-'));
   try {
     const tmpPrisma = path.join(tmpRoot, 'prisma');
     fs.cpSync('/app/prisma', tmpPrisma, { recursive: true });
@@ -690,37 +776,96 @@ async function sandboxUp(name) {
     fs.mkdirSync(migrationDir, { recursive: true });
     fs.writeFileSync(path.join(migrationDir, 'migration.sql'), up.sql);
 
-    const result = spawnSync(
+    return spawnSync(
       'prisma',
       ['migrate', 'deploy', '--schema', path.join(tmpPrisma, 'schema.prisma')],
-      { env: { ...process.env, DATABASE_URL: sandboxDatabaseUrl(name) }, encoding: 'utf8' }
+      { env: { ...process.env, DATABASE_URL: databaseUrl }, encoding: 'utf8' }
     );
-
-    if (result.error) {
-      process.stderr.write(`phase sandbox-up: could not run prisma migrate deploy: ${result.error.message}\n`);
-      process.exit(1);
-    }
-    if (result.status !== 0) {
-      process.stderr.write(
-        `phase sandbox-up: prisma migrate deploy failed:\n${(result.stdout || '') + (result.stderr || '')}`
-      );
-      process.exit(1);
-    }
-    process.exit(0);
-  } catch (err) {
-    process.stderr.write(`phase sandbox-up: ${err.message || err}\n`);
-    process.exit(1);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 }
 
-// Runs migration_contract's "down" (plain SQL, read as JSON from stdin)
-// directly against the sandbox `name`'s database — Prisma Migrate has no
-// down-migration of its own to run instead, so this runs the SQL the same
-// way it will be run for real: statement by statement (see
-// splitSqlStatements) against the MySQL server, through the same driver
-// and credential the application uses, just pointed at the sandbox.
+// Runs migration_contract's "down" against `conn`: the plain SQL that
+// reverses "up", statement by statement (see splitSqlStatements), followed
+// by deleting the row "up" left in Prisma's own _prisma_migrations
+// bookkeeping table (matched by migration_name) — so the tool's record ends
+// up exactly as if the migration had never been applied, and a later apply
+// of the same migration runs it again instead of finding it already done.
+// Shared by sandbox-down (conn is connected to the sandbox) and
+// production-down (conn is connected to the application's own database).
+async function applyMigrationDown(conn, down) {
+  for (const statement of splitSqlStatements(down.sql)) {
+    await conn.$executeRawUnsafe(statement);
+  }
+  await conn.$executeRawUnsafe(
+    'DELETE FROM `_prisma_migrations` WHERE `migration_name` = ?',
+    down.migration_name
+  );
+}
+
+// Runs migration_contract's "up" (a Prisma migration name + its SQL, read
+// as JSON from stdin) through this repository's own migration tool, inside
+// the sandbox `name` instead of production — see applyMigrationUp.
+async function sandboxUp(name) {
+  let appDb;
+  try {
+    appDb = parseAppDatabaseName();
+  } catch (err) {
+    process.stderr.write(`phase sandbox-up: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  validateSandboxName('sandbox-up', name, appDb);
+
+  const up = await readUpPayload('sandbox-up');
+
+  const result = applyMigrationUp(sandboxDatabaseUrl(name), up);
+  if (result.error) {
+    process.stderr.write(`phase sandbox-up: could not run prisma migrate deploy: ${result.error.message}\n`);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    process.stderr.write(
+      `phase sandbox-up: prisma migrate deploy failed:\n${(result.stdout || '') + (result.stderr || '')}`
+    );
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// Runs migration_contract's "up" against the application's own database —
+// see applyMigrationUp. The tool records the migration as applied exactly
+// as it would have if committed and deployed normally, so an application
+// that migrates itself on startup finds it already applied rather than
+// running it again.
+async function productionUp() {
+  try {
+    parseAppDatabaseName();
+  } catch (err) {
+    process.stderr.write(`phase production-up: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  const up = await readUpPayload('production-up');
+
+  const result = applyMigrationUp(process.env.DATABASE_URL, up);
+  if (result.error) {
+    process.stderr.write(`phase production-up: could not run prisma migrate deploy: ${result.error.message}\n`);
+    process.exit(1);
+  }
+  if (result.status !== 0) {
+    process.stderr.write(
+      `phase production-up: prisma migrate deploy failed:\n${(result.stdout || '') + (result.stderr || '')}`
+    );
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// Runs migration_contract's "down" (plain SQL + the migration_name it
+// applied, read as JSON from stdin) directly against the sandbox `name`'s
+// database — see applyMigrationDown.
 async function sandboxDown(name) {
   let appDb;
   try {
@@ -731,29 +876,45 @@ async function sandboxDown(name) {
   }
   validateSandboxName('sandbox-down', name, appDb);
 
-  let down;
-  try {
-    down = JSON.parse(await readStdin());
-  } catch (err) {
-    process.stderr.write(`phase sandbox-down: stdin was not valid JSON: ${err.message}\n`);
-    process.exit(1);
-  }
-  if (!down || typeof down !== 'object' || typeof down.sql !== 'string') {
-    process.stderr.write(
-      'phase sandbox-down: expected {"sql": ...} on stdin, per migration_contract.schema.properties.down.\n'
-    );
-    process.exit(1);
-  }
+  const down = await readDownPayload('sandbox-down');
 
   const conn = loadPrismaClient(sandboxDatabaseUrl(name));
   try {
-    for (const statement of splitSqlStatements(down.sql)) {
-      await conn.$executeRawUnsafe(statement);
-    }
+    await applyMigrationDown(conn, down);
     await conn.$disconnect();
     process.exit(0);
   } catch (err) {
     process.stderr.write(`phase sandbox-down: ${err.message || err}\n`);
+    try {
+      await conn.$disconnect();
+    } catch (_) {
+      /* already broken */
+    }
+    process.exit(1);
+  }
+}
+
+// Runs migration_contract's "down" directly against the application's own
+// database — see applyMigrationDown. This is the only place, besides
+// production-up, that this program changes production; it never touches
+// anything but what down.sql says and the one bookkeeping row it names.
+async function productionDown() {
+  try {
+    parseAppDatabaseName();
+  } catch (err) {
+    process.stderr.write(`phase production-down: ${err.message}\n`);
+    process.exit(1);
+  }
+
+  const down = await readDownPayload('production-down');
+
+  const conn = loadPrismaClient();
+  try {
+    await applyMigrationDown(conn, down);
+    await conn.$disconnect();
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`phase production-down: ${err.message || err}\n`);
     try {
       await conn.$disconnect();
     } catch (_) {
@@ -777,11 +938,18 @@ if (args.length === 1 && args[0] === 'probe') {
   sandboxUp(args[1]);
 } else if (args.length === 2 && args[0] === 'sandbox-down') {
   sandboxDown(args[1]);
+} else if (args.length === 1 && args[0] === 'production-describe') {
+  productionDescribe();
+} else if (args.length === 1 && args[0] === 'production-up') {
+  productionUp();
+} else if (args.length === 1 && args[0] === 'production-down') {
+  productionDown();
 } else {
   process.stderr.write(
     `phase: does not implement ${JSON.stringify(args.join(' '))}; only "probe", ` +
     `"sandbox-build <name>", "sandbox-drop <name>", "sandbox-describe <name>", ` +
-    `"sandbox-up <name>" and "sandbox-down <name>" are supported.\n`
+    `"sandbox-up <name>", "sandbox-down <name>", "production-describe", ` +
+    `"production-up" and "production-down" are supported.\n`
   );
   process.exit(1);
 }
