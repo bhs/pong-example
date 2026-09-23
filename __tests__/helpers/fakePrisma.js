@@ -45,6 +45,14 @@ function createFakePrisma() {
         users.set(where.id, row);
         return row;
       },
+      async update({ where, data }) {
+        const existing = users.get(where.id);
+        if (!existing) throw notFoundError();
+        const now = new Date();
+        const row = { ...existing, ...data, updatedAt: now };
+        users.set(where.id, row);
+        return row;
+      },
     },
 
     preference: {
