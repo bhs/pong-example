@@ -104,6 +104,11 @@
     const DIVIDER_GAP       = 10;    // centre-line gap length
     const FLASH_FRAMES      = 3;     // frames of tinted flash on score
 
+    // Longest nickname the Settings modal accepts — mirrors
+    // NICKNAME_MAX_LENGTH in server.js so the live character count never
+    // shows a value the server would go on to reject.
+    const NICKNAME_MAX_LENGTH = 20;
+
     // ── Canvas setup ──────────────────────────────────────────────────────────
     const canvas = document.getElementById('gameCanvas');
     const ctx    = canvas.getContext('2d');
@@ -289,6 +294,99 @@
         #pong-recent-games .empty {
           font-size: 0.75rem;
           color: rgba(255,255,255,0.4);
+        }
+        #pong-recent-games .playing-as {
+          font-size: 0.7rem;
+          color: rgba(255,255,255,0.45);
+          margin-bottom: 8px;
+        }
+
+        /* ── Settings gear icon ──────────────────────────────────────────── */
+        #pong-settings-gear {
+          width: 28px;
+          height: 28px;
+          padding: 0;
+          font-size: 1rem;
+          line-height: 1;
+          border-radius: 50%;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        /* ── Settings modal ──────────────────────────────────────────────── */
+        /*
+         * Same DOM-overlay pattern as #pong-overlay (game-over screen): a
+         * JS-injected, full-screen semi-transparent div layered above
+         * everything else, holding a smaller centred card.
+         */
+        #pong-settings-modal {
+          position: fixed;
+          inset: 0;
+          z-index: 30;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.72);
+          backdrop-filter: blur(2px);
+          font-family: monospace;
+        }
+        #pong-settings-card {
+          width: min(320px, 88vw);
+          padding: 24px 22px;
+          background: #10123a;
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 8px;
+          box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+        #pong-settings-card h2 {
+          font-size: 1.05rem;
+          color: #fff;
+          letter-spacing: 0.05em;
+        }
+        #pong-settings-card label {
+          font-size: 0.75rem;
+          color: rgba(255,255,255,0.6);
+          letter-spacing: 0.05em;
+        }
+        #pong-nickname-input {
+          font-family: monospace;
+          font-size: 0.95rem;
+          padding: 8px 10px;
+          border-radius: 4px;
+          border: 1px solid rgba(255,255,255,0.25);
+          background: rgba(255,255,255,0.06);
+          color: #fff;
+        }
+        #pong-nickname-input:focus {
+          outline: none;
+          border-color: #ffe066;
+        }
+        #pong-nickname-input.invalid {
+          border-color: #ff6b6b;
+        }
+        #pong-nickname-count {
+          font-size: 0.7rem;
+          color: rgba(255,255,255,0.4);
+          text-align: right;
+        }
+        #pong-nickname-count.invalid {
+          color: #ff6b6b;
+        }
+        #pong-settings-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 8px;
+          margin-top: 4px;
+        }
+        #pong-settings-flash {
+          font-size: 0.8rem;
+          color: #7CFC9C;
+          letter-spacing: 0.04em;
+          min-height: 1.1em;
         }
       `;
       document.head.appendChild(style);
@@ -744,11 +842,12 @@
     }
 
     /**
-     * Render the signed-in state: avatar (if any), display name/email,
-     * a 'Save Score' button, and a 'Log out' button.
+     * Render the signed-in state: avatar (if any), display name/nickname,
+     * a gear icon that opens the Settings modal, a 'Save Score' button, and
+     * a 'Log out' button.
      *
      * @param {HTMLElement} bar
-     * @param {{id:string, email:?string, name:?string, avatar:?string}} user
+     * @param {{id:string, email:?string, name:?string, avatar:?string, nickname:?string}} user
      */
     function renderSignedIn(bar, user) {
       bar.innerHTML = '';
@@ -763,8 +862,17 @@
 
       const label = document.createElement('span');
       label.id = 'pong-user-label';
-      label.textContent = user.name || user.email || 'Signed in';
+      label.textContent = displayName(user);
       bar.appendChild(label);
+
+      const settingsBtn = document.createElement('button');
+      settingsBtn.id = 'pong-settings-gear';
+      settingsBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
+      settingsBtn.textContent = '⚙';
+      settingsBtn.title = 'Settings';
+      settingsBtn.setAttribute('aria-label', 'Settings');
+      settingsBtn.addEventListener('click', () => openSettingsModal());
+      bar.appendChild(settingsBtn);
 
       const saveBtn = document.createElement('button');
       saveBtn.id = 'pong-save-score';
@@ -781,6 +889,19 @@
         window.location.href = '/auth/logout';
       });
       bar.appendChild(logoutBtn);
+    }
+
+    /**
+     * The player's best available display identity: their saved nickname
+     * (see the Settings modal / PATCH /api/user/nickname) takes priority
+     * over their Google display name or email, and 'Player' is shown once
+     * none of those are available.
+     *
+     * @param {?{name:?string, email:?string, nickname:?string}} user
+     */
+    function displayName(user) {
+      if (!user) return 'Player';
+      return user.nickname || user.name || user.email || 'Player';
     }
 
     /**
@@ -815,6 +936,158 @@
           btn.textContent = original;
           btn.disabled = false;
         }, 1500);
+      }
+    }
+
+    // ── Settings modal (nickname editing) ─────────────────────────────────
+    //
+    // Same DOM-overlay pattern as the game-over screen: a JS-injected,
+    // full-screen semi-transparent div (with styling supplied by the
+    // injected <style> tag above) holding a small centred card. Opened by
+    // the gear icon next to the avatar; shows the player's current nickname
+    // (or a blank field if unset) in a text input with live character-count
+    // validation, and Save/Cancel buttons. Save PATCHes
+    // /api/user/nickname, updates currentUser + the rest of the UI, and
+    // closes the modal after a brief success flash.
+
+    /**
+     * Build and show the Settings modal.
+     */
+    function openSettingsModal() {
+      closeSettingsModal(); // defensive guard against a pre-existing modal
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-settings-modal';
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeSettingsModal();
+      });
+
+      const card = document.createElement('div');
+      card.id = 'pong-settings-card';
+
+      const h2 = document.createElement('h2');
+      h2.textContent = 'Settings';
+      card.appendChild(h2);
+
+      const label = document.createElement('label');
+      label.setAttribute('for', 'pong-nickname-input');
+      label.textContent = 'Nickname';
+      card.appendChild(label);
+
+      const input = document.createElement('input');
+      input.id = 'pong-nickname-input';
+      input.type = 'text';
+      input.maxLength = NICKNAME_MAX_LENGTH;
+      input.autocomplete = 'off';
+      input.value = (currentUser && currentUser.nickname) || '';
+      card.appendChild(input);
+
+      const count = document.createElement('div');
+      count.id = 'pong-nickname-count';
+      card.appendChild(count);
+
+      const flash = document.createElement('div');
+      flash.id = 'pong-settings-flash';
+      card.appendChild(flash);
+
+      const actions = document.createElement('div');
+      actions.id = 'pong-settings-actions';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.id = 'pong-settings-cancel';
+      cancelBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.addEventListener('click', () => closeSettingsModal());
+      actions.appendChild(cancelBtn);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.id = 'pong-settings-save';
+      saveBtn.className = 'pong-auth-btn';
+      saveBtn.textContent = 'Save';
+      saveBtn.addEventListener('click', () => saveNickname(input, saveBtn, flash));
+      actions.appendChild(saveBtn);
+
+      card.appendChild(actions);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      updateNicknameCount(input, count, saveBtn);
+      input.addEventListener('input', () => updateNicknameCount(input, count, saveBtn));
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !saveBtn.disabled) saveNickname(input, saveBtn, flash);
+        if (e.key === 'Escape') closeSettingsModal();
+      });
+
+      input.focus();
+      input.select();
+    }
+
+    /**
+     * Remove the Settings modal from the DOM if present.
+     */
+    function closeSettingsModal() {
+      const existing = document.getElementById('pong-settings-modal');
+      if (existing) existing.remove();
+    }
+
+    /**
+     * Update the live "N/20" character count next to the nickname input,
+     * flagging it (and disabling Save) when the trimmed value is over the
+     * limit — mirrors the NICKNAME_MAX_LENGTH the server enforces.
+     */
+    function updateNicknameCount(input, count, saveBtn) {
+      const len = input.value.trim().length;
+      count.textContent = `${len}/${NICKNAME_MAX_LENGTH}`;
+      const invalid = len > NICKNAME_MAX_LENGTH;
+      count.classList.toggle('invalid', invalid);
+      input.classList.toggle('invalid', invalid);
+      saveBtn.disabled = invalid;
+    }
+
+    /**
+     * PATCH /api/user/nickname with the trimmed input value (an empty
+     * value clears the nickname back to unset), then update currentUser and
+     * every place the nickname is displayed, flash a brief success message,
+     * and close the modal.
+     */
+    async function saveNickname(input, saveBtn, flash) {
+      const nickname = input.value.trim();
+      saveBtn.disabled = true;
+      const original = saveBtn.textContent;
+      saveBtn.textContent = 'Saving…';
+
+      try {
+        const res = await fetch('/api/user/nickname', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ nickname: nickname.length ? nickname : null }),
+        });
+
+        if (!res.ok) {
+          flash.style.color = '#ff6b6b';
+          flash.textContent = 'Could not save — try again';
+          saveBtn.textContent = original;
+          saveBtn.disabled = false;
+          return;
+        }
+
+        const data = await res.json();
+        currentUser = data.user;
+
+        // Refresh every place the nickname is displayed.
+        const label = document.getElementById('pong-user-label');
+        if (label) label.textContent = displayName(currentUser);
+        updatePlayingAsLine();
+
+        flash.style.color = '#7CFC9C';
+        flash.textContent = 'Saved!';
+        setTimeout(() => closeSettingsModal(), 700);
+      } catch (err) {
+        flash.style.color = '#ff6b6b';
+        flash.textContent = 'Could not save — try again';
+        saveBtn.textContent = original;
+        saveBtn.disabled = false;
       }
     }
 
@@ -878,6 +1151,9 @@
 
     /**
      * Render the panel from an array of { score, duration, finishedAt } entries.
+     * Each render starts with a "Playing as: <nickname or 'Player'>" line
+     * (see displayName / updatePlayingAsLine) — the panel is always the
+     * signed-in player's own game history, so this is who "row" is for.
      */
     function renderRecentGames(games) {
       const panel = getRecentGamesPanel();
@@ -886,6 +1162,12 @@
       const heading = document.createElement('h2');
       heading.textContent = 'Recent Games';
       panel.appendChild(heading);
+
+      const playingAs = document.createElement('p');
+      playingAs.className = 'playing-as';
+      playingAs.id = 'pong-playing-as';
+      playingAs.textContent = `Playing as: ${displayName(currentUser)}`;
+      panel.appendChild(playingAs);
 
       if (!games || games.length === 0) {
         const empty = document.createElement('p');
@@ -905,6 +1187,15 @@
         list.appendChild(item);
       });
       panel.appendChild(list);
+    }
+
+    /**
+     * Refresh the "Playing as: …" line in the recent-games panel (e.g.
+     * right after a nickname save) without re-fetching game history.
+     */
+    function updatePlayingAsLine() {
+      const el = document.getElementById('pong-playing-as');
+      if (el) el.textContent = `Playing as: ${displayName(currentUser)}`;
     }
 
     /**

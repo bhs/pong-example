@@ -39,6 +39,16 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Player-chosen display nickname, set/edited through the gear-icon
+  // "Settings" modal (see index.html) via PATCH /api/user/nickname. Null
+  // until the player saves one, in which case the UI falls back to
+  // "Player". The physical column is prefixed `mendel_exp_settings_modal_`
+  // (this table is shared by every concurrently-running variation of the
+  // 'player-nickname-setting' hop, each applying its own migration against
+  // the same database) while the Prisma field name stays unprefixed for
+  // application code.
+  nickname  String?  @map("mendel_exp_settings_modal_nickname")
+
   preference   Preference?
   highScore    HighScore?
   gameHistory  GameHistory[]

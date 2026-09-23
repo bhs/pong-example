@@ -20,7 +20,12 @@
  *
  * Data model (see prisma/schema.prisma)
  * ──────────────────────────────────────
- *   User        Google `sub` id (primary key), email, display name, avatar.
+ *   User        Google `sub` id (primary key), email, display name, avatar,
+ *               and an optional player-chosen nickname — edited through the
+ *               gear-icon "Settings" modal via PATCH /api/user/nickname (see
+ *               index.html), and shown ahead of the Google display name/email
+ *               wherever a player is identified, falling back to "Player"
+ *               when unset.
  *   Preference  One row per user (FK → User.id): theme / sound / paddle
  *               color settings.
  *   HighScore   One row per user (FK → User.id): that user's personal best
@@ -39,7 +44,13 @@
  *                                upserts the User row, establishes the
  *                                session.
  *   GET  /auth/logout           Destroy the session (logout).
- *   GET  /me                    Returns the logged-in user (or { user: null }).
+ *   GET  /me                    Returns the logged-in user (or { user: null }),
+ *                                 including their nickname (or null).
+ *
+ *   PATCH  /api/user/nickname    Set (or clear) the logged-in user's display
+ *                                 nickname. Edited through the gear-icon
+ *                                 "Settings" modal (see index.html). Body:
+ *                                 { nickname: string | null }.
  *
  *   GET    /api/preferences      Returns the logged-in user's preferences
  *                                 (defaults if none have been saved yet).
@@ -83,6 +94,11 @@ const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const telemetry      = require('./telemetry');
 const defaultPrisma  = require('./lib/prisma');
+
+// Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
+// and the live character-count validation in index.html — both enforce the
+// same limit so the client never shows a count the server would reject).
+const NICKNAME_MAX_LENGTH = 20;
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
@@ -276,6 +292,10 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return res.status(503).json({ error: 'Google OAuth is not configured on this server' });
     }
     return passport.authenticate('google', { failureRedirect: '/?login=failed' })(req, res, () => {
+      // A completed OAuth round-trip establishing a session is exactly what
+      // this hop's 'user_login' counter (the denominator of the
+      // nickname_set-per-user_login metric) is meant to count.
+      telemetry.recordServerEvent('user_login', req);
       res.redirect('/');
     });
   });
@@ -296,16 +316,19 @@ function createApp(prisma = defaultPrisma, options = {}) {
 
   // ── GET /me ────────────────────────────────────────────────────────────────
   //
-  // Returns the logged-in user (id / email / name / avatar) or { user: null }.
-  // Also returns `bestRallyBucket` — whether this signed-in player is in the
+  // Returns the logged-in user (id / email / name / avatar / nickname) or
+  // { user: null }. `nickname` is null until the player saves one through
+  // the gear-icon Settings modal (see PATCH /api/user/nickname below) — the
+  // client falls back to displaying "Player" wherever it's null. Also
+  // returns `bestRallyBucket` — whether this signed-in player is in the
   // ~50% shown the "Best rally" readout after game-over (see
   // isBestRallyBucketed above); always false when signed out.
 
   app.get('/me', (req, res) => {
     if (req.isAuthenticated && req.isAuthenticated() && req.user) {
-      const { id, email, name, avatar } = req.user;
+      const { id, email, name, avatar, nickname } = req.user;
       return res.status(200).json({
-        user: { id, email, name, avatar },
+        user: { id, email, name, avatar, nickname: nickname || null },
         bestRallyBucket: isBestRallyBucketed(id),
       });
     }
@@ -321,6 +344,56 @@ function createApp(prisma = defaultPrisma, options = {}) {
     res.status(401).json({ error: 'login required' });
     return false;
   }
+
+  // ── PATCH /api/user/nickname ─────────────────────────────────────────────
+  //
+  // Set (or clear) the logged-in user's display nickname, edited through the
+  // gear-icon "Settings" modal (see index.html). Body: { nickname: string |
+  // null }. A string is trimmed; an empty string after trimming (or an
+  // explicit null) clears the nickname back to unset, in which case the
+  // client displays "Player" instead. Anything longer than
+  // NICKNAME_MAX_LENGTH characters is rejected with 400.
+
+  app.patch('/api/user/nickname', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    const body = req.body || {};
+    let nickname = body.nickname;
+
+    if (nickname === undefined) {
+      return res.status(400).json({ error: 'nickname is required' });
+    }
+
+    if (nickname !== null) {
+      if (typeof nickname !== 'string') {
+        return res.status(400).json({ error: 'nickname must be a string or null' });
+      }
+      nickname = nickname.trim();
+      if (nickname.length > NICKNAME_MAX_LENGTH) {
+        return res.status(400).json({ error: `nickname must be at most ${NICKNAME_MAX_LENGTH} characters` });
+      }
+      if (nickname.length === 0) {
+        nickname = null; // treat a blank/whitespace-only value as "clear"
+      }
+    }
+
+    try {
+      const user = await prisma.user.update({
+        where: { id: req.user.id },
+        data:  { nickname },
+      });
+
+      if (nickname) {
+        telemetry.recordServerEvent('nickname_set', req);
+      }
+
+      return res.status(200).json({
+        user: { id: user.id, email: user.email, name: user.name, avatar: user.avatar, nickname: user.nickname || null },
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
 
   // ── GET /api/preferences ─────────────────────────────────────────────────
   //
@@ -550,13 +623,15 @@ function createApp(prisma = defaultPrisma, options = {}) {
 /**
  * Shapes a HighScore row (optionally with an included/attached `user`) into
  * the { player, score, longestRally, updatedAt } entry the API returns —
- * `player` is the best available human-readable identity (name, then email,
- * then the raw Google id). `longestRally` defaults to 0 for rows written
- * before that column existed.
+ * `player` is the best available human-readable identity: the player's
+ * saved nickname (see PATCH /api/user/nickname) takes priority when set,
+ * then their Google display name, then their email, then the raw Google id
+ * as a last resort. `longestRally` defaults to 0 for rows written before
+ * that column existed.
  */
 function toScoreEntry(row) {
   const user   = row.user || {};
-  const player = user.name || user.email || row.userId;
+  const player = user.nickname || user.name || user.email || row.userId;
   const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
   return {
     player,

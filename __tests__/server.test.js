@@ -65,6 +65,7 @@ function makeRequest(app, method, url, body = null, query = '') {
 // Convenience wrappers
 function post(app, url, body)         { return makeRequest(app, 'POST',   url, body); }
 function put(app, url, body)          { return makeRequest(app, 'PUT',    url, body); }
+function patch(app, url, body)        { return makeRequest(app, 'PATCH',  url, body); }
 function get(app, url, query = '')    { return makeRequest(app, 'GET',    url, null, query); }
 function del(app, url)                { return makeRequest(app, 'DELETE', url); }
 
@@ -494,5 +495,94 @@ describe('GET /api/game-history', () => {
     expect(res.body.games).toHaveLength(10);
     // Newest first: i=0 was "just now", i=14 was 14s ago.
     expect(res.body.games[0].score).toBe(0);
+  });
+});
+
+// ── PATCH /api/user/nickname ─────────────────────────────────────────────────
+
+describe('PATCH /api/user/nickname', () => {
+  test('requires an authenticated session', async () => {
+    const app = createApp(createFakePrisma());
+    const res = await patch(app, '/api/user/nickname', { nickname: 'Ace' });
+    expect(res.status).toBe(401);
+  });
+
+  test('sets the nickname and returns it in the response', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    const res = await patch(app, '/api/user/nickname', { nickname: 'Ace' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBe('Ace');
+    expect(prisma.__users.get(ALICE.id).nickname).toBe('Ace');
+  });
+
+  test('trims surrounding whitespace', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    const res = await patch(app, '/api/user/nickname', { nickname: '  Ace  ' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBe('Ace');
+  });
+
+  test('rejects a nickname longer than 20 characters', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    const res = await patch(app, '/api/user/nickname', { nickname: 'a'.repeat(21) });
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects a non-string, non-null nickname', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    const res = await patch(app, '/api/user/nickname', { nickname: 42 });
+    expect(res.status).toBe(400);
+  });
+
+  test('requires the nickname field to be present', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    const res = await patch(app, '/api/user/nickname', {});
+    expect(res.status).toBe(400);
+  });
+
+  test('an explicit null clears a previously-set nickname', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE, nickname: 'Ace' });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    const res = await patch(app, '/api/user/nickname', { nickname: null });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBeNull();
+  });
+
+  test('a blank/whitespace-only nickname clears it back to unset', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE, nickname: 'Ace' });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    const res = await patch(app, '/api/user/nickname', { nickname: '   ' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBeNull();
+  });
+
+  test('a saved nickname takes priority over name/email in the high-score display', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, { ...ALICE, nickname: 'Ace' });
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 10, updatedAt: new Date() });
+    const app = createApp(prisma);
+
+    const res = await get(app, '/api/scores');
+    const entry = res.body.scores.find((e) => e.userId === ALICE.id);
+    expect(entry.player).toBe('Ace');
   });
 });

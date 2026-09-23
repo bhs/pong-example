@@ -95,7 +95,9 @@ describe('GET /me', () => {
     });
     const res = await get(app, '/me');
     expect(res.status).toBe(200);
-    expect(res.body.user).toEqual(user);
+    // GET /me also returns `nickname` (null until the player saves one
+    // through the Settings modal — see PATCH /api/user/nickname).
+    expect(res.body.user).toEqual({ ...user, nickname: null });
   });
 
   test('bestRallyBucket is a boolean, deterministic for the same signed-in user id', async () => {
