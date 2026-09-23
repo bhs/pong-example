@@ -15,7 +15,7 @@
     html, body {
       width: 100%;
       height: 100%;
-      background: #111;
+      background: #00008b;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -25,7 +25,7 @@
 
     canvas {
       display: block;
-      background: #000;
+      background: #00008b;
       /* Crisp pixel rendering for retro look */
       image-rendering: pixelated;
       /* Soft rounded edge + drop shadow to lift the canvas off the page */
@@ -154,6 +154,23 @@
           color: rgba(255,255,255,0.4);
           letter-spacing: 0.05em;
           margin-top: 4px;
+        }
+        #pong-overlay .personal-best {
+          font-size: 0.95rem;
+          color: rgba(255,255,255,0.6);
+          letter-spacing: 0.06em;
+          margin-top: -6px;
+        }
+        #pong-overlay .signin-link {
+          font-size: 0.85rem;
+          color: #ffe066;
+          letter-spacing: 0.05em;
+          margin-top: -6px;
+          text-decoration: underline;
+        }
+        #pong-overlay .signin-link:hover,
+        #pong-overlay .signin-link:focus {
+          color: #fff;
         }
         #pong-play-again {
           margin-top: 8px;
@@ -547,6 +564,12 @@
 
       // Focus the button immediately so keyboard users can activate it
       btn.focus();
+
+      // Fire-and-render the personal-best badge (see 'Personal best badge'
+      // section below). Runs after the overlay is already in the DOM so the
+      // badge line can simply be appended once the network round-trip(s)
+      // resolve.
+      renderPersonalBestBadge(overlay, playerScore);
     }
 
     /**
@@ -555,6 +578,106 @@
     function removeGameOverOverlay() {
       const existing = document.getElementById('pong-overlay');
       if (existing) existing.remove();
+    }
+
+    // ── Personal best badge ─────────────────────────────────────────────────
+    //
+    // Right after a round ends, POST the final score (plus this game's
+    // duration and longest rally) to POST /api/scores — the same endpoint
+    // the 'Save Score' button uses, keyed by the signed-in user's session,
+    // and it only overwrites the stored HighScore when the new score beats
+    // it (see server.js). It also always records a GameHistory row for this
+    // finished game. Once that resolves, GET /api/scores/:userId reads back
+    // the (possibly just-updated) personal best and appends a small
+    // 'Personal Best: N' line to the game-over overlay. Both requests carry
+    // the HttpOnly session cookie (credentials: 'include'), so identity is
+    // resolved server-side — no player name is ever sent. If there is no
+    // session at all (GET /me returns { user: null }), the overlay shows a
+    // 'Sign in with Google to save your score' link instead, and neither
+    // POST /api/scores nor GET /api/scores/:userId is called.
+
+    /**
+     * @param {HTMLElement} overlay    - the game-over overlay div, already in the DOM
+     * @param {number}      finalScore - the player's final score for this round
+     */
+    async function renderPersonalBestBadge(overlay, finalScore) {
+      let user = null;
+      try {
+        const meRes  = await fetch('/me', { credentials: 'include' });
+        const meData = await meRes.json();
+        user = (meData && meData.user) || null;
+      } catch (err) {
+        user = null;
+      }
+
+      if (!user) {
+        appendSignInLink(overlay);
+        return;
+      }
+
+      try {
+        await fetch('/api/scores', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            score:        finalScore,
+            duration:     Math.round(gameElapsedSeconds),
+            longestRally: rally.maxRally,
+          }),
+        });
+      } catch (err) {
+        // Network error posting the score — fall through and still try to
+        // read back whatever best is on record.
+      }
+
+      try {
+        const res = await fetch(`/api/scores/${encodeURIComponent(user.id)}`, { credentials: 'include' });
+
+        if (res.status === 404) {
+          // No HighScore row could be read back (shouldn't normally happen
+          // right after a successful POST) — fall back to this round's score.
+          appendPersonalBestLine(overlay, finalScore);
+          return;
+        }
+
+        const data  = await res.json();
+        const best  = data && data.entry && typeof data.entry.score === 'number'
+          ? data.entry.score
+          : finalScore;
+        appendPersonalBestLine(overlay, best);
+      } catch (err) {
+        // Network error — fail silently, no badge shown for this round.
+      }
+    }
+
+    /**
+     * Append a 'Personal Best: N' line to the game-over overlay.
+     * @param {HTMLElement} overlay
+     * @param {number} best
+     */
+    function appendPersonalBestLine(overlay, best) {
+      if (!document.body.contains(overlay)) return; // overlay dismissed already
+      const el = document.createElement('p');
+      el.id = 'pong-personal-best';
+      el.className = 'personal-best';
+      el.textContent = `Personal Best: ${best}`;
+      overlay.appendChild(el);
+    }
+
+    /**
+     * Append a 'Sign in with Google to save your score' link to the
+     * game-over overlay for signed-out players.
+     * @param {HTMLElement} overlay
+     */
+    function appendSignInLink(overlay) {
+      if (!document.body.contains(overlay)) return; // overlay dismissed already
+      const a = document.createElement('a');
+      a.id = 'pong-personal-best-signin';
+      a.className = 'signin-link';
+      a.href = '/auth/google';
+      a.textContent = 'Sign in with Google to save your score';
+      overlay.appendChild(a);
     }
 
     // ── Best-rally readout ────────────────────────────────────────────────
@@ -956,9 +1079,9 @@
     // feedback that a point was just scored.
 
     function render() {
-      // Clear to black
+      // Clear to dark blue
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = '#000';
+      ctx.fillStyle = '#00008b';
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       // Score flash: tinted background for a few frames after scoring
@@ -971,7 +1094,7 @@
 
       // Centre dashed divider
       ctx.setLineDash([DIVIDER_DASH, DIVIDER_GAP]);
-      ctx.strokeStyle = '#333';
+      ctx.strokeStyle = '#4a5a8f';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(CANVAS_W / 2, 0);
