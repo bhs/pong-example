@@ -57,6 +57,17 @@ describe('personal best badge', () => {
     expect(html).toMatch(/el\.textContent = `Personal Best: \$\{best\}`;/);
   });
 
+  test('appends a "Last played: <timestamp>" line right after the personal best line', () => {
+    expect(html).toMatch(/appendPersonalBestLine\(overlay, best\);\s*\n\s*appendLastPlayedLine\(overlay, data && data\.entry && data\.entry\.lastPlayedAt\);/);
+    expect(html).toMatch(/el\.textContent = `Last played: \$\{date\.toLocaleString\(\)\}`;/);
+  });
+
+  test('does not append a last-played line when lastPlayedAt is missing', () => {
+    const fnMatch = html.match(/function appendLastPlayedLine\([\s\S]*?\n    \}\n/);
+    expect(fnMatch).not.toBeNull();
+    expect(fnMatch[0]).toMatch(/if \(lastPlayedAt === null \|\| lastPlayedAt === undefined\) return;/);
+  });
+
   test('appends a sign-in link with the expected copy for signed-out players', () => {
     expect(html).toMatch(/Sign in with Google to save your score/);
     expect(html).toMatch(/a\.href = '\/auth\/google';/);
