@@ -39,8 +39,8 @@ describe('control hints caption', () => {
     const styleMatch = html.match(/#pong-control-hints\s*\{([^}]*)\}/);
     expect(styleMatch).not.toBeNull();
     const rules = styleMatch[1];
-    expect(rules).toMatch(/font-size:\s*0\.85rem/);
-    expect(rules).toMatch(/color:\s*#888/);
+    expect(rules).toMatch(/font-size:\s*0\.9rem/);
+    expect(rules).toMatch(/color:\s*#999/);
     expect(rules).toMatch(/text-align:\s*center/);
     expect(rules).toMatch(/margin-top:\s*8px/);
   });

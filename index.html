@@ -39,10 +39,14 @@
      * Static semantic caption rendered below the canvas, entirely separate
      * from canvas draw calls. Present at all times regardless of game phase
      * (playing / scored / gameover) — pure DOM/CSS chrome, no JS involved.
+     *
+     * Color/size bumped slightly (#888 → #999, 0.85rem → 0.9rem) so the
+     * muted hint text still reads clearly against the dark page background,
+     * while staying a single unobtrusive line beneath the canvas.
      */
     #pong-control-hints {
-      font-size: 0.85rem;
-      color: #888;
+      font-size: 0.9rem;
+      color: #999;
       text-align: center;
       margin-top: 8px;
       font-family: monospace;
