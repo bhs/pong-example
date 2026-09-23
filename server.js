@@ -39,7 +39,11 @@
  *                                upserts the User row, establishes the
  *                                session.
  *   GET  /auth/logout           Destroy the session (logout).
- *   GET  /me                    Returns the logged-in user (or { user: null }).
+ *   GET  /me                    Returns the logged-in user, including
+ *                                `nickname` (or { user: null }).
+ *
+ *   PATCH  /api/user/nickname    Set the logged-in user's nickname (1-20
+ *                                 alphanumeric characters or spaces).
  *
  *   GET    /api/preferences      Returns the logged-in user's preferences
  *                                 (defaults if none have been saved yet).
@@ -276,6 +280,7 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return res.status(503).json({ error: 'Google OAuth is not configured on this server' });
     }
     return passport.authenticate('google', { failureRedirect: '/?login=failed' })(req, res, () => {
+      telemetry.recordServerEvent('user_login', req);
       res.redirect('/');
     });
   });
@@ -296,16 +301,18 @@ function createApp(prisma = defaultPrisma, options = {}) {
 
   // ── GET /me ────────────────────────────────────────────────────────────────
   //
-  // Returns the logged-in user (id / email / name / avatar) or { user: null }.
+  // Returns the logged-in user (id / email / name / avatar / nickname) or
+  // { user: null }. `nickname` is the player-chosen display name set via
+  // PATCH /api/user/nickname (see below) — null until they've set one.
   // Also returns `bestRallyBucket` — whether this signed-in player is in the
   // ~50% shown the "Best rally" readout after game-over (see
   // isBestRallyBucketed above); always false when signed out.
 
   app.get('/me', (req, res) => {
     if (req.isAuthenticated && req.isAuthenticated() && req.user) {
-      const { id, email, name, avatar } = req.user;
+      const { id, email, name, avatar, nickname } = req.user;
       return res.status(200).json({
-        user: { id, email, name, avatar },
+        user: { id, email, name, avatar, nickname: nickname || null },
         bestRallyBucket: isBestRallyBucketed(id),
       });
     }
@@ -321,6 +328,57 @@ function createApp(prisma = defaultPrisma, options = {}) {
     res.status(401).json({ error: 'login required' });
     return false;
   }
+
+  // ── PATCH /api/user/nickname ─────────────────────────────────────────────
+  //
+  // Sets the logged-in user's nickname — the display name shown instead of
+  // their Google account name/email wherever a player's identity is
+  // rendered next to a score (the personal-best badge, the game-over
+  // overlay, the header itself). Body: { nickname: string }.
+  //
+  // Validation: 1-20 characters, letters/digits/spaces only (leading and
+  // trailing whitespace is trimmed before the length/pattern check).
+  // Requires an authenticated Google session — nickname is a column on
+  // User, so there is no such thing as an anonymous nickname.
+
+  const NICKNAME_PATTERN = /^[A-Za-z0-9 ]{1,20}$/;
+
+  app.patch('/api/user/nickname', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    const raw = req.body && req.body.nickname;
+    if (typeof raw !== 'string') {
+      return res.status(400).json({ error: 'nickname must be a string' });
+    }
+
+    const nickname = raw.trim();
+    if (!NICKNAME_PATTERN.test(nickname)) {
+      return res.status(400).json({
+        error: 'nickname must be 1-20 characters, letters/numbers/spaces only',
+      });
+    }
+
+    try {
+      const user = await prisma.user.update({
+        where: { id: req.user.id },
+        data:  { nickname },
+      });
+
+      telemetry.recordServerEvent('nickname_set', req);
+
+      return res.status(200).json({
+        user: {
+          id:       user.id,
+          email:    user.email,
+          name:     user.name,
+          avatar:   user.avatar,
+          nickname: user.nickname || null,
+        },
+      });
+    } catch (err) {
+      return next(err);
+    }
+  });
 
   // ── GET /api/preferences ─────────────────────────────────────────────────
   //

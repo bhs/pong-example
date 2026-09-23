@@ -65,6 +65,7 @@ function makeRequest(app, method, url, body = null, query = '') {
 // Convenience wrappers
 function post(app, url, body)         { return makeRequest(app, 'POST',   url, body); }
 function put(app, url, body)          { return makeRequest(app, 'PUT',    url, body); }
+function patch(app, url, body)        { return makeRequest(app, 'PATCH',  url, body); }
 function get(app, url, query = '')    { return makeRequest(app, 'GET',    url, null, query); }
 function del(app, url)                { return makeRequest(app, 'DELETE', url); }
 
@@ -494,5 +495,103 @@ describe('GET /api/game-history', () => {
     expect(res.body.games).toHaveLength(10);
     // Newest first: i=0 was "just now", i=14 was 14s ago.
     expect(res.body.games[0].score).toBe(0);
+  });
+});
+
+// ── PATCH /api/user/nickname ────────────────────────────────────────────────
+
+describe('PATCH /api/user/nickname', () => {
+  let app, prisma;
+
+  beforeEach(() => {
+    prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, ALICE);
+  });
+
+  test('requires an authenticated session', async () => {
+    app = createApp(prisma);
+    const res = await patch(app, '/api/user/nickname', { nickname: 'Al' });
+    expect(res.status).toBe(401);
+  });
+
+  test('sets the nickname for the logged-in user', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', { nickname: 'Zap' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBe('Zap');
+    expect(prisma.__users.get(ALICE.id).nickname).toBe('Zap');
+  });
+
+  test('trims leading/trailing whitespace', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', { nickname: '  Zap  ' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBe('Zap');
+  });
+
+  test('accepts spaces within the nickname', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', { nickname: 'Zap Attack' });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBe('Zap Attack');
+  });
+
+  test('accepts a nickname up to 20 characters', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const nickname = 'A'.repeat(20);
+    const res = await patch(app, '/api/user/nickname', { nickname });
+    expect(res.status).toBe(200);
+    expect(res.body.user.nickname).toBe(nickname);
+  });
+
+  test('returns 400 when nickname is missing', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', {});
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 for an empty nickname (after trimming)', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', { nickname: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when nickname exceeds 20 characters', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', { nickname: 'A'.repeat(21) });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 for non-alphanumeric characters', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', { nickname: 'Zap!' });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when nickname is not a string', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await patch(app, '/api/user/nickname', { nickname: 42 });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ── GET /me — nickname ──────────────────────────────────────────────────────
+
+describe('GET /me nickname', () => {
+  test('includes nickname: null when the user has not set one', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, ALICE);
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await get(app, '/me');
+    expect(res.body.user.nickname).toBeNull();
+  });
+
+  test('includes the saved nickname after PATCH /api/user/nickname', async () => {
+    const prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, ALICE);
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await patch(app, '/api/user/nickname', { nickname: 'Zap' });
+    const res = await get(app, '/me');
+    expect(res.body.user.nickname).toBe('Zap');
   });
 });

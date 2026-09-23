@@ -37,6 +37,14 @@ const CLIENT_EVENT_COUNTER_NAMES = [
   'game_started', 'visit',
 ];
 
+// Counters recorded directly from server-side route handlers (rather than
+// via POST /api/client-events) — see recordServerEvent below. Together they
+// back the nickname-set-per-login metric (see experiment.json): 'user_login'
+// fires once per completed Google OAuth sign-in
+// (GET /auth/google/callback), 'nickname_set' fires once per successful
+// PATCH /api/user/nickname.
+const SERVER_EVENT_COUNTER_NAMES = ['user_login', 'nickname_set'];
+
 const LONG_LIVED_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000; // ~400 days
 
 function readConfig() {
@@ -109,6 +117,7 @@ function createNoopTelemetry() {
     enabled: false,
     middleware(req, res, next) { next(); },
     recordClientEvent() { /* no-op: telemetry disabled */ },
+    recordServerEvent() { /* no-op: telemetry disabled */ },
   };
 }
 
@@ -173,6 +182,8 @@ function createTelemetry() {
       play_again_click:     meter.createCounter('play_again_click'),
       game_started:         meter.createCounter('game_started'),
       visit:                meter.createCounter('visit'),
+      user_login:           meter.createCounter('user_login'),
+      nickname_set:         meter.createCounter('nickname_set'),
       mendel_participants:  meter.createCounter('mendel_participants'),
       mendel_requests:      meter.createCounter('mendel_requests'),
       mendel_server_errors: meter.createCounter('mendel_server_errors'),
@@ -307,7 +318,24 @@ function createTelemetry() {
     }
   }
 
-  return { enabled: true, middleware, recordClientEvent };
+  /**
+   * Records one of SERVER_EVENT_COUNTER_NAMES directly from a route handler
+   * (as opposed to recordClientEvent, which is driven by the browser-only
+   * POST /api/client-events ping). Same attribute rules apply: whatever
+   * Analysis Bucket the request-scoped middleware computed (or none, when
+   * unassigned).
+   */
+  function recordServerEvent(eventName, req) {
+    if (!SERVER_EVENT_COUNTER_NAMES.includes(eventName)) return;
+    try {
+      const attributes = (req && req.mendelAttributes) || {};
+      counters[eventName].add(1, attributes);
+    } catch (err) {
+      // Ignore — telemetry must never surface to the user.
+    }
+  }
+
+  return { enabled: true, middleware, recordClientEvent, recordServerEvent };
 }
 
 module.exports = createTelemetry();

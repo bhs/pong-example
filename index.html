@@ -252,6 +252,31 @@
           white-space: nowrap;
         }
 
+        /* ── Inline nickname editor ────────────────────────────────────────
+         * A small text input + 'Save' button sitting directly next to the
+         * avatar/label, styled to match the rest of #pong-auth-bar. */
+        #pong-nickname-input {
+          width: 110px;
+          padding: 6px 8px;
+          font-family: monospace;
+          font-size: 0.8rem;
+          color: #fff;
+          background: rgba(255,255,255,0.08);
+          border: 1px solid rgba(255,255,255,0.35);
+          border-radius: 4px;
+        }
+        #pong-nickname-input::placeholder {
+          color: rgba(255,255,255,0.4);
+        }
+        #pong-nickname-input:focus {
+          outline: none;
+          border-color: #ffe066;
+        }
+        #pong-nickname-save {
+          padding: 6px 12px;
+          font-size: 0.75rem;
+        }
+
         /* ── Recent Games panel ──────────────────────────────────────────── */
         #pong-recent-games {
           position: fixed;
@@ -365,6 +390,11 @@
     // Signed-in user (from GET /me) and whether they're in the ~50% bucket
     // shown the "Best rally" readout after game-over (see
     // isBestRallyBucketed in server.js). Both null/false until /me resolves.
+    // currentUser.nickname (also from GET /me) is the player-chosen display
+    // name edited inline in the auth bar (see renderSignedIn /
+    // saveNickname below) — wherever a player's identity is shown next to a
+    // score, it's `currentUser.nickname || 'Player'`, never the raw Google
+    // name/email.
     let currentUser      = null;
     let bestRallyBucket  = false;
 
@@ -589,7 +619,8 @@
     // it (see server.js). It also always records a GameHistory row for this
     // finished game. Once that resolves, GET /api/scores/:userId reads back
     // the (possibly just-updated) personal best and appends a small
-    // 'Personal Best: N' line to the game-over overlay. Both requests carry
+    // "{nickname||'Player'}'s Personal Best: N" line to the game-over
+    // overlay — see appendPersonalBestLine below. Both requests carry
     // the HttpOnly session cookie (credentials: 'include'), so identity is
     // resolved server-side — no player name is ever sent. If there is no
     // session at all (GET /me returns { user: null }), the overlay shows a
@@ -637,7 +668,7 @@
         if (res.status === 404) {
           // No HighScore row could be read back (shouldn't normally happen
           // right after a successful POST) — fall back to this round's score.
-          appendPersonalBestLine(overlay, finalScore);
+          appendPersonalBestLine(overlay, finalScore, user);
           return;
         }
 
@@ -645,23 +676,28 @@
         const best  = data && data.entry && typeof data.entry.score === 'number'
           ? data.entry.score
           : finalScore;
-        appendPersonalBestLine(overlay, best);
+        appendPersonalBestLine(overlay, best, user);
       } catch (err) {
         // Network error — fail silently, no badge shown for this round.
       }
     }
 
     /**
-     * Append a 'Personal Best: N' line to the game-over overlay.
+     * Append a "{nickname||'Player'}'s Personal Best: N" line to the
+     * game-over overlay — the player's own nickname (see PATCH
+     * /api/user/nickname), never their raw Google name/email/sub, falling
+     * back to 'Player' when no nickname has been set.
      * @param {HTMLElement} overlay
      * @param {number} best
+     * @param {{nickname:?string}} user
      */
-    function appendPersonalBestLine(overlay, best) {
+    function appendPersonalBestLine(overlay, best, user) {
       if (!document.body.contains(overlay)) return; // overlay dismissed already
       const el = document.createElement('p');
       el.id = 'pong-personal-best';
       el.className = 'personal-best';
-      el.textContent = `Personal Best: ${best}`;
+      const player = (user && user.nickname) || 'Player';
+      el.textContent = `${player}'s Personal Best: ${best}`;
       overlay.appendChild(el);
     }
 
@@ -745,10 +781,11 @@
 
     /**
      * Render the signed-in state: avatar (if any), display name/email,
-     * a 'Save Score' button, and a 'Log out' button.
+     * an inline nickname editor, a 'Save Score' button, and a 'Log out'
+     * button.
      *
      * @param {HTMLElement} bar
-     * @param {{id:string, email:?string, name:?string, avatar:?string}} user
+     * @param {{id:string, email:?string, name:?string, avatar:?string, nickname:?string}} user
      */
     function renderSignedIn(bar, user) {
       bar.innerHTML = '';
@@ -766,6 +803,31 @@
       label.textContent = user.name || user.email || 'Signed in';
       bar.appendChild(label);
 
+      // Inline nickname editor — pre-filled from GET /me, submits on Enter
+      // or 'Save' click, updates currentUser.nickname on success (see
+      // saveNickname below). This is the display name used wherever a
+      // player's identity is shown next to a score.
+      const nicknameInput = document.createElement('input');
+      nicknameInput.id = 'pong-nickname-input';
+      nicknameInput.type = 'text';
+      nicknameInput.maxLength = 20;
+      nicknameInput.placeholder = 'Nickname';
+      nicknameInput.value = user.nickname || '';
+      nicknameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          saveNickname(nicknameInput, saveNicknameBtn);
+        }
+      });
+      bar.appendChild(nicknameInput);
+
+      const saveNicknameBtn = document.createElement('button');
+      saveNicknameBtn.id = 'pong-nickname-save';
+      saveNicknameBtn.className = 'pong-auth-btn';
+      saveNicknameBtn.textContent = 'Save';
+      saveNicknameBtn.addEventListener('click', () => saveNickname(nicknameInput, saveNicknameBtn));
+      bar.appendChild(saveNicknameBtn);
+
       const saveBtn = document.createElement('button');
       saveBtn.id = 'pong-save-score';
       saveBtn.className = 'pong-auth-btn';
@@ -781,6 +843,46 @@
         window.location.href = '/auth/logout';
       });
       bar.appendChild(logoutBtn);
+    }
+
+    /**
+     * PATCH the player's nickname to the server and update the local
+     * currentUser.nickname state variable on success. No page reload —
+     * every place identity is shown next to a score reads currentUser
+     * directly (or fresh GET /me user objects for the game-over overlay).
+     *
+     * @param {HTMLInputElement}  input
+     * @param {HTMLButtonElement} btn
+     */
+    async function saveNickname(input, btn) {
+      const original = btn.textContent;
+      const nickname = input.value.trim();
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+
+      try {
+        const res = await fetch('/api/user/nickname', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ nickname }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (currentUser) currentUser.nickname = (data && data.user && data.user.nickname) || null;
+          btn.textContent = 'Saved!';
+        } else {
+          btn.textContent = 'Failed';
+        }
+      } catch (err) {
+        btn.textContent = 'Failed';
+      } finally {
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.disabled = false;
+        }, 1500);
+      }
     }
 
     /**

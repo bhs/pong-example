@@ -95,7 +95,7 @@ describe('GET /me', () => {
     });
     const res = await get(app, '/me');
     expect(res.status).toBe(200);
-    expect(res.body.user).toEqual(user);
+    expect(res.body.user).toEqual({ ...user, nickname: null });
   });
 
   test('bestRallyBucket is a boolean, deterministic for the same signed-in user id', async () => {

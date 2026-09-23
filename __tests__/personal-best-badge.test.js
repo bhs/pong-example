@@ -53,8 +53,12 @@ describe('personal best badge', () => {
     expect(earlyReturnIndex).toBeLessThan(postIndex);
   });
 
-  test('appends a "Personal Best: N" line to the overlay', () => {
-    expect(html).toMatch(/el\.textContent = `Personal Best: \$\{best\}`;/);
+  test('appends a "{nickname||\'Player\'}\'s Personal Best: N" line to the overlay', () => {
+    expect(html).toMatch(/el\.textContent = `\$\{player\}'s Personal Best: \$\{best\}`;/);
+  });
+
+  test('the personal-best line reads the nickname, falling back to \'Player\'', () => {
+    expect(html).toMatch(/const player = \(user && user\.nickname\) \|\| 'Player';/);
   });
 
   test('appends a sign-in link with the expected copy for signed-out players', () => {
