@@ -69,6 +69,9 @@
  *                                 clicked, a page reload after game-over,
  *                                 a page visit, a new game starting),
  *                                 counted via telemetry.js. No other effect.
+ *                                 A successful Google sign-in (see
+ *                                 /auth/google/callback) is separately
+ *                                 counted server-side via telemetry.js.
  *
  * The module exports { createApp, defaultPrisma } — createApp accepts any
  * Prisma-Client-shaped object, so unit tests can inject a lightweight fake
@@ -276,6 +279,7 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return res.status(503).json({ error: 'Google OAuth is not configured on this server' });
     }
     return passport.authenticate('google', { failureRedirect: '/?login=failed' })(req, res, () => {
+      telemetry.recordUserLogin(req);
       res.redirect('/');
     });
   });
