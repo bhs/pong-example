@@ -2,6 +2,11 @@
   "requirements": [
     {
       "kind": "secret",
+      "name": "DATABASE_URL",
+      "description": "MySQL connection string, mysql://user:password@host:3306/dbname"
+    },
+    {
+      "kind": "secret",
       "name": "GOOGLE_CLIENT_ID",
       "description": "OAuth client ID for Google sign-in",
       "console_url": "https://console.cloud.google.com/apis/credentials"

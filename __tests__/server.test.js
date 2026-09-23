@@ -3,11 +3,14 @@
 /**
  * __tests__/server.test.js
  *
- * Unit tests for the ephemeral-local-storage Express API.
- * Each test suite creates its own isolated store so tests don't share state.
+ * Unit tests for the Prisma/MySQL-backed Express API. Each test suite
+ * creates its own isolated fake Prisma client (see __tests__/helpers/
+ * fakePrisma.js) so tests don't share state and never touch a real MySQL
+ * instance.
  */
 
-const { createApp, createStore } = require('../server');
+const { createApp } = require('../server');
+const { createFakePrisma } = require('./helpers/fakePrisma');
 
 // ── Minimal HTTP request helper ────────────────────────────────────────────
 //
@@ -61,76 +64,32 @@ function makeRequest(app, method, url, body = null, query = '') {
 
 // Convenience wrappers
 function post(app, url, body)         { return makeRequest(app, 'POST',   url, body); }
+function put(app, url, body)          { return makeRequest(app, 'PUT',    url, body); }
 function get(app, url, query = '')    { return makeRequest(app, 'GET',    url, null, query); }
 function del(app, url)                { return makeRequest(app, 'DELETE', url); }
 
-// ── POST /api/login ────────────────────────────────────────────────────────
+// A testAuth middleware (see server.js's createApp docs) that logs every
+// request in as the given fake user — used to exercise the login-gated
+// routes without a real Google OAuth round-trip.
+function loggedInAs(user) {
+  return (req, res, next) => {
+    req.user = user;
+    req.isAuthenticated = () => true;
+    next();
+  };
+}
 
-describe('POST /api/login', () => {
-  let app;
-
-  beforeEach(() => {
-    app = createApp(createStore());
-  });
-
-  test('returns 200 with token and username for valid username', async () => {
-    const res = await post(app, '/api/login', { username: 'Alice' });
-    expect(res.status).toBe(200);
-    expect(typeof res.body.token).toBe('string');
-    expect(res.body.token.length).toBeGreaterThan(0);
-    expect(res.body.username).toBe('alice');  // lowercased
-  });
-
-  test('lowercases the username', async () => {
-    const res = await post(app, '/api/login', { username: 'BOB' });
-    expect(res.status).toBe(200);
-    expect(res.body.username).toBe('bob');
-  });
-
-  test('trims whitespace from username', async () => {
-    const res = await post(app, '/api/login', { username: '  carol  ' });
-    expect(res.status).toBe(200);
-    expect(res.body.username).toBe('carol');
-  });
-
-  test('returns a different token each call', async () => {
-    const res1 = await post(app, '/api/login', { username: 'dave' });
-    const res2 = await post(app, '/api/login', { username: 'dave' });
-    expect(res1.body.token).not.toBe(res2.body.token);
-  });
-
-  test('returns 400 when username is missing', async () => {
-    const res = await post(app, '/api/login', {});
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBeTruthy();
-  });
-
-  test('returns 400 when username is an empty string', async () => {
-    const res = await post(app, '/api/login', { username: '' });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBeTruthy();
-  });
-
-  test('returns 400 when username is whitespace-only', async () => {
-    const res = await post(app, '/api/login', { username: '   ' });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBeTruthy();
-  });
-
-  test('returns 400 when username is not a string', async () => {
-    const res = await post(app, '/api/login', { username: 42 });
-    expect(res.status).toBe(400);
-  });
-});
+const ALICE = { id: 'google-sub-alice', email: 'alice@example.com', name: 'Alice', avatar: null };
+const BOB   = { id: 'google-sub-bob',   email: 'bob@example.com',   name: 'Bob',   avatar: null };
 
 // ── GET /api/scores ────────────────────────────────────────────────────────
 
 describe('GET /api/scores', () => {
-  let app, store;
+  let app, prisma;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    prisma = createFakePrisma();
+    app    = createApp(prisma);
   });
 
   test('returns empty scores array when store is empty', async () => {
@@ -140,8 +99,10 @@ describe('GET /api/scores', () => {
   });
 
   test('returns all scores when store has entries', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
-    store.scores.set('bob',   { player: 'bob',   score: 200, updatedAt: Date.now() });
+    prisma.__users.set(ALICE.id, ALICE);
+    prisma.__users.set(BOB.id, BOB);
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 100, updatedAt: new Date() });
+    prisma.__highScores.set(BOB.id,   { id: 2, userId: BOB.id,   score: 200, updatedAt: new Date() });
 
     const res = await get(app, '/api/scores');
     expect(res.status).toBe(200);
@@ -149,9 +110,9 @@ describe('GET /api/scores', () => {
   });
 
   test('returns scores sorted by score descending', async () => {
-    store.scores.set('alice', { player: 'alice', score: 50,  updatedAt: Date.now() });
-    store.scores.set('bob',   { player: 'bob',   score: 200, updatedAt: Date.now() });
-    store.scores.set('carol', { player: 'carol', score: 100, updatedAt: Date.now() });
+    prisma.__highScores.set('u1', { id: 1, userId: 'u1', score: 50,  updatedAt: new Date() });
+    prisma.__highScores.set('u2', { id: 2, userId: 'u2', score: 200, updatedAt: new Date() });
+    prisma.__highScores.set('u3', { id: 3, userId: 'u3', score: 100, updatedAt: new Date() });
 
     const res = await get(app, '/api/scores');
     const scores = res.body.scores.map((e) => e.score);
@@ -160,7 +121,7 @@ describe('GET /api/scores', () => {
 
   test('respects the ?limit query parameter', async () => {
     for (let i = 0; i < 10; i++) {
-      store.scores.set(`player${i}`, { player: `player${i}`, score: i * 10, updatedAt: Date.now() });
+      prisma.__highScores.set(`p${i}`, { id: i, userId: `p${i}`, score: i * 10, updatedAt: new Date() });
     }
 
     const res = await get(app, '/api/scores', 'limit=3');
@@ -169,222 +130,401 @@ describe('GET /api/scores', () => {
   });
 
   test('caps limit at 100', async () => {
-    // Populate 5 entries; limit=200 → capped at 100, returns all 5
     for (let i = 0; i < 5; i++) {
-      store.scores.set(`p${i}`, { player: `p${i}`, score: i, updatedAt: Date.now() });
+      prisma.__highScores.set(`p${i}`, { id: i, userId: `p${i}`, score: i, updatedAt: new Date() });
     }
 
     const res = await get(app, '/api/scores', 'limit=200');
     expect(res.status).toBe(200);
     expect(res.body.scores).toHaveLength(5);
   });
+
+  test('derives the player name from the joined user, falling back to userId', async () => {
+    prisma.__users.set(ALICE.id, ALICE);
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 10, updatedAt: new Date() });
+    prisma.__highScores.set('unknown-user', { id: 2, userId: 'unknown-user', score: 5, updatedAt: new Date() });
+
+    const res = await get(app, '/api/scores');
+    const byUser = Object.fromEntries(res.body.scores.map((e) => [e.userId, e.player]));
+    expect(byUser[ALICE.id]).toBe('Alice');
+    expect(byUser['unknown-user']).toBe('unknown-user');
+  });
 });
 
 // ── POST /api/scores ───────────────────────────────────────────────────────
 
 describe('POST /api/scores', () => {
-  let app, store;
+  let app, prisma;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    prisma = createFakePrisma();
+    prisma.__users.set(ALICE.id, ALICE);
   });
 
-  test('creates a new score entry and returns updated:true', async () => {
-    const res = await post(app, '/api/scores', { player: 'Alice', score: 150 });
+  test('requires an authenticated session', async () => {
+    app = createApp(prisma);
+    const res = await post(app, '/api/scores', { score: 100 });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBeTruthy();
+  });
+
+  test('creates a new score entry for the logged-in user and returns updated:true', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 150 });
     expect(res.status).toBe(200);
     expect(res.body.updated).toBe(true);
-    expect(res.body.entry.player).toBe('alice');
+    expect(res.body.entry.userId).toBe(ALICE.id);
     expect(res.body.entry.score).toBe(150);
   });
 
-  test('stores the score in the Map', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 99 });
-    expect(store.scores.has('alice')).toBe(true);
-    expect(store.scores.get('alice').score).toBe(99);
+  test('stores the score keyed by userId', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 99 });
+    expect(prisma.__highScores.has(ALICE.id)).toBe(true);
+    expect(prisma.__highScores.get(ALICE.id).score).toBe(99);
   });
 
   test('updates the score when new score is higher', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 50 });
-    const res = await post(app, '/api/scores', { player: 'alice', score: 150 });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 50 });
+    const res = await post(app, '/api/scores', { score: 150 });
     expect(res.body.updated).toBe(true);
     expect(res.body.entry.score).toBe(150);
   });
 
   test('does NOT update when new score is lower', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 200 });
-    const res = await post(app, '/api/scores', { player: 'alice', score: 50 });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 200 });
+    const res = await post(app, '/api/scores', { score: 50 });
     expect(res.body.updated).toBe(false);
     expect(res.body.entry.score).toBe(200);
   });
 
   test('does NOT update when new score equals existing score', async () => {
-    await post(app, '/api/scores', { player: 'alice', score: 100 });
-    const res = await post(app, '/api/scores', { player: 'alice', score: 100 });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 100 });
+    const res = await post(app, '/api/scores', { score: 100 });
     expect(res.body.updated).toBe(false);
   });
 
-  test('lowercases and trims player name', async () => {
-    await post(app, '/api/scores', { player: '  BOB  ', score: 77 });
-    expect(store.scores.has('bob')).toBe(true);
-  });
-
-  test('returns 400 when player is missing', async () => {
-    const res = await post(app, '/api/scores', { score: 100 });
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBeTruthy();
-  });
-
-  test('returns 400 when player is an empty string', async () => {
-    const res = await post(app, '/api/scores', { player: '', score: 100 });
-    expect(res.status).toBe(400);
-  });
-
   test('returns 400 when score is missing', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice' });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', {});
     expect(res.status).toBe(400);
     expect(res.body.error).toBeTruthy();
   });
 
   test('returns 400 when score is a string', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: 'high' });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 'high' });
     expect(res.status).toBe(400);
   });
 
   test('returns 400 when score is negative', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: -1 });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: -1 });
     expect(res.status).toBe(400);
   });
 
   test('returns 400 when score is Infinity', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: Infinity });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: Infinity });
     expect(res.status).toBe(400);
   });
 
   test('accepts score of 0', async () => {
-    const res = await post(app, '/api/scores', { player: 'alice', score: 0 });
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 0 });
     expect(res.status).toBe(200);
     expect(res.body.entry.score).toBe(0);
   });
+
+  test('also records a GameHistory row, independent of the HighScore update', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 100, duration: 42 });
+    expect(prisma.__gameHistory).toHaveLength(1);
+    expect(prisma.__gameHistory[0]).toMatchObject({ userId: ALICE.id, score: 100, duration: 42 });
+  });
+
+  test('records a GameHistory row even when the score does not beat the high score', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 200 });
+    const res = await post(app, '/api/scores', { score: 50, duration: 10 });
+    expect(res.body.updated).toBe(false);
+    expect(prisma.__gameHistory).toHaveLength(2);
+    expect(prisma.__gameHistory[1]).toMatchObject({ userId: ALICE.id, score: 50, duration: 10 });
+  });
+
+  test('defaults duration to 0 when omitted', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10 });
+    expect(prisma.__gameHistory[0].duration).toBe(0);
+  });
+
+  test('returns 400 when duration is negative', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, duration: -5 });
+    expect(res.status).toBe(400);
+  });
+
+  test('stores longestRally alongside score on first submission', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: 7 });
+    expect(res.status).toBe(200);
+    expect(res.body.entry.longestRally).toBe(7);
+    expect(prisma.__highScores.get(ALICE.id).longestRally).toBe(7);
+  });
+
+  test('defaults longestRally to 0 when omitted', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10 });
+    expect(prisma.__highScores.get(ALICE.id).longestRally).toBe(0);
+  });
+
+  test('bumps longestRally even when the score does not beat the high score', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 200, longestRally: 3 });
+    const res = await post(app, '/api/scores', { score: 50, longestRally: 9 });
+    expect(res.body.updated).toBe(false);            // score did not improve
+    expect(res.body.entry.score).toBe(200);           // score untouched
+    expect(res.body.entry.longestRally).toBe(9);       // rally still bumped
+  });
+
+  test('does NOT lower longestRally when a later game has a shorter rally', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await post(app, '/api/scores', { score: 10, longestRally: 12 });
+    const res = await post(app, '/api/scores', { score: 20, longestRally: 4 });
+    expect(res.body.entry.longestRally).toBe(12);
+  });
+
+  test('returns 400 when longestRally is negative', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: -1 });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 when longestRally is not an integer', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await post(app, '/api/scores', { score: 10, longestRally: 1.5 });
+    expect(res.status).toBe(400);
+  });
 });
 
-// ── GET /api/scores/:player ────────────────────────────────────────────────
+// ── GET /api/scores/:userId ────────────────────────────────────────────────
 
-describe('GET /api/scores/:player', () => {
-  let app, store;
+describe('GET /api/scores/:userId', () => {
+  let app, prisma;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    prisma = createFakePrisma();
+    app    = createApp(prisma);
   });
 
-  test('returns the entry for a known player', async () => {
-    store.scores.set('alice', { player: 'alice', score: 300, updatedAt: Date.now() });
-    const res = await get(app, '/api/scores/alice');
+  test('returns the entry for a known user', async () => {
+    prisma.__users.set(ALICE.id, ALICE);
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 300, updatedAt: new Date() });
+
+    const res = await get(app, `/api/scores/${ALICE.id}`);
     expect(res.status).toBe(200);
-    expect(res.body.entry.player).toBe('alice');
+    expect(res.body.entry.userId).toBe(ALICE.id);
     expect(res.body.entry.score).toBe(300);
+    expect(res.body.entry.player).toBe('Alice');
   });
 
-  test('is case-insensitive (player name is lowercased)', async () => {
-    store.scores.set('alice', { player: 'alice', score: 300, updatedAt: Date.now() });
-    const res = await get(app, '/api/scores/ALICE');
-    expect(res.status).toBe(200);
-    expect(res.body.entry.player).toBe('alice');
-  });
-
-  test('returns 404 for an unknown player', async () => {
+  test('returns 404 for an unknown user id', async () => {
     const res = await get(app, '/api/scores/nobody');
     expect(res.status).toBe(404);
     expect(res.body.error).toBeTruthy();
   });
 });
 
-// ── DELETE /api/scores/:player ─────────────────────────────────────────────
+// ── DELETE /api/scores/:userId ─────────────────────────────────────────────
 
-describe('DELETE /api/scores/:player', () => {
-  let app, store;
+describe('DELETE /api/scores/:userId', () => {
+  let app, prisma;
 
   beforeEach(() => {
-    store = createStore();
-    app   = createApp(store);
+    prisma = createFakePrisma();
+    app    = createApp(prisma);
   });
 
   test('deletes an existing entry and returns deleted:true', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
-    const res = await del(app, '/api/scores/alice');
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 100, updatedAt: new Date() });
+    const res = await del(app, `/api/scores/${ALICE.id}`);
     expect(res.status).toBe(200);
     expect(res.body.deleted).toBe(true);
-    expect(res.body.player).toBe('alice');
+    expect(res.body.userId).toBe(ALICE.id);
   });
 
-  test('removes the entry from the Map', async () => {
-    store.scores.set('alice', { player: 'alice', score: 100, updatedAt: Date.now() });
-    await del(app, '/api/scores/alice');
-    expect(store.scores.has('alice')).toBe(false);
+  test('removes the entry from the store', async () => {
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 100, updatedAt: new Date() });
+    await del(app, `/api/scores/${ALICE.id}`);
+    expect(prisma.__highScores.has(ALICE.id)).toBe(false);
   });
 
-  test('returns 404 when player does not exist', async () => {
+  test('returns 404 when the user has no high score', async () => {
     const res = await del(app, '/api/scores/nobody');
     expect(res.status).toBe(404);
-    expect(res.body.error).toBeTruthy();
+  });
+});
+
+// ── GET /api/preferences ────────────────────────────────────────────────────
+
+describe('GET /api/preferences', () => {
+  test('requires an authenticated session', async () => {
+    const app = createApp(createFakePrisma());
+    const res = await get(app, '/api/preferences');
+    expect(res.status).toBe(401);
   });
 
-  test('is case-insensitive', async () => {
-    store.scores.set('bob', { player: 'bob', score: 50, updatedAt: Date.now() });
-    const res = await del(app, '/api/scores/BOB');
+  test('returns schema defaults when nothing has been saved', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await get(app, '/api/preferences');
     expect(res.status).toBe(200);
-    expect(store.scores.has('bob')).toBe(false);
+    expect(res.body.preferences).toEqual({ theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' });
+  });
+
+  test('returns previously saved preferences', async () => {
+    const prisma = createFakePrisma();
+    prisma.__preferences.set(ALICE.id, {
+      id: 1, userId: ALICE.id, theme: 'light', soundEnabled: false, paddleColor: '#ff0000',
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await get(app, '/api/preferences');
+    expect(res.body.preferences.theme).toBe('light');
+    expect(res.body.preferences.soundEnabled).toBe(false);
   });
 });
 
-// ── createStore isolation ──────────────────────────────────────────────────
+// ── PUT /api/preferences ─────────────────────────────────────────────────────
 
-describe('createStore', () => {
-  test('creates independent store instances', () => {
-    const s1 = createStore();
-    const s2 = createStore();
-    s1.scores.set('alice', { player: 'alice', score: 1, updatedAt: 0 });
-    expect(s2.scores.has('alice')).toBe(false);
+describe('PUT /api/preferences', () => {
+  test('requires an authenticated session', async () => {
+    const app = createApp(createFakePrisma());
+    const res = await put(app, '/api/preferences', { theme: 'light' });
+    expect(res.status).toBe(401);
   });
 
-  test('store has sessions and scores Maps', () => {
-    const s = createStore();
-    expect(s.sessions).toBeInstanceOf(Map);
-    expect(s.scores).toBeInstanceOf(Map);
+  test('creates preferences for the logged-in user', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { theme: 'light', soundEnabled: false, paddleColor: '#00ff00' });
+    expect(res.status).toBe(200);
+    expect(res.body.preferences.theme).toBe('light');
+    expect(prisma.__preferences.get(ALICE.id).paddleColor).toBe('#00ff00');
   });
 
-  test('both Maps start empty', () => {
-    const s = createStore();
-    expect(s.sessions.size).toBe(0);
-    expect(s.scores.size).toBe(0);
+  test('partially updates existing preferences', async () => {
+    const prisma = createFakePrisma();
+    prisma.__preferences.set(ALICE.id, {
+      id: 1, userId: ALICE.id, theme: 'dark', soundEnabled: true, paddleColor: '#ffffff',
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { soundEnabled: false });
+    expect(res.status).toBe(200);
+    expect(res.body.preferences.soundEnabled).toBe(false);
+    expect(res.body.preferences.theme).toBe('dark');
+  });
+
+  test('returns 400 for an invalid theme', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { theme: '' });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 for a non-boolean soundEnabled', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { soundEnabled: 'yes' });
+    expect(res.status).toBe(400);
+  });
+
+  test('returns 400 for an invalid paddleColor', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { paddleColor: 42 });
+    expect(res.status).toBe(400);
   });
 });
 
-// ── POST /api/events ─────────────────────────────────────────────────────────
+// ── GET /api/game-history ───────────────────────────────────────────────────
 
-describe('POST /api/events', () => {
-  test('responds 204 for a recognised declared event type', async () => {
-    const app = createApp(createStore());
-    const res = await post(app, '/api/events', { type: 'play_again_click' });
+describe('GET /api/game-history', () => {
+  test('requires an authenticated session', async () => {
+    const app = createApp(createFakePrisma());
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(401);
+  });
+
+  test('returns an empty list when the player has no history', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(200);
+    expect(res.body.games).toEqual([]);
+  });
+
+  test('returns only the logged-in player\'s games, newest first', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    prisma.__gameHistory.push(
+      { id: 1, userId: ALICE.id, score: 5,  duration: 30, finishedAt: new Date(Date.now() - 3000) },
+      { id: 2, userId: BOB.id,   score: 9,  duration: 20, finishedAt: new Date(Date.now() - 2000) },
+      { id: 3, userId: ALICE.id, score: 7,  duration: 45, finishedAt: new Date(Date.now() - 1000) },
+    );
+
+    const res = await get(app, '/api/game-history');
+    expect(res.status).toBe(200);
+    expect(res.body.games).toHaveLength(2);
+    expect(res.body.games.map((g) => g.score)).toEqual([7, 5]);
+  });
+
+  test('caps results at 10 most recent games', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+
+    for (let i = 0; i < 15; i++) {
+      prisma.__gameHistory.push({
+        id: i, userId: ALICE.id, score: i, duration: i,
+        finishedAt: new Date(Date.now() - i * 1000),
+      });
+    }
+
+    const res = await get(app, '/api/game-history');
+    expect(res.body.games).toHaveLength(10);
+    // Newest first: i=0 was "just now", i=14 was 14s ago.
+    expect(res.body.games[0].score).toBe(0);
+  });
+});
+
+// ── POST /api/client-events ──────────────────────────────────────────────────
+
+describe('POST /api/client-events', () => {
+  test('responds 204 for a recognised client event', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma);
+    const res    = await post(app, '/api/client-events', { event: 'play_again_click' });
     expect(res.status).toBe(204);
   });
 
   test('responds 204 for the game_over_shown denominator event', async () => {
-    const app = createApp(createStore());
-    const res = await post(app, '/api/events', { type: 'game_over_shown' });
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma);
+    const res    = await post(app, '/api/client-events', { event: 'game_over_shown' });
     expect(res.status).toBe(204);
   });
 
-  test('responds 204 even for an unrecognised event type (never fails the request)', async () => {
-    const app = createApp(createStore());
-    const res = await post(app, '/api/events', { type: 'something_unrelated' });
+  test('responds 204 even for an unrecognised event name (never fails the request)', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma);
+    const res    = await post(app, '/api/client-events', { event: 'something_unrelated' });
     expect(res.status).toBe(204);
   });
 
   test('responds 204 when body is missing entirely', async () => {
-    const app = createApp(createStore());
-    const res = await post(app, '/api/events', {});
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma);
+    const res    = await post(app, '/api/client-events', {});
     expect(res.status).toBe(204);
   });
 });

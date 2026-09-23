@@ -278,6 +278,11 @@ describe('makeRally', () => {
     expect(r.rallyCount).toBe(0);
     expect(r.flashFrames).toBe(0);
   });
+
+  test('initialises with zero maxRally', () => {
+    const r = makeRally();
+    expect(r.maxRally).toBe(0);
+  });
 });
 
 // ── tickFlash ─────────────────────────────────────────────────────────────
@@ -593,6 +598,20 @@ describe('updateBall — player paddle collision', () => {
     expect(rally.rallyCount).toBe(0);
     updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(rally.rallyCount).toBe(1);
+  });
+
+  test('maxRally tracks the peak rallyCount and survives a scoring reset', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.maxRally).toBe(rally.rallyCount);
+    const peak = rally.maxRally;
+
+    // A point being scored resets rallyCount but must leave maxRally intact.
+    ball.x = CANVAS_W + 1;
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.rallyCount).toBe(0);
+    expect(rally.maxRally).toBe(peak);
   });
 
   test('deflection angle after player paddle hit is within [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE]', () => {
@@ -1125,8 +1144,7 @@ describe('index.html', () => {
   // ── live-traffic experiment instrumentation ──────────────────────────────
 
   test('reports game_over_shown when the overlay is displayed', () => {
-    expect(html).toMatch(/markGameOverShown/);
-    expect(html).toMatch(/game_over_shown/);
+    expect(html).toMatch(/sendMendelEvent\s*\(\s*['"]game_over_shown['"]/);
   });
 
   test('reports play_again_click from the restart flow', () => {
@@ -1138,8 +1156,8 @@ describe('index.html', () => {
     expect(html).toMatch(/page_reload/);
   });
 
-  test('reportEvent posts to /api/events and never throws', () => {
-    expect(html).toMatch(/function reportEvent/);
-    expect(html).toMatch(/\/api\/events/);
+  test('sendMendelEvent posts to /api/client-events and never throws', () => {
+    expect(html).toMatch(/function sendMendelEvent/);
+    expect(html).toMatch(/\/api\/client-events/);
   });
 });
