@@ -49,6 +49,16 @@ model User {
   // application code.
   nickname  String?  @map("mendel_exp_settings_modal_nickname")
 
+  // Timestamp of this user's most recently finished game — bumped
+  // unconditionally on every POST /api/scores call (see server.js),
+  // regardless of whether that game also set a new HighScore. NULL until
+  // the first game finishes after this column existed. The physical column
+  // is prefixed `mendel_exp_` (this table is shared by every
+  // concurrently-running variation of this hop, each applying its own
+  // migration against the same database) while the Prisma field name stays
+  // unprefixed for application code.
+  lastPlayedAt DateTime? @map("mendel_exp_last_played_at")
+
   preference   Preference?
   highScore    HighScore?
   gameHistory  GameHistory[]

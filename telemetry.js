@@ -189,6 +189,7 @@ function createTelemetry() {
       mendel_requests:      meter.createCounter('mendel_requests'),
       mendel_server_errors: meter.createCounter('mendel_server_errors'),
     };
+
     requestDuration = meter.createHistogram('mendel_request_duration');
   } catch (err) {
     // If OpenTelemetry isn't installed/usable, fall back to reporting

@@ -25,7 +25,9 @@
  *               gear-icon "Settings" modal via PATCH /api/user/nickname (see
  *               index.html), and shown ahead of the Google display name/email
  *               wherever a player is identified, falling back to "Player"
- *               when unset.
+ *               when unset. Also tracks lastPlayedAt (bumped on every POST
+ *               /api/scores call, regardless of whether that game also set a
+ *               new best).
  *   Preference  One row per user (FK → User.id): theme / sound / paddle
  *               color settings.
  *   HighScore   One row per user (FK → User.id): that user's personal best
@@ -80,6 +82,9 @@
  *                                 clicked, a page reload after game-over,
  *                                 a page visit, a new game starting),
  *                                 counted via telemetry.js. No other effect.
+ *                                 A successful Google sign-in (see
+ *                                 /auth/google/callback) is separately
+ *                                 counted server-side via telemetry.js.
  *
  * The module exports { createApp, defaultPrisma } — createApp accepts any
  * Prisma-Client-shaped object, so unit tests can inject a lightweight fake
@@ -533,6 +538,11 @@ function createApp(prisma = defaultPrisma, options = {}) {
       // score beats the existing HighScore row.
       await prisma.gameHistory.create({ data: { userId, score, duration } });
 
+      // User.lastPlayedAt is bumped unconditionally on every finished game,
+      // regardless of whether this game also set a new best — independent
+      // of the conditional HighScore upsert below.
+      await prisma.user.update({ where: { id: userId }, data: { lastPlayedAt: new Date() } });
+
       const existingLongestRally = existing ? (existing.longestRally || 0) : 0;
       const scoreImproved  = !existing || score > existing.score;
       const rallyImproved  = longestRally > existingLongestRally;
@@ -622,23 +632,30 @@ function createApp(prisma = defaultPrisma, options = {}) {
 
 /**
  * Shapes a HighScore row (optionally with an included/attached `user`) into
- * the { player, score, longestRally, updatedAt } entry the API returns —
- * `player` is the best available human-readable identity: the player's
- * saved nickname (see PATCH /api/user/nickname) takes priority when set,
- * then their Google display name, then their email, then the raw Google id
- * as a last resort. `longestRally` defaults to 0 for rows written before
- * that column existed.
+ * the { player, score, longestRally, updatedAt, lastPlayedAt } entry the API
+ * returns — `player` is the best available human-readable identity: the
+ * player's saved nickname (see PATCH /api/user/nickname) takes priority when
+ * set, then their Google display name, then their email, then the raw
+ * Google id as a last resort. `longestRally` defaults to 0 for rows written
+ * before that column existed. `lastPlayedAt` is the attached user's
+ * User.lastPlayedAt (see server.js's POST /api/scores) — null for users who
+ * haven't finished a game since that column existed, or when no `user` was
+ * included in the query.
  */
 function toScoreEntry(row) {
   const user   = row.user || {};
   const player = user.nickname || user.name || user.email || row.userId;
   const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
+  const lastPlayedAt = user.lastPlayedAt instanceof Date
+    ? user.lastPlayedAt.getTime()
+    : (user.lastPlayedAt || null);
   return {
     player,
     userId: row.userId,
     score: row.score,
     longestRally: row.longestRally || 0,
     updatedAt,
+    lastPlayedAt,
   };
 }
 

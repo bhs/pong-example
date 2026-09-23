@@ -309,6 +309,23 @@ describe('POST /api/scores', () => {
     const res = await post(app, '/api/scores', { score: 10, longestRally: 1.5 });
     expect(res.status).toBe(400);
   });
+
+  test('bumps User.lastPlayedAt on every call, even when the score does not improve', async () => {
+    app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    expect(prisma.__users.get(ALICE.id).lastPlayedAt).toBeUndefined();
+
+    await post(app, '/api/scores', { score: 200 });
+    const firstPlayedAt = prisma.__users.get(ALICE.id).lastPlayedAt;
+    expect(firstPlayedAt).toBeInstanceOf(Date);
+
+    // A later, lower-scoring game still bumps lastPlayedAt, independent of
+    // whether the HighScore row itself changes.
+    const res = await post(app, '/api/scores', { score: 50 });
+    expect(res.body.updated).toBe(false);
+    const secondPlayedAt = prisma.__users.get(ALICE.id).lastPlayedAt;
+    expect(secondPlayedAt).toBeInstanceOf(Date);
+    expect(secondPlayedAt.getTime()).toBeGreaterThanOrEqual(firstPlayedAt.getTime());
+  });
 });
 
 // ── GET /api/scores/:userId ────────────────────────────────────────────────
@@ -336,6 +353,24 @@ describe('GET /api/scores/:userId', () => {
     const res = await get(app, '/api/scores/nobody');
     expect(res.status).toBe(404);
     expect(res.body.error).toBeTruthy();
+  });
+
+  test('includes the attached user\'s lastPlayedAt', async () => {
+    const playedAt = new Date('2024-05-01T12:00:00.000Z');
+    prisma.__users.set(ALICE.id, { ...ALICE, lastPlayedAt: playedAt });
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 300, updatedAt: new Date() });
+
+    const res = await get(app, `/api/scores/${ALICE.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.entry.lastPlayedAt).toBe(playedAt.getTime());
+  });
+
+  test('lastPlayedAt is null when the user has never played', async () => {
+    prisma.__users.set(ALICE.id, ALICE);
+    prisma.__highScores.set(ALICE.id, { id: 1, userId: ALICE.id, score: 300, updatedAt: new Date() });
+
+    const res = await get(app, `/api/scores/${ALICE.id}`);
+    expect(res.body.entry.lastPlayedAt).toBeNull();
   });
 });
 
