@@ -2,17 +2,18 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# openssl is required by Prisma's migration engine binaries on Alpine.
-# (No C/C++ toolchain is needed here anymore — mysql2, the runtime MySQL
-# driver, is pure JS with no native addon to compile.)
+# Prisma's query engine binaries need OpenSSL at runtime on Alpine (musl).
 RUN apk add --no-cache openssl
 
 # Install dependencies (express, express-session, passport,
-# passport-google-oauth20, mysql2, prisma)
+# passport-google-oauth20, @prisma/client, prisma). The prisma schema must
+# be present before `npm install` runs so its "postinstall": "prisma
+# generate" script can find prisma/schema.prisma.
 COPY package.json ./
+COPY prisma ./prisma
 RUN npm install
 
-# Copy source files
+# Copy the rest of the source files
 COPY . .
 
 # The app reads PORT at runtime (defaulting to 3000 if unset) and binds 0.0.0.0.
@@ -23,10 +24,15 @@ EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=5 \
   CMD wget -q --spider "http://127.0.0.1:${PORT:-3000}/health" || exit 1
 
-# Start the Express server (serves static Pong game + REST API + Google OAuth).
-# scripts/migrate.js applies the Prisma migration for user_preferences
-# (prisma/migrations/) against DATABASE_URL (a MySQL 8.4 connection string)
-# before the server binds a port — see db.js / scripts/migrate.js. The
-# database itself is a separate service (see k8s/deployment.yaml or, for
-# local/CI use, docker-compose) — this image has no embedded database.
-CMD ["sh", "-c", "node scripts/migrate.js && node server.js"]
+# On startup: always apply exactly the migration(s) checked into
+# prisma/migrations/ against DATABASE_URL — `prisma migrate deploy` only
+# ever runs migrations that are already committed to this repo; it never
+# generates new ones and never falls back to `prisma db push`. A fresh
+# managed MySQL instance is schema-ready after this with zero manual steps.
+#
+# DATABASE_URL is a required secret (see .mendel/requirements.json) — there
+# is no skip-if-unset fallback. If it's missing, `prisma migrate deploy`
+# fails fast with a clear "Environment variable not found: DATABASE_URL"
+# error and the container stops instead of silently starting a server that
+# can't reach a database.
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node server.js"]

@@ -1,3 +1,4 @@
 version: 1
 service: app
 test_command: npm test
+startup_timeout: 120

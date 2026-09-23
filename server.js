@@ -1,58 +1,89 @@
 'use strict';
 
 /**
- * server.js — Express API with ephemeral in-process storage and Google OAuth.
+ * server.js — Express API backed by MySQL (via Prisma) and Google OAuth.
  *
- * Storage backend: plain JavaScript Map objects (no external services, no
- * database).  All data is lost when the process exits, which is intentional
- * for the ephemeral-local-storage variation this app builds on.
+ * Storage backend: MySQL, accessed exclusively through a shared Prisma
+ * Client instance (lib/prisma.js). Connection info comes solely from the
+ * DATABASE_URL environment variable — see prisma/schema.prisma. There is no
+ * in-memory or SQLite fallback: a fresh MySQL instance is made schema-ready
+ * by running `prisma migrate deploy` at container startup (see Dockerfile),
+ * which applies the single migration checked into prisma/migrations/.
  *
  * Authentication: Google OAuth 2.0 via passport + passport-google-oauth20.
- * A successful OAuth round-trip upserts a user record (keyed by Google's
- * stable `sub` id) in the ephemeral store and establishes an HttpOnly
- * session cookie (express-session, in-memory store) so the login survives
- * page reloads for the lifetime of the process / cookie.
+ * A successful OAuth round-trip upserts a User row (keyed by Google's
+ * stable `sub` id) and establishes an HttpOnly session cookie
+ * (express-session) so the login survives page reloads. Pong has no
+ * username/password login of its own — there is no password column on
+ * User and this app never touches bcrypt — Google Sign-In is the only way
+ * to establish an identity that high scores and preferences can hang off.
  *
- * Requires registering the app in Google Cloud Console and setting
- * GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (and optionally an explicit
- * GOOGLE_CALLBACK_URL) environment variables. When deploying behind a
- * TLS-terminating proxy (e.g. Fly.io), the app must trust that proxy's
- * X-Forwarded-Proto header — otherwise the callback URL passport builds for
- * the OAuth redirect is silently downgraded to "http://…", which no longer
- * matches the "https://…" URI registered in Google Cloud Console and Google
- * rejects the request with "Error 400: redirect_uri_mismatch".
+ * Data model (see prisma/schema.prisma)
+ * ──────────────────────────────────────
+ *   User        Google `sub` id (primary key), email, display name, avatar.
+ *   Preference  One row per user (FK → User.id): theme / sound settings
+ *               plus the style-preferences settings pane's paddle/ball/
+ *               background colors and one-click preset name.
+ *   HighScore   One row per user (FK → User.id): that user's personal best
+ *               score, plus `longestRally` — that same player's longest-ever
+ *               rally (consecutive paddle hits without a miss), an
+ *               independent running best bumped in the same write whenever
+ *               it's exceeded, regardless of whether `score` also improved.
+ *   GameHistory One row per finished game (FK → User.id): score, duration,
+ *               finishedAt. Independent of HighScore — written alongside it
+ *               on every game-completion, never read by it.
  *
  * Endpoints
  * ─────────
  *   GET  /auth/google           Redirect to the Google consent screen.
  *   GET  /auth/google/callback  OAuth callback — exchanges code for profile,
- *                                upserts the user, establishes the session.
+ *                                upserts the User row, establishes the
+ *                                session.
  *   GET  /auth/logout           Destroy the session (logout).
  *   GET  /me                    Returns the logged-in user (or { user: null }).
  *
- *   POST /api/login              Legacy stub login — accepts any username,
- *                                 returns a session token (kept for backward
- *                                 compatibility with earlier variations).
- *   GET  /api/scores             List all high scores (sorted desc by score).
- *   POST /api/scores             Create or update a high score entry. If the
- *                                 caller has an authenticated Google session
- *                                 and no `player` is supplied, the player is
- *                                 derived from the logged-in user's identity.
- *   GET  /api/scores/:player     Get the high score for a specific player.
- *   DELETE /api/scores/:player   Delete the high score for a specific player.
+ *   GET    /api/preferences      Returns the logged-in user's preferences —
+ *                                 theme / sound settings and the style pane's
+ *                                 paddle/ball/background colors + preset name
+ *                                 (defaults if none have been saved yet).
+ *                                 Reads pass through a small in-process LRU
+ *                                 cache (keyed by user id, short TTL) before
+ *                                 touching Prisma/MySQL.
+ *   PUT    /api/preferences      Create or update the logged-in user's
+ *                                 preferences. Every write goes straight
+ *                                 through Prisma to MySQL (write-through to
+ *                                 the same cache) — intended to be called by
+ *                                 a debounced client (~500ms after the last
+ *                                 color-picker drag) so rapid changes don't
+ *                                 hammer the database.
  *
- *   GET  /api/preferences        Fetch the signed-in user's style preferences
- *                                 (paddle/ball/background color, preset name),
- *                                 or built-in defaults if none saved yet.
- *   PUT  /api/preferences        Upsert the signed-in user's style preferences.
- *                                 Persisted to a dedicated MySQL table (see
- *                                 db.js / preferencesRepo.js), separate from
- *                                 the ephemeral users/scores store below.
+ *   GET    /api/scores           List high scores (sorted desc by score).
+ *   POST   /api/scores           Create or update the logged-in user's high
+ *                                 score. Requires an authenticated Google
+ *                                 session — every HighScore row is tied to a
+ *                                 User by foreign key, so there is no way to
+ *                                 record a score for an anonymous player.
+ *                                 Also records a GameHistory row for this
+ *                                 finished game (see below) — the two tables
+ *                                 are written independently of one another.
+ *   GET    /api/scores/:userId   Get the high score for a specific user id.
+ *   DELETE /api/scores/:userId   Delete the high score for a specific user id.
+ *
+ *   GET    /api/game-history      Returns the logged-in user's 10 most
+ *                                 recent finished games (newest first).
+ *                                 Requires an authenticated Google session.
  *
  *   GET  /health                 Basic health check (200 OK).
  *
- * The module exports { app, store } so unit tests can inject their own store
- * and inspect state without starting a real HTTP server.
+ *   POST /api/client-events      Fire-and-forget pings for browser-only
+ *                                 events (game-over shown, Play Again
+ *                                 clicked, a page reload after game-over,
+ *                                 a page visit, a new game starting),
+ *                                 counted via telemetry.js. No other effect.
+ *
+ * The module exports { createApp, defaultPrisma } — createApp accepts any
+ * Prisma-Client-shaped object, so unit tests can inject a lightweight fake
+ * instead of talking to a real MySQL instance.
  */
 
 const express        = require('express');
@@ -61,45 +92,32 @@ const crypto         = require('crypto');
 const session        = require('express-session');
 const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-
-const { createDb }              = require('./db');
-const { createPreferencesRepo, DEFAULT_PREFERENCES } = require('./preferencesRepo');
-
-// ── Ephemeral store ────────────────────────────────────────────────────────
-//
-// Maps kept in memory for the lifetime of the process:
-//   sessions  : token → { username, createdAt }             (legacy stub login)
-//   scores    : username (lowercase) → { player, score, updatedAt }
-//   users     : Google `sub` id → { id, email, name, avatar, createdAt, updatedAt }
-//
-// Factory function so tests can create isolated instances.
-
-function createStore() {
-  return {
-    sessions: new Map(),
-    scores:   new Map(),
-    users:    new Map(),
-  };
-}
-
-// Module-level default store (used by the real server).
-const defaultStore = createStore();
+const telemetry      = require('./telemetry');
+const defaultPrisma  = require('./lib/prisma');
+const { LruCache }   = require('./lruCache');
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
-// Accepting a store parameter makes every endpoint independently testable
-// without touching the shared module-level state. `deps.db` /
-// `deps.prefsRepo` work the same way for the MySQL-backed preferences
-// feature: tests get their own connection pool + LRU cache by default
-// (DATABASE_URL still points at one shared test database — see db.js's
-// resetForTests), while the real server (below) passes an explicit
-// long-lived one.
+// Accepting a `prisma` parameter makes every endpoint independently
+// testable against a lightweight fake instead of a real MySQL instance.
+//
+// `options.testAuth`, if provided, is a middleware inserted right after
+// passport's session middleware that can set `req.user` directly — a
+// testing seam only, so unit tests can exercise the login-gated routes
+// (POST /api/scores, /api/preferences) without a real Google OAuth
+// round-trip or hand-signing session cookies. Production startup (below)
+// never passes it.
+//
+// `options.preferencesCache`, if provided, overrides the small in-process
+// LRU cache (keyed by user id, short TTL) that sits in front of
+// GET /api/preferences' Prisma read — tests can inject their own instance
+// to assert on cache behaviour directly; production startup (below) never
+// passes it either, so each process gets its own long-lived cache.
 
-function createApp(store = defaultStore, deps = {}) {
+function createApp(prisma = defaultPrisma, options = {}) {
   const app = express();
 
-  const db        = deps.db        || createDb();
-  const prefsRepo  = deps.prefsRepo || createPreferencesRepo(db);
+  const preferencesCache = options.preferencesCache || new LruCache({ ttlMs: 30000, maxSize: 500 });
 
   // Trust the first proxy hop (Fly.io's edge, or any other TLS-terminating
   // reverse proxy in front of this process). Without this, Express derives
@@ -117,9 +135,11 @@ function createApp(store = defaultStore, deps = {}) {
 
   // ── Session middleware (HttpOnly cookie, in-memory store) ────────────────
   //
-  // SESSION_SECRET should be set in production. If it isn't, a random secret
-  // is generated per-process — sessions simply won't survive a restart,
-  // which matches the ephemeral-storage philosophy of the rest of this app.
+  // Sessions themselves stay in-process (express-session's default
+  // MemoryStore) — only durable data (users, preferences, high scores) lives
+  // in MySQL. SESSION_SECRET should be set in production; if it isn't, a
+  // random secret is generated per-process, so sessions simply won't survive
+  // a restart.
 
   const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 
@@ -140,37 +160,65 @@ function createApp(store = defaultStore, deps = {}) {
   app.use(passport.initialize());
   app.use(passport.session());
 
+  if (typeof options.testAuth === 'function') {
+    app.use(options.testAuth);
+  }
+
+  // ── Experiment telemetry (isolated OpenTelemetry metrics) ────────────────
+  //
+  // Counts requests / participants / declared events for the live
+  // control-vs-variation comparison. Entirely inert when the MENDEL_METRICS_*
+  // / MENDEL_EXPERIMENT_ID environment variables aren't configured.
+  app.use(telemetry.middleware);
+
   // ── Google OAuth (passport) ──────────────────────────────────────────────
 
   /**
-   * Upsert a user record keyed by Google's stable `sub` id (mapped to
-   * `profile.id` by passport-google-oauth20).
+   * Upsert a User row keyed by Google's stable `sub` id (mapped to
+   * `profile.id` by passport-google-oauth20). Fields Google didn't return
+   * this time (e.g. avatar on a re-login where the scope changed) fall back
+   * to whatever is already stored rather than being blanked out.
    */
-  function upsertGoogleUser(profile) {
+  async function upsertGoogleUser(profile) {
     const id     = profile.id;
     const email  = (profile.emails && profile.emails[0] && profile.emails[0].value) || null;
     const name   = profile.displayName || null;
     const avatar = (profile.photos && profile.photos[0] && profile.photos[0].value) || null;
 
-    const existing = store.users.get(id);
-    const user = {
-      id,
-      email:     email  || (existing && existing.email)  || null,
-      name:      name   || (existing && existing.name)   || null,
-      avatar:    avatar || (existing && existing.avatar) || null,
-      createdAt: (existing && existing.createdAt) || Date.now(),
-      updatedAt: Date.now(),
-    };
+    const updateData = {};
+    if (email)  updateData.email  = email;
+    if (name)   updateData.name   = name;
+    if (avatar) updateData.avatar = avatar;
 
-    store.users.set(id, user);
-    return user;
+    return prisma.user.upsert({
+      where:  { id },
+      update: updateData,
+      create: { id, email, name, avatar },
+    });
   }
 
   passport.serializeUser((user, done) => done(null, user.id));
 
+  // ── Best-rally display bucketing ─────────────────────────────────────────
+  //
+  // The "Best rally" readout under the canvas (see index.html) is only shown
+  // to a deterministic 50% of signed-in players — a lightweight built-in
+  // feature gate, unrelated to the separate live-traffic experiment
+  // telemetry in telemetry.js. Hashing the player's stable Google `sub` id
+  // (rather than flipping a coin per request) means the same player always
+  // lands in the same bucket, on every device and every session, with no
+  // extra column or cookie required.
+
+  function isBestRallyBucketed(userId) {
+    if (!userId) return false;
+    const digest = crypto.createHash('sha256').update(String(userId)).digest();
+    return digest[0] % 2 === 0; // ~50/50 split, stable per user id
+  }
+
   passport.deserializeUser((id, done) => {
-    const user = store.users.get(id);
-    done(null, user || false);
+    prisma.user.findUnique({ where: { id } })
+      .then((user) => done(null, user || false))
+      .catch((err) => done(err));
   });
 
   // GOOGLE_CALLBACK_URL may be:
@@ -197,12 +245,9 @@ function createApp(store = defaultStore, deps = {}) {
         callbackURL:  GOOGLE_CALLBACK_URL,
       },
       (accessToken, refreshToken, profile, done) => {
-        try {
-          const user = upsertGoogleUser(profile);
-          done(null, user);
-        } catch (err) {
-          done(err);
-        }
+        upsertGoogleUser(profile)
+          .then((user) => done(null, user))
+          .catch((err) => done(err));
       },
     ));
   }
@@ -214,6 +259,20 @@ function createApp(store = defaultStore, deps = {}) {
 
   app.get('/health', (req, res) => {
     return res.status(200).json({ status: 'ok' });
+  });
+
+  // ── POST /api/client-events ───────────────────────────────────────────────
+  //
+  // Fire-and-forget pings from the client for the handful of events that can
+  // only be observed in the browser (the game-over screen being shown,
+  // 'Play Again' being triggered, a full page reload while it was showing).
+  // Only known event names are counted (via the experiment telemetry); the
+  // endpoint has no other side effect and always responds 204.
+
+  app.post('/api/client-events', (req, res) => {
+    const eventName = req.body && req.body.event;
+    telemetry.recordClientEvent(eventName, req);
+    return res.status(204).end();
   });
 
   // ── GET /auth/google ──────────────────────────────────────────────────────
@@ -229,7 +288,7 @@ function createApp(store = defaultStore, deps = {}) {
 
   // ── GET /auth/google/callback ─────────────────────────────────────────────
   //
-  // Exchanges the authorization code for a profile, upserts the user record,
+  // Exchanges the authorization code for a profile, upserts the User row,
   // and establishes the session before redirecting back to the app.
 
   app.get('/auth/google/callback', (req, res, next) => {
@@ -258,200 +317,329 @@ function createApp(store = defaultStore, deps = {}) {
   // ── GET /me ────────────────────────────────────────────────────────────────
   //
   // Returns the logged-in user (id / email / name / avatar) or { user: null }.
+  // Also returns `bestRallyBucket` — whether this signed-in player is in the
+  // ~50% shown the "Best rally" readout after game-over (see
+  // isBestRallyBucketed above); always false when signed out.
 
   app.get('/me', (req, res) => {
     if (req.isAuthenticated && req.isAuthenticated() && req.user) {
       const { id, email, name, avatar } = req.user;
-      return res.status(200).json({ user: { id, email, name, avatar } });
+      return res.status(200).json({
+        user: { id, email, name, avatar },
+        bestRallyBucket: isBestRallyBucketed(id),
+      });
     }
-    return res.status(200).json({ user: null });
+    return res.status(200).json({ user: null, bestRallyBucket: false });
   });
 
-  // ── Style preferences (dedicated MySQL table + LRU cache) ──────────────
-  //
-  // Resolves the stable identity used as the preferences table's user_id:
-  //   - a Google OAuth session (req.user.id), same identity used elsewhere; or
-  //   - the legacy stub login's Bearer token (POST /api/login), so the
-  //     feature — and its tests — don't hard-depend on a real Google
-  //     OAuth round-trip to exercise an authenticated request.
-  // Returns null when neither is present (caller responds 401).
+  // ── Auth guard helper ────────────────────────────────────────────────────
 
-  function resolveUserId(req) {
+  function requireLogin(req, res) {
     if (req.isAuthenticated && req.isAuthenticated() && req.user) {
-      return req.user.id;
+      return true;
     }
-
-    const authHeader = req.headers['authorization'] || '';
-    const match = authHeader.match(/^Bearer\s+(.+)$/i);
-    if (match) {
-      const legacySession = store.sessions.get(match[1]);
-      if (legacySession) return legacySession.username;
-    }
-
-    return null;
+    res.status(401).json({ error: 'login required' });
+    return false;
   }
 
-  // ── GET /api/preferences ──────────────────────────────────────────────────
+  // Hex colors are always exactly 7 chars ("#rrggbb") — the only shape the
+  // settings pane's <input type="color"> pickers ever produce (see
+  // index.html), so paddleColor/ballColor/bgColor are all validated against
+  // it rather than just "any non-empty string".
+  const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+  // ── GET /api/preferences ─────────────────────────────────────────────────
   //
-  // Returns the signed-in user's saved style preferences, or built-in
-  // defaults (isDefault: true) if they've never saved any yet. Reads pass
-  // through the LRU cache in preferencesRepo before touching MySQL.
+  // Returns the logged-in user's saved preferences, or the schema defaults
+  // if none have been saved yet. Reads are served from a small in-process
+  // LRU cache (keyed by user id, short TTL) when possible, falling through
+  // to Prisma/MySQL on a miss — repeat fetches of the same user's row within
+  // a session (page loads, re-logins) don't have to hit the database every
+  // time. A cache miss's result (including "no row yet") is stored so a
+  // user who has never saved anything doesn't cause a DB hit on every load
+  // either.
 
   app.get('/api/preferences', async (req, res, next) => {
-    const userId = resolveUserId(req);
-    if (!userId) {
-      return res.status(401).json({ error: 'authentication required' });
-    }
+    if (!requireLogin(req, res)) return;
+
+    const userId = req.user.id;
 
     try {
-      const existing = await prefsRepo.getPreferences(userId);
-      if (!existing) {
-        return res.status(200).json({
-          preferences: { ...DEFAULT_PREFERENCES, userId },
-          isDefault: true,
-        });
+      let pref = preferencesCache.get(userId);
+      if (pref === undefined) {
+        pref = await prisma.preference.findUnique({ where: { userId } });
+        preferencesCache.set(userId, pref);
       }
 
-      return res.status(200).json({ preferences: existing, isDefault: false });
+      return res.status(200).json({
+        preferences: pref || {
+          theme:        'dark',
+          soundEnabled: true,
+          paddleColor:  '#ffffff',
+          ballColor:    '#ffffff',
+          bgColor:      '#000000',
+          presetName:   null,
+        },
+      });
     } catch (err) {
       return next(err);
     }
   });
 
-  // ── PUT /api/preferences ──────────────────────────────────────────────────
+  // ── PUT /api/preferences ─────────────────────────────────────────────────
   //
-  // Upserts the signed-in user's style preferences. Intended to be called by
-  // a debounced client (~500ms after the last color-picker drag event) so
-  // rapid input changes don't hammer MySQL — the in-memory render variables
-  // update instantly on the client regardless of when this call lands.
-  // Body: { paddleColor?, ballColor?, bgColor?, presetName? } — all optional,
-  // omitted fields keep their previously-saved (or default) value.
+  // Create or update the logged-in user's preferences. Intended to be
+  // called by a debounced client (~500ms after the last color-picker drag
+  // event — see index.html) so rapid input changes don't hammer MySQL; the
+  // in-memory render variables on the client update instantly regardless of
+  // when this call lands. Every write goes straight through Prisma to
+  // MySQL (never just the cache) — restarts and multi-device logins always
+  // see the latest saved values — and the cache is updated in the same call
+  // (write-through) so a subsequent GET is immediately consistent.
+  //
+  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: string,
+  //          ballColor?: string, bgColor?: string, presetName?: ?string }
 
-  app.put('/api/preferences', async (req, res) => {
-    const userId = resolveUserId(req);
-    if (!userId) {
-      return res.status(401).json({ error: 'authentication required' });
+  app.put('/api/preferences', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    const body = req.body || {};
+    const data = {};
+
+    if (body.theme !== undefined) {
+      if (typeof body.theme !== 'string' || body.theme.trim() === '') {
+        return res.status(400).json({ error: 'theme must be a non-empty string' });
+      }
+      data.theme = body.theme.trim();
     }
 
-    const { paddleColor, ballColor, bgColor, presetName } = req.body || {};
+    if (body.soundEnabled !== undefined) {
+      if (typeof body.soundEnabled !== 'boolean') {
+        return res.status(400).json({ error: 'soundEnabled must be a boolean' });
+      }
+      data.soundEnabled = body.soundEnabled;
+    }
+
+    for (const field of ['paddleColor', 'ballColor', 'bgColor']) {
+      const value = body[field];
+      if (value !== undefined) {
+        if (typeof value !== 'string' || !HEX_COLOR_RE.test(value)) {
+          return res.status(400).json({ error: `${field} must be a hex color like #rrggbb` });
+        }
+        data[field] = value;
+      }
+    }
+
+    if (body.presetName !== undefined) {
+      if (body.presetName !== null && typeof body.presetName !== 'string') {
+        return res.status(400).json({ error: 'presetName must be a string or null' });
+      }
+      data.presetName = body.presetName;
+    }
 
     try {
-      const saved = await prefsRepo.upsertPreferences(userId, { paddleColor, ballColor, bgColor, presetName });
-      return res.status(200).json({ preferences: saved });
+      const pref = await prisma.preference.upsert({
+        where:  { userId: req.user.id },
+        update: data,
+        create: { userId: req.user.id, ...data },
+      });
+      preferencesCache.set(req.user.id, pref);
+      return res.status(200).json({ preferences: pref });
     } catch (err) {
-      return res.status(400).json({ error: err.message });
+      return next(err);
     }
-  });
-
-  // ── POST /api/login ──────────────────────────────────────────────────────
-  //
-  // Legacy stub authentication (kept for backward compatibility): any
-  // non-empty username is accepted and returns a random session token.
-
-  app.post('/api/login', (req, res) => {
-    const { username } = req.body || {};
-
-    if (!username || typeof username !== 'string' || username.trim() === '') {
-      return res.status(400).json({ error: 'username is required' });
-    }
-
-    const player = username.trim().toLowerCase();
-    const token  = crypto.randomBytes(16).toString('hex');
-    store.sessions.set(token, { username: player, createdAt: Date.now() });
-
-    return res.status(200).json({ token, username: player });
   });
 
   // ── GET /api/scores ───────────────────────────────────────────────────────
   //
-  // Returns all stored high scores sorted by score descending.
+  // Returns high scores sorted by score descending.
   // Optional query param: ?limit=N  (max 100)
 
-  app.get('/api/scores', (req, res) => {
+  app.get('/api/scores', async (req, res, next) => {
     const limit = Math.min(parseInt(req.query.limit, 10) || 100, 100);
 
-    const entries = Array.from(store.scores.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
+    try {
+      const rows = await prisma.highScore.findMany({
+        orderBy: { score: 'desc' },
+        take:    limit,
+        include: { user: true },
+      });
 
-    return res.status(200).json({ scores: entries });
+      const scores = rows.map(toScoreEntry);
+      return res.status(200).json({ scores });
+    } catch (err) {
+      return next(err);
+    }
   });
 
   // ── POST /api/scores ──────────────────────────────────────────────────────
   //
-  // Create or update (upsert) a high score for the given player.
-  // Only updates if the new score is strictly higher than the stored one.
-  // Body: { player?: string, score: number }
+  // Create or update (upsert) the logged-in user's high score. Only updates
+  // `score` if the new score is strictly higher than the stored one, and
+  // only updates `longestRally` if the new value is strictly higher than the
+  // stored one — the two are independent running bests, both written by a
+  // single upsert call whenever either improves. Requires an authenticated
+  // Google session — HighScore.userId is a foreign key to User.id, so there
+  // is no such thing as an anonymous high score.
   //
-  // If `player` is omitted and the request carries an authenticated Google
-  // OAuth session (see /auth/google), the player identity is derived from
-  // the logged-in user (email, then name, then Google id) — this is what
-  // the 'Save Score' button in the UI relies on.
+  // Every call also inserts a GameHistory row for this finished game,
+  // regardless of whether it beat the high score — HighScore and GameHistory
+  // are independent tables; this endpoint is simply the one place a finished
+  // game is reported, so both writes happen here, side by side.
+  //
+  // Body: { score: number, duration?: number, longestRally?: number }
+  //   duration     - game length in seconds (non-negative integer); defaults
+  //                  to 0 when omitted so older clients keep working.
+  //   longestRally - longest rally (consecutive paddle hits) reached during
+  //                  this game (non-negative integer); defaults to 0 when
+  //                  omitted so older clients keep working.
 
-  app.post('/api/scores', (req, res) => {
-    const body  = req.body || {};
-    const score = body.score;
-    let player  = body.player;
+  app.post('/api/scores', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
 
-    const hasExplicitPlayer = typeof player === 'string' && player.trim() !== '';
-
-    if (!hasExplicitPlayer && req.isAuthenticated && req.isAuthenticated() && req.user) {
-      player = req.user.email || req.user.name || req.user.id;
-    }
-
-    if (!player || typeof player !== 'string' || player.trim() === '') {
-      return res.status(400).json({ error: 'player is required' });
-    }
+    const score = req.body && req.body.score;
 
     if (typeof score !== 'number' || !Number.isFinite(score) || score < 0) {
       return res.status(400).json({ error: 'score must be a non-negative finite number' });
     }
 
-    const key      = player.trim().toLowerCase();
-    const existing = store.scores.get(key);
+    let duration = req.body && req.body.duration;
+    if (duration === undefined || duration === null) {
+      duration = 0;
+    } else if (typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0) {
+      return res.status(400).json({ error: 'duration must be a non-negative finite number' });
+    }
+    duration = Math.round(duration);
 
-    // Only store if it's a new personal best (or first entry)
-    if (!existing || score > existing.score) {
-      const entry = { player: key, score, updatedAt: Date.now() };
-      store.scores.set(key, entry);
-      return res.status(200).json({ updated: true, entry });
+    let longestRally = req.body && req.body.longestRally;
+    if (longestRally === undefined || longestRally === null) {
+      longestRally = 0;
+    } else if (typeof longestRally !== 'number' || !Number.isInteger(longestRally) || longestRally < 0) {
+      return res.status(400).json({ error: 'longestRally must be a non-negative integer' });
     }
 
-    return res.status(200).json({ updated: false, entry: existing });
+    try {
+      const userId  = req.user.id;
+      const existing = await prisma.highScore.findUnique({ where: { userId } });
+
+      // GameHistory is written unconditionally — independent of whether this
+      // score beats the existing HighScore row.
+      await prisma.gameHistory.create({ data: { userId, score, duration } });
+
+      const existingLongestRally = existing ? (existing.longestRally || 0) : 0;
+      const scoreImproved  = !existing || score > existing.score;
+      const rallyImproved  = longestRally > existingLongestRally;
+
+      if (!scoreImproved && !rallyImproved) {
+        return res.status(200).json({ updated: false, entry: toScoreEntry({ ...existing, user: req.user }) });
+      }
+
+      const row = await prisma.highScore.upsert({
+        where:  { userId },
+        update: {
+          score:        scoreImproved ? score : existing.score,
+          longestRally: rallyImproved ? longestRally : existingLongestRally,
+        },
+        create: { userId, score, longestRally },
+      });
+
+      return res.status(200).json({ updated: scoreImproved, entry: toScoreEntry({ ...row, user: req.user }) });
+    } catch (err) {
+      return next(err);
+    }
   });
 
-  // ── GET /api/scores/:player ───────────────────────────────────────────────
+  // ── GET /api/scores/:userId ───────────────────────────────────────────────
   //
-  // Retrieve the high score for a specific player.
+  // Retrieve the high score for a specific user id (Google `sub`).
 
-  app.get('/api/scores/:player', (req, res) => {
-    const key   = req.params.player.trim().toLowerCase();
-    const entry = store.scores.get(key);
+  app.get('/api/scores/:userId', async (req, res, next) => {
+    try {
+      const row = await prisma.highScore.findUnique({
+        where:   { userId: req.params.userId },
+        include: { user: true },
+      });
 
-    if (!entry) {
-      return res.status(404).json({ error: 'player not found' });
+      if (!row) {
+        return res.status(404).json({ error: 'player not found' });
+      }
+
+      return res.status(200).json({ entry: toScoreEntry(row) });
+    } catch (err) {
+      return next(err);
     }
-
-    return res.status(200).json({ entry });
   });
 
-  // ── DELETE /api/scores/:player ────────────────────────────────────────────
+  // ── DELETE /api/scores/:userId ────────────────────────────────────────────
   //
-  // Remove the high score entry for the given player.
+  // Remove the high score entry for the given user id.
 
-  app.delete('/api/scores/:player', (req, res) => {
-    const key     = req.params.player.trim().toLowerCase();
-    const existed = store.scores.has(key);
-
-    if (!existed) {
-      return res.status(404).json({ error: 'player not found' });
+  app.delete('/api/scores/:userId', async (req, res, next) => {
+    try {
+      await prisma.highScore.delete({ where: { userId: req.params.userId } });
+      return res.status(200).json({ deleted: true, userId: req.params.userId });
+    } catch (err) {
+      // Prisma throws P2025 ("Record to delete does not exist") on a miss.
+      if (err && err.code === 'P2025') {
+        return res.status(404).json({ error: 'player not found' });
+      }
+      return next(err);
     }
+  });
 
-    store.scores.delete(key);
-    return res.status(200).json({ deleted: true, player: key });
+  // ── GET /api/game-history ─────────────────────────────────────────────────
+  //
+  // Returns the logged-in user's 10 most recently finished games, newest
+  // first. Requires an authenticated Google session — GameHistory has no
+  // notion of an anonymous player.
+
+  app.get('/api/game-history', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    try {
+      const rows = await prisma.gameHistory.findMany({
+        where:   { userId: req.user.id },
+        orderBy: { finishedAt: 'desc' },
+        take:    10,
+      });
+
+      const games = rows.map(toGameHistoryEntry);
+      return res.status(200).json({ games });
+    } catch (err) {
+      return next(err);
+    }
   });
 
   return app;
+}
+
+/**
+ * Shapes a HighScore row (optionally with an included/attached `user`) into
+ * the { player, score, longestRally, updatedAt } entry the API returns —
+ * `player` is the best available human-readable identity (name, then email,
+ * then the raw Google id). `longestRally` defaults to 0 for rows written
+ * before that column existed.
+ */
+function toScoreEntry(row) {
+  const user   = row.user || {};
+  const player = user.name || user.email || row.userId;
+  const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
+  return {
+    player,
+    userId: row.userId,
+    score: row.score,
+    longestRally: row.longestRally || 0,
+    updatedAt,
+  };
+}
+
+/**
+ * Shapes a GameHistory row into the { score, duration, finishedAt } entry
+ * returned by GET /api/game-history.
+ */
+function toGameHistoryEntry(row) {
+  const finishedAt = row.finishedAt instanceof Date ? row.finishedAt.getTime() : row.finishedAt;
+  return { id: row.id, score: row.score, duration: row.duration, finishedAt };
 }
 
 // ── Start server (when run directly) ──────────────────────────────────────
@@ -459,18 +647,12 @@ function createApp(store = defaultStore, deps = {}) {
 if (require.main === module) {
   const PORT = parseInt(process.env.PORT, 10) || 3000;
   const HOST = '0.0.0.0';
-
-  // Real runs get a persistent MySQL-backed store for preferences (connects
-  // via DATABASE_URL, e.g. mysql://user:password@host:3306/dbname) — unlike
-  // the ephemeral users/scores Maps, this survives process restarts.
-  const db        = createDb();
-  const prefsRepo = createPreferencesRepo(db);
-  const app       = createApp(defaultStore, { db, prefsRepo });
+  const app  = createApp(defaultPrisma);
 
   app.listen(PORT, HOST, () => {
     console.log(`Pong server listening on ${HOST}:${PORT}`);
-    console.log('Storage: ephemeral in-process Map for users/scores (data lost on restart)');
-    console.log('Storage: persistent MySQL for style preferences (see DATABASE_URL)');
+    console.log('Storage: MySQL via Prisma (DATABASE_URL)');
+
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
       console.log('Google OAuth: NOT configured (set GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET to enable)');
     } else {
@@ -479,4 +661,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { createApp, createStore };
+module.exports = { createApp, defaultPrisma };

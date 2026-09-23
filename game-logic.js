@@ -111,12 +111,18 @@ function makeGame() {
  * rallyCount is incremented on each paddle hit and reset each time a point is
  * scored.  It drives the AI difficulty escalation and the ball speed curve.
  *
+ * maxRally tracks the highest rallyCount reached at any point during the
+ * current game — unlike rallyCount it is never reset by a miss, only by
+ * starting a brand-new game (makeRally()). This is the "longest rally"
+ * value reported to the high-score endpoint at game-over.
+ *
  * flashFrames counts down from FLASH_FRAMES to 0 after a point is scored,
  * providing a brief tinted-screen flash to give visual feedback.
  */
 function makeRally() {
   return {
     rallyCount:  0,
+    maxRally:    0,
     flashFrames: 0,
   };
 }
@@ -254,6 +260,9 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     ball.speed    = incrementSpeed(ball.speed);
     syncBallVelocity(ball);
     rally.rallyCount += 1;
+    if (rally.maxRally === undefined || rally.rallyCount > rally.maxRally) {
+      rally.maxRally = rally.rallyCount;
+    }
   }
 
   // ── Ball vs AI paddle ─────────────────────────────────────────────────────
@@ -269,6 +278,9 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     ball.speed    = incrementSpeed(ball.speed);
     syncBallVelocity(ball);
     rally.rallyCount += 1;
+    if (rally.maxRally === undefined || rally.rallyCount > rally.maxRally) {
+      rally.maxRally = rally.rallyCount;
+    }
   }
 
   // ── Ball exits left → AI scores ───────────────────────────────────────────

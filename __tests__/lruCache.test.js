@@ -3,8 +3,8 @@
 /**
  * __tests__/lruCache.test.js
  *
- * Unit tests for the tiny dependency-free LRU cache used to front SQLite
- * reads in preferencesRepo.js.
+ * Unit tests for the tiny dependency-free LRU cache used to front Prisma
+ * reads for GET /api/preferences (see server.js).
  */
 
 const { LruCache } = require('../lruCache');

@@ -3,10 +3,14 @@
 /**
  * lruCache.js — tiny in-process LRU cache with a per-entry TTL.
  *
- * Used to sit in front of the SQLite reads in preferencesRepo.js so repeat
- * fetches of the same user's preferences within a session don't have to hit
- * disk every time. Deliberately dependency-free (no npm package) since the
- * requirements are small: bounded size, expiry, and O(1) get/set.
+ * Sits in front of GET /api/preferences' Prisma read (see server.js) so
+ * repeat fetches of the same signed-in user's style preferences within a
+ * session (e.g. every page load) don't have to hit MySQL every time. Every
+ * write (PUT /api/preferences) still goes straight through Prisma to MySQL
+ * first and only then updates this cache (write-through), so restarts and
+ * multi-device logins always see the latest saved values. Deliberately
+ * dependency-free (no npm package) since the requirements are small:
+ * bounded size, expiry, and O(1) get/set.
  *
  * Eviction policy: least-recently-used, implemented via Map's insertion-order
  * iteration — re-inserting a key on access moves it to the "most recently
