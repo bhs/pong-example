@@ -47,6 +47,14 @@
       margin-top: 8px;
       font-family: monospace;
     }
+    /*
+     * Copy audit (text-accuracy-audit): checked against the actual bindings —
+     * keydown/keyup handlers key off e.code 'KeyW'/'KeyS' and
+     * 'ArrowUp'/'ArrowDown' for paddle movement, and 'Space' triggers
+     * startNewGame() while game.phase === 'gameover'. "W/S or ↑/↓" and
+     * "Space to play again" match those exactly — no drift found, no text
+     * changed.
+     */
 
     /* ── Best-rally readout ──────────────────────────────────────────────── */
     /*
