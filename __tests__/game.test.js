@@ -305,6 +305,11 @@ describe('makeRally', () => {
     expect(r.rallyCount).toBe(0);
     expect(r.flashFrames).toBe(0);
   });
+
+  test('initialises with zero maxRally', () => {
+    const r = makeRally();
+    expect(r.maxRally).toBe(0);
+  });
 });
 
 // ── tickFlash ─────────────────────────────────────────────────────────────
@@ -645,6 +650,20 @@ describe('updateBall — player paddle collision', () => {
     expect(rally.rallyCount).toBe(0);
     updateBall(ball, player, ai, game, 1 / 60, rally);
     expect(rally.rallyCount).toBe(1);
+  });
+
+  test('maxRally tracks the peak rallyCount and survives a scoring reset', () => {
+    const { ball, player, ai, game, rally } = makeCollisionSetup();
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.maxRally).toBe(rally.rallyCount);
+    const peak = rally.maxRally;
+
+    // A point being scored resets rallyCount but must leave maxRally intact.
+    ball.x = CANVAS_W + 1;
+    updateBall(ball, player, ai, game, 1 / 60, rally);
+    expect(rally.rallyCount).toBe(0);
+    expect(rally.maxRally).toBe(peak);
   });
 
   test('deflection angle after player paddle hit is within [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE]', () => {

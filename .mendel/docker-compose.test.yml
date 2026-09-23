@@ -1,4 +1,22 @@
 services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_DATABASE: pong_test
+      MYSQL_USER: pong_test
+      MYSQL_PASSWORD: pong_test_password
+      MYSQL_ROOT_PASSWORD: pong_test_root_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   app:
     build:
       context: ..
+    environment:
+      DATABASE_URL: mysql://pong_test:pong_test_password@mysql:3306/pong_test
+    depends_on:
+      mysql:
+        condition: service_healthy
