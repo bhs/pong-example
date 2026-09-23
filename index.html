@@ -161,6 +161,12 @@
           letter-spacing: 0.06em;
           margin-top: -6px;
         }
+        #pong-overlay .last-played {
+          font-size: 0.85rem;
+          color: rgba(255,255,255,0.5);
+          letter-spacing: 0.05em;
+          margin-top: -6px;
+        }
         #pong-overlay .signin-link {
           font-size: 0.85rem;
           color: #ffe066;
@@ -693,14 +699,18 @@
     // the 'Save Score' button uses, keyed by the signed-in user's session,
     // and it only overwrites the stored HighScore when the new score beats
     // it (see server.js). It also always records a GameHistory row for this
-    // finished game. Once that resolves, GET /api/scores/:userId reads back
-    // the (possibly just-updated) personal best and appends a small
-    // 'Personal Best: N' line to the game-over overlay. Both requests carry
-    // the HttpOnly session cookie (credentials: 'include'), so identity is
-    // resolved server-side — no player name is ever sent. If there is no
-    // session at all (GET /me returns { user: null }), the overlay shows a
-    // 'Sign in with Google to save your score' link instead, and neither
-    // POST /api/scores nor GET /api/scores/:userId is called.
+    // finished game, and unconditionally bumps User.lastPlayedAt regardless
+    // of whether the score improved. Once that resolves, GET
+    // /api/scores/:userId reads back the (possibly just-updated) personal
+    // best and appends a small 'Personal Best: N' line, immediately followed
+    // by a 'Last played: <timestamp>' line (the freshly-bumped
+    // lastPlayedAt, formatted with toLocaleString()), to the game-over
+    // overlay. Both requests carry the HttpOnly session cookie
+    // (credentials: 'include'), so identity is resolved server-side — no
+    // player name is ever sent. If there is no session at all (GET /me
+    // returns { user: null }), the overlay shows a 'Sign in with Google to
+    // save your score' link instead, and neither POST /api/scores nor GET
+    // /api/scores/:userId is called.
 
     /**
      * @param {HTMLElement} overlay    - the game-over overlay div, already in the DOM
@@ -752,6 +762,7 @@
           ? data.entry.score
           : finalScore;
         appendPersonalBestLine(overlay, best);
+        appendLastPlayedLine(overlay, data && data.entry && data.entry.lastPlayedAt);
       } catch (err) {
         // Network error — fail silently, no badge shown for this round.
       }
@@ -768,6 +779,31 @@
       el.id = 'pong-personal-best';
       el.className = 'personal-best';
       el.textContent = `Personal Best: ${best}`;
+      overlay.appendChild(el);
+    }
+
+    /**
+     * Append a 'Last played: <timestamp>' line directly under the
+     * Personal Best badge, formatted with toLocaleString() for a
+     * locale-aware, human-readable timestamp. `lastPlayedAt` comes from the
+     * attached User row on the GET /api/scores/:userId response (see
+     * server.js's toScoreEntry) — a number of milliseconds since the epoch,
+     * or null if this user hasn't finished a game since that column
+     * existed, in which case no line is appended.
+     * @param {HTMLElement} overlay
+     * @param {number|null|undefined} lastPlayedAt
+     */
+    function appendLastPlayedLine(overlay, lastPlayedAt) {
+      if (!document.body.contains(overlay)) return; // overlay dismissed already
+      if (lastPlayedAt === null || lastPlayedAt === undefined) return;
+
+      const date = new Date(lastPlayedAt);
+      if (Number.isNaN(date.getTime())) return;
+
+      const el = document.createElement('p');
+      el.id = 'pong-last-played';
+      el.className = 'last-played';
+      el.textContent = `Last played: ${date.toLocaleString()}`;
       overlay.appendChild(el);
     }
 
