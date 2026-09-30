@@ -1,11 +1,11 @@
 {
   "assignment_unit": "user",
   "assignment_key": {"source": "cookie", "name": "connect.sid"},
-  "dissonance": "The line under the board that shows 'Best rally this game: N hits' after a finished game disappears, and their longest rally is no longer remembered alongside their high score.",
+  "dissonance": "The gear icon next to the avatar, and the 'Settings' modal it opens for editing a nickname, disappear — the player's saved nickname stops showing next to their avatar, in the Recent Games panel, and in the high-score list, reverting to their Google display name/email or a plain 'Player' label.",
   "metric": {
-    "name": "game_started",
-    "per": "visit",
+    "name": "nickname_set",
+    "per": "user_login",
     "better": "higher",
-    "description": "Counts how many times a player starts a new game divided by the number of page visits, capturing whether showing the best-rally readout after game-over encourages replay."
+    "description": "Counts how many signed-in sessions result in the player saving a nickname, divided by total signed-in logins."
   }
 }

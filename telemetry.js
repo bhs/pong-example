@@ -37,10 +37,14 @@ const CLIENT_EVENT_COUNTER_NAMES = [
   'game_started', 'visit',
 ];
 
-// Counters declared so this deployment always reports them (at zero) even
-// though this version of the app has no code path that can increment them —
-// there is no nickname feature here at all. Never add()'d anywhere below.
-const DECLARED_ONLY_COUNTER_NAMES = ['nickname_set'];
+// Counters recorded entirely server-side (no browser round-trip): a
+// successful Google OAuth login ('user_login') and a successful nickname
+// save via PATCH /api/user/nickname ('nickname_set'). Together they back
+// this hop's nickname_set-per-user_login metric (see experiment.json).
+// Declared unconditionally, same as the client-event counters above, so a
+// version of the app without the nickname feature still reports
+// 'nickname_set' at zero.
+const SERVER_EVENT_COUNTER_NAMES = ['nickname_set', 'user_login'];
 
 const LONG_LIVED_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000; // ~400 days
 
@@ -114,7 +118,7 @@ function createNoopTelemetry() {
     enabled: false,
     middleware(req, res, next) { next(); },
     recordClientEvent() { /* no-op: telemetry disabled */ },
-    recordUserLogin() { /* no-op: telemetry disabled */ },
+    recordServerEvent() { /* no-op: telemetry disabled */ },
   };
 }
 
@@ -179,15 +183,13 @@ function createTelemetry() {
       play_again_click:     meter.createCounter('play_again_click'),
       game_started:         meter.createCounter('game_started'),
       visit:                meter.createCounter('visit'),
+      nickname_set:         meter.createCounter('nickname_set'),
       user_login:           meter.createCounter('user_login'),
       mendel_participants:  meter.createCounter('mendel_participants'),
       mendel_requests:      meter.createCounter('mendel_requests'),
       mendel_server_errors: meter.createCounter('mendel_server_errors'),
     };
 
-    DECLARED_ONLY_COUNTER_NAMES.forEach((name) => {
-      counters[name] = meter.createCounter(name);
-    });
     requestDuration = meter.createHistogram('mendel_request_duration');
   } catch (err) {
     // If OpenTelemetry isn't installed/usable, fall back to reporting
@@ -318,19 +320,22 @@ function createTelemetry() {
     }
   }
 
-  // Counts every signed-in session established (i.e. a successful Google
-  // OAuth login) — the denominator behind nickname_set's "divided by total
-  // signed-in logins" definition.
-  function recordUserLogin(req) {
+  /**
+   * Same shape as recordClientEvent, but for events observed entirely
+   * server-side (a successful OAuth login, a successful nickname save) —
+   * there is no browser round-trip to ping /api/client-events for these.
+   */
+  function recordServerEvent(eventName, req) {
+    if (!SERVER_EVENT_COUNTER_NAMES.includes(eventName)) return;
     try {
       const attributes = (req && req.mendelAttributes) || {};
-      counters.user_login.add(1, attributes);
+      counters[eventName].add(1, attributes);
     } catch (err) {
       // Ignore — telemetry must never surface to the user.
     }
   }
 
-  return { enabled: true, middleware, recordClientEvent, recordUserLogin };
+  return { enabled: true, middleware, recordClientEvent, recordServerEvent };
 }
 
 module.exports = createTelemetry();
