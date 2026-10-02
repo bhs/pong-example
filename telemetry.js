@@ -35,6 +35,8 @@ const CLIENT_EVENT_COUNTER_NAMES = [
   // 'visit' fires once per page load. Together they back the
   // games-started-per-visit metric (see experiment.json).
   'game_started', 'visit',
+  // 'page_view' fires once per page load, from the browser.
+  'page_view',
 ];
 
 // Counters recorded entirely server-side (no browser round-trip): a
@@ -44,7 +46,9 @@ const CLIENT_EVENT_COUNTER_NAMES = [
 // Declared unconditionally, same as the client-event counters above, so a
 // version of the app without the nickname feature still reports
 // 'nickname_set' at zero.
-const SERVER_EVENT_COUNTER_NAMES = ['nickname_set', 'user_login'];
+// 'settings_changed' is a successful save through the Settings modal
+// (PATCH /api/user/nickname) or a successful PUT /api/preferences.
+const SERVER_EVENT_COUNTER_NAMES = ['nickname_set', 'user_login', 'settings_changed'];
 
 const LONG_LIVED_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000; // ~400 days
 
@@ -130,10 +134,12 @@ function buildResource(resources, instanceId) {
   return new resources.Resource({ 'service.instance.id': instanceId });
 }
 
+class NoExperiment extends Error {}
+
 function createTelemetry() {
   const { endpoint, token, experimentId, buckets } = readConfig();
 
-  if (!endpoint || !token || !experimentId) {
+  if (!endpoint || !token) {
     return createNoopTelemetry();
   }
 
@@ -185,6 +191,8 @@ function createTelemetry() {
       visit:                meter.createCounter('visit'),
       nickname_set:         meter.createCounter('nickname_set'),
       user_login:           meter.createCounter('user_login'),
+      page_view:            meter.createCounter('page_view'),
+      settings_changed:     meter.createCounter('settings_changed'),
       mendel_participants:  meter.createCounter('mendel_participants'),
       mendel_requests:      meter.createCounter('mendel_requests'),
       mendel_server_errors: meter.createCounter('mendel_server_errors'),
@@ -212,7 +220,11 @@ function createTelemetry() {
     });
   }
 
-  function getAssignmentKey(req) {
+  // The participant key declared in .mendel/experiment.json
+  // (assignment_key: cookie "connect.sid"); falls back to the signed-in
+  // user's id when that cookie is absent.
+  function getAssignmentKey(req, cookies) {
+    if (cookies && cookies['connect.sid']) return String(cookies['connect.sid']);
     if (req.isAuthenticated && req.isAuthenticated() && req.user && req.user.id) {
       return String(req.user.id);
     }
@@ -224,13 +236,17 @@ function createTelemetry() {
     let attributes = {};
 
     try {
+      // No experiment id: nobody is assigned and no cookie is ever set; only
+      // the health metrics and declared counters below are reported.
+      if (!experimentId) throw new NoExperiment();
+
       const cookies           = parseCookies(req);
       const bucketCookieNames = buckets ? buckets.map((b) => b.cookie) : [];
 
       // 2. Keep bucket-assignment cookies in sync when we know a stable
       //    participant identity, so assignment survives cookie loss.
       if (buckets && buckets.length > 0) {
-        const assignmentKey = getAssignmentKey(req);
+        const assignmentKey = getAssignmentKey(req, cookies);
         if (assignmentKey) {
           buckets.forEach((entry) => {
             let value;

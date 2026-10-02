@@ -516,6 +516,7 @@
     // One 'visit' per page load — backs the games-started-per-visit metric
     // (games_started / visit) alongside 'game_started' below.
     sendMendelEvent('visit');
+    sendMendelEvent('page_view');
 
     // ── Input ─────────────────────────────────────────────────────────────────
     //
