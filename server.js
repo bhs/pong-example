@@ -391,6 +391,7 @@ function createApp(prisma = defaultPrisma, options = {}) {
       if (nickname) {
         telemetry.recordServerEvent('nickname_set', req);
       }
+      telemetry.recordServerEvent('settings_changed', req);
 
       return res.status(200).json({
         user: { id: user.id, email: user.email, name: user.name, avatar: user.avatar, nickname: user.nickname || null },
@@ -456,6 +457,7 @@ function createApp(prisma = defaultPrisma, options = {}) {
         update: data,
         create: { userId: req.user.id, ...data },
       });
+      telemetry.recordServerEvent('settings_changed', req);
       return res.status(200).json({ preferences: pref });
     } catch (err) {
       return next(err);
