@@ -1,11 +1,11 @@
 {
   "assignment_unit": "user",
   "assignment_key": {"source": "cookie", "name": "connect.sid"},
-  "dissonance": "The gear icon next to the avatar, and the 'Settings' modal it opens for editing a nickname, disappear — the player's saved nickname stops showing next to their avatar, in the Recent Games panel, and in the high-score list, reverting to their Google display name/email or a plain 'Player' label.",
+  "dissonance": "After a game ends, the Play Again button and Space shortcut behave a little differently: restarting no longer runs through a single reset routine, so the new game may start with a slightly different pause or reset state, though the button and its label look the same.",
   "metric": {
-    "name": "nickname_set",
-    "per": "user_login",
+    "name": "play_again_click",
+    "per": "game_over_shown",
     "better": "higher",
-    "description": "Counts how many signed-in sessions result in the player saving a nickname, divided by total signed-in logins."
+    "description": "Counts how often players click the Play Again button (or press Space) after the game-over screen is shown, divided by how many times the game-over screen was shown."
   }
 }

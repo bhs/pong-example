@@ -530,10 +530,6 @@
       if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
         e.preventDefault();
       }
-      // Space triggers restart when overlay is visible (accessibility shortcut)
-      if (e.code === 'Space' && game.phase === 'gameover') {
-        startNewGame();
-      }
     });
 
     window.addEventListener('keyup', (e) => {
@@ -600,12 +596,34 @@
       syncBallVelocity(ball);
     }
 
-    /**
-     * Reset both paddles and scores; start fresh.
-     */
-    function resetGame() {
+    // ── Restart events ────────────────────────────────────────────────────────
+    //
+    // A tiny in-file pub-sub: the GameController (below) dispatches
+    // 'game:restart' on this bus, and each module (ball, paddles, score/rally)
+    // registers a listener that resets only its own local state. Preference /
+    // settings values (nickname, saved prefs, signed-in user) live elsewhere
+    // and no listener touches them.
+
+    const GAME_RESTART_EVENT = 'game:restart';
+    const gameEvents = new EventTarget();
+
+    // Ball module — back to the centre, at rest until the next serve.
+    gameEvents.addEventListener(GAME_RESTART_EVENT, () => {
+      ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
+      ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
+      ball.speed = 0;
+      ball.vx    = 0;
+      ball.vy    = 0;
+    });
+
+    // Paddle module — re-centre both paddles.
+    gameEvents.addEventListener(GAME_RESTART_EVENT, () => {
       playerPaddle.y = CANVAS_H / 2 - PADDLE_H / 2;
       aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
+    });
+
+    // Score module — scores, rally counters, phase and elapsed time.
+    gameEvents.addEventListener(GAME_RESTART_EVENT, () => {
       playerPaddle.score = 0;
       aiPaddle.score     = 0;
       game.winner     = null;
@@ -615,6 +633,13 @@
       rally.maxRally    = 0;
       rally.flashFrames = 0;
       gameElapsedSeconds = 0;
+    });
+
+    /**
+     * Announce a restart; every registered module resets its own state.
+     */
+    function resetGame() {
+      gameEvents.dispatchEvent(new CustomEvent(GAME_RESTART_EVENT));
     }
 
     // ── DOM Overlay ───────────────────────────────────────────────────────────
@@ -656,7 +681,7 @@
       const btn = document.createElement('button');
       btn.id = 'pong-play-again';
       btn.textContent = 'Play Again';
-      btn.addEventListener('click', startNewGame);
+      btn.addEventListener('click', () => GameController.restart());
       overlay.appendChild(btn);
 
       // Keyboard hint
@@ -1251,27 +1276,59 @@
     }
 
     /**
-     * Tear down the current overlay, reset all state, and restart the animation loop.
-     * Called by the 'Play Again' button click and the Space keyboard shortcut.
+     * GameController — owns the `running` flag the main loop checks and
+     * turns the Play Again click / Space press into a 'game:restart' event.
+     *
+     *   init()    wires the Space shortcut (the button is wired when the
+     *             overlay is built) — called once at start-up.
+     *   pause()   called on game-over; the rAF loop stops scheduling frames.
+     *   restart() removes the overlay, dispatches 'game:restart' and resumes
+     *             the loop without a full re-initialisation pass.
+     */
+    const GameController = {
+      running: true,
+
+      init() {
+        window.addEventListener('keydown', (e) => {
+          // Space triggers restart when overlay is visible (accessibility shortcut)
+          if (e.code === 'Space' && game.phase === 'gameover') {
+            GameController.restart();
+          }
+        });
+      },
+
+      pause() {
+        GameController.running = false;
+      },
+
+      restart() {
+        if (game.phase === 'gameover') {
+          try { sessionStorage.removeItem(MENDEL_GAME_OVER_FLAG); } catch (err) { /* ignore */ }
+          sendMendelEvent('play_again_click');
+        }
+        removeGameOverOverlay();
+        clearBestRallyDisplay();
+        resetGame();   // dispatches 'game:restart'
+        sendMendelEvent('game_started');
+        // Clear the key map so a held-Space doesn't immediately trigger movement
+        Object.keys(keys).forEach((k) => { keys[k] = false; });
+        // Cancel any stale RAF handle before resuming the loop
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        lastTime = null;
+        GameController.running = true;
+        rafId = requestAnimationFrame(loop);
+      },
+    };
+
+    /**
+     * Tear down the current overlay, reset all state, and resume the loop.
+     * Called by the 'Play Again' button click.
      */
     function startNewGame() {
-      if (game.phase === 'gameover') {
-        try { sessionStorage.removeItem(MENDEL_GAME_OVER_FLAG); } catch (err) { /* ignore */ }
-        sendMendelEvent('play_again_click');
-      }
-      removeGameOverOverlay();
-      clearBestRallyDisplay();
-      resetGame();
-      sendMendelEvent('game_started');
-      // Clear the key map so a held-Space doesn't immediately trigger movement
-      Object.keys(keys).forEach((k) => { keys[k] = false; });
-      // Cancel any stale RAF handle before starting a new loop
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      lastTime = null;
-      rafId = requestAnimationFrame(loop);
+      GameController.restart();
     }
 
     // ── Update ────────────────────────────────────────────────────────────────
@@ -1487,6 +1544,7 @@
 
       if (game.phase === 'gameover') {
         // Pause the loop and present the DOM overlay
+        GameController.pause();
         rafId = null;
         const winnerLabel = game.winner === 'player' ? 'You win! 🎉' : 'AI wins!';
         updateBestRallyDisplay();
@@ -1494,10 +1552,13 @@
         return; // do NOT schedule next frame
       }
 
-      rafId = requestAnimationFrame(loop);
+      if (GameController.running) {
+        rafId = requestAnimationFrame(loop);
+      }
     }
 
     // Kick off the animation loop
+    GameController.init();
     sendMendelEvent('game_started');
     rafId = requestAnimationFrame(loop);
   </script>
