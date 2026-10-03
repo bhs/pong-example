@@ -483,6 +483,42 @@ describe('PUT /api/preferences', () => {
   });
 });
 
+// ── Style preferences (Preferences modal) ───────────────────────────────────
+
+describe('style preferences via /api/preferences', () => {
+  test('GET returns default style when none saved', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await get(app, '/api/preferences');
+    expect(res.status).toBe(200);
+    expect(res.body.style).toEqual({ paddleColor: '#ffffff', ballColor: '#ffffff', bgColor: '#00008b' });
+  });
+
+  test('PUT saves style and GET returns it', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { style: { paddleColor: '#39FF14', bgColor: '#0a0a1a' } });
+    expect(res.status).toBe(200);
+    expect(res.body.style).toEqual({ paddleColor: '#39ff14', ballColor: '#ffffff', bgColor: '#0a0a1a' });
+    expect(prisma.__stylePreferences.get(ALICE.id).paddleColor).toBe('#39ff14');
+    expect(prisma.__preferences.size).toBe(0);
+
+    const again = await get(app, '/api/preferences');
+    expect(again.body.style.bgColor).toBe('#0a0a1a');
+  });
+
+  test('PUT rejects a malformed colour', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { style: { ballColor: 'red' } });
+    expect(res.status).toBe(400);
+  });
+
+  test('PUT rejects a non-object style', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', { style: 'neon' });
+    expect(res.status).toBe(400);
+  });
+});
+
 // ── GET /api/game-history ───────────────────────────────────────────────────
 
 describe('GET /api/game-history', () => {

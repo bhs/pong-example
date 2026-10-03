@@ -30,6 +30,11 @@
  *               new best).
  *   Preference  One row per user (FK → User.id): theme / sound / paddle
  *               color settings.
+ *   StylePreference
+ *               One row per user (FK → User.id): paddle / ball / background
+ *               colours chosen in the Preferences modal (see index.html).
+ *               Always read fresh from the server, so a player's look
+ *               follows them to any browser or device.
  *   HighScore   One row per user (FK → User.id): that user's personal best
  *               score, plus `longestRally` — that same player's longest-ever
  *               rally (consecutive paddle hits without a miss), an
@@ -55,9 +60,13 @@
  *                                 { nickname: string | null }.
  *
  *   GET    /api/preferences      Returns the logged-in user's preferences
- *                                 (defaults if none have been saved yet).
+ *                                 (defaults if none have been saved yet),
+ *                                 plus `style` — { paddleColor, ballColor,
+ *                                 bgColor } for the Preferences modal.
  *   PUT    /api/preferences      Create or update the logged-in user's
- *                                 preferences.
+ *                                 preferences. Body may include
+ *                                 `style: { paddleColor?, ballColor?,
+ *                                 bgColor? }` ("#rrggbb" strings).
  *
  *   GET    /api/scores           List high scores (sorted desc by score).
  *   POST   /api/scores           Create or update the logged-in user's high
@@ -104,6 +113,18 @@ const defaultPrisma  = require('./lib/prisma');
 // and the live character-count validation in index.html — both enforce the
 // same limit so the client never shows a count the server would reject).
 const NICKNAME_MAX_LENGTH = 20;
+
+// Default look of the game, and the shape a style colour must have. Colours
+// come from <input type="color">, which always yields "#rrggbb".
+const DEFAULT_STYLE = { paddleColor: '#ffffff', ballColor: '#ffffff', bgColor: '#00008b' };
+const STYLE_KEYS    = Object.keys(DEFAULT_STYLE);
+const HEX_COLOR_RE  = /^#[0-9a-fA-F]{6}$/;
+
+function toStyle(row) {
+  const style = {};
+  for (const key of STYLE_KEYS) style[key] = (row && row[key]) || DEFAULT_STYLE[key];
+  return style;
+}
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
@@ -410,9 +431,11 @@ function createApp(prisma = defaultPrisma, options = {}) {
     if (!requireLogin(req, res)) return;
 
     try {
-      const pref = await prisma.preference.findUnique({ where: { userId: req.user.id } });
+      const pref  = await prisma.preference.findUnique({ where: { userId: req.user.id } });
+      const style = await prisma.stylePreference.findUnique({ where: { userId: req.user.id } });
       return res.status(200).json({
         preferences: pref || { theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' },
+        style: toStyle(style),
       });
     } catch (err) {
       return next(err);
@@ -422,7 +445,10 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // ── PUT /api/preferences ─────────────────────────────────────────────────
   //
   // Create or update the logged-in user's preferences.
-  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: string }
+  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: string,
+  //         style?: { paddleColor?, ballColor?, bgColor? } }
+  // `style` colours must be "#rrggbb" strings and are stored in their own
+  // table (see StylePreference), separately from the legacy `paddleColor`.
 
   app.put('/api/preferences', async (req, res, next) => {
     if (!requireLogin(req, res)) return;
@@ -451,14 +477,51 @@ function createApp(prisma = defaultPrisma, options = {}) {
       data.paddleColor = body.paddleColor.trim();
     }
 
+    let styleData = null;
+    if (body.style !== undefined) {
+      if (body.style === null || typeof body.style !== 'object' || Array.isArray(body.style)) {
+        return res.status(400).json({ error: 'style must be an object' });
+      }
+      styleData = {};
+      for (const key of STYLE_KEYS) {
+        const value = body.style[key];
+        if (value === undefined) continue;
+        if (typeof value !== 'string' || !HEX_COLOR_RE.test(value)) {
+          return res.status(400).json({ error: `${key} must be a "#rrggbb" color` });
+        }
+        styleData[key] = value.toLowerCase();
+      }
+    }
+
     try {
-      const pref = await prisma.preference.upsert({
-        where:  { userId: req.user.id },
-        update: data,
-        create: { userId: req.user.id, ...data },
-      });
+      const userId = req.user.id;
+      let pref;
+      if (styleData && Object.keys(data).length === 0) {
+        // Style-only save: leave the general preferences row alone.
+        pref = (await prisma.preference.findUnique({ where: { userId } }))
+          || { theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' };
+      } else {
+        pref = await prisma.preference.upsert({
+          where:  { userId },
+          update: data,
+          create: { userId, ...data },
+        });
+      }
+
+      const response = { preferences: pref };
+      if (styleData) {
+        const row = await prisma.stylePreference.upsert({
+          where:  { userId },
+          update: styleData,
+          create: { userId, ...styleData },
+        });
+        response.style = toStyle(row);
+      } else {
+        response.style = toStyle(await prisma.stylePreference.findUnique({ where: { userId } }));
+      }
+
       telemetry.recordServerEvent('settings_changed', req);
-      return res.status(200).json({ preferences: pref });
+      return res.status(200).json(response);
     } catch (err) {
       return next(err);
     }

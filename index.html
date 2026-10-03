@@ -74,6 +74,72 @@
     #pong-best-rally:empty {
       display: none;
     }
+    /* ── Preferences modal (style colours) ──────────────────────────────── */
+    /*
+     * Static DOM markup (see #pong-prefs-modal in <body>), hidden until a
+     * signed-in player clicks 'Preferences' in the auth bar.
+     */
+    #pong-prefs-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.72);
+      font-family: monospace;
+    }
+    #pong-prefs-modal[hidden] {
+      display: none;
+    }
+    #pong-prefs-card {
+      width: min(340px, 88vw);
+      padding: 24px 22px;
+      background: #10123a;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      color: #fff;
+    }
+    #pong-prefs-card h2 {
+      font-size: 1.05rem;
+      letter-spacing: 0.05em;
+    }
+    #pong-prefs-card .pong-prefs-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.8rem;
+      color: rgba(255,255,255,0.75);
+    }
+    #pong-prefs-card input[type="color"] {
+      width: 48px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+    }
+    #pong-prefs-card .pong-prefs-presets,
+    #pong-prefs-card .pong-prefs-actions {
+      display: flex;
+      gap: 8px;
+    }
+    #pong-prefs-card .pong-prefs-actions {
+      justify-content: flex-end;
+    }
+    #pong-prefs-flash {
+      font-size: 0.8rem;
+      min-height: 1.1em;
+      color: #7CFC9C;
+    }
+    #pong-prefs-flash.error {
+      color: #ff6b6b;
+    }
   </style>
 </head>
 <body>
@@ -81,6 +147,34 @@
     <canvas id="gameCanvas"></canvas>
     <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
     <p id="pong-best-rally"></p>
+  </div>
+
+  <!-- Preferences modal: paddle / ball / background colours. Opened by the
+       'Preferences' button in the auth bar (signed-in players only). -->
+  <div id="pong-prefs-modal" hidden>
+    <div id="pong-prefs-card" role="dialog" aria-modal="true" aria-labelledby="pong-prefs-title">
+      <h2 id="pong-prefs-title">Preferences</h2>
+      <div class="pong-prefs-row">
+        <label for="pong-prefs-paddle">Paddle colour</label>
+        <input type="color" id="pong-prefs-paddle" value="#ffffff" />
+      </div>
+      <div class="pong-prefs-row">
+        <label for="pong-prefs-ball">Ball colour</label>
+        <input type="color" id="pong-prefs-ball" value="#ffffff" />
+      </div>
+      <div class="pong-prefs-row">
+        <label for="pong-prefs-bg">Background colour</label>
+        <input type="color" id="pong-prefs-bg" value="#00008b" />
+      </div>
+      <div class="pong-prefs-presets">
+        <button type="button" id="pong-prefs-classic" class="pong-auth-btn pong-auth-btn-ghost">Classic</button>
+        <button type="button" id="pong-prefs-neon" class="pong-auth-btn pong-auth-btn-ghost">Neon</button>
+      </div>
+      <div id="pong-prefs-flash" role="status"></div>
+      <div class="pong-prefs-actions">
+        <button type="button" id="pong-prefs-close" class="pong-auth-btn">Close</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -471,6 +565,15 @@
     // isBestRallyBucketed in server.js). Both null/false until /me resolves.
     let currentUser      = null;
     let bestRallyBucket  = false;
+
+    // Style colours read by render() each frame. Defaults for guests; replaced
+    // by the signed-in player's saved values (GET /api/preferences) and
+    // updated instantly as the Preferences modal's pickers change.
+    const STYLE_CLASSIC = { paddleColor: '#ffffff', ballColor: '#ffffff', bgColor: '#00008b' };
+    const STYLE_NEON    = { paddleColor: '#39ff14', ballColor: '#ff2bd6', bgColor: '#0a0a1a' };
+    let paddleColor = STYLE_CLASSIC.paddleColor;
+    let ballColor   = STYLE_CLASSIC.ballColor;
+    let bgColor     = STYLE_CLASSIC.bgColor;
 
     // ── Experiment telemetry (client-side event pings) ───────────────────────
     //
@@ -911,6 +1014,13 @@
       settingsBtn.addEventListener('click', () => openSettingsModal());
       bar.appendChild(settingsBtn);
 
+      const prefsBtn = document.createElement('button');
+      prefsBtn.id = 'pong-prefs-open';
+      prefsBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
+      prefsBtn.textContent = 'Preferences';
+      prefsBtn.addEventListener('click', () => openPrefsModal());
+      bar.appendChild(prefsBtn);
+
       const saveBtn = document.createElement('button');
       saveBtn.id = 'pong-save-score';
       saveBtn.className = 'pong-auth-btn';
@@ -1142,6 +1252,7 @@
           bestRallyBucket = Boolean(data.bestRallyBucket);
           renderSignedIn(bar, data.user);
           refreshRecentGames();
+          loadStylePreferences();
         } else {
           currentUser     = null;
           bestRallyBucket = false;
@@ -1157,6 +1268,123 @@
     }
 
     initAuthBar();
+
+    // ── Preferences modal (paddle / ball / background colours) ────────────
+    //
+    // The server is authoritative: saved colours are fetched fresh from
+    // GET /api/preferences on every page load while signed in, so they
+    // follow the player to any browser or device. Changing a picker updates
+    // the render variables immediately (instant feedback) and then PUTs the
+    // change to /api/preferences, which stores it in the database.
+
+    const prefsEls = {
+      modal:  document.getElementById('pong-prefs-modal'),
+      paddle: document.getElementById('pong-prefs-paddle'),
+      ball:   document.getElementById('pong-prefs-ball'),
+      bg:     document.getElementById('pong-prefs-bg'),
+      flash:  document.getElementById('pong-prefs-flash'),
+    };
+
+    /**
+     * Apply a { paddleColor, ballColor, bgColor } style to the game and
+     * (optionally) sync the modal's pickers to it.
+     */
+    function applyStyle(style) {
+      if (!style) return;
+      if (style.paddleColor) paddleColor = style.paddleColor;
+      if (style.ballColor)   ballColor   = style.ballColor;
+      if (style.bgColor)     bgColor     = style.bgColor;
+      prefsEls.paddle.value = paddleColor;
+      prefsEls.ball.value   = ballColor;
+      prefsEls.bg.value     = bgColor;
+    }
+
+    /**
+     * Fetch the signed-in player's saved style and apply it. Guests (and any
+     * failure) keep the defaults.
+     */
+    async function loadStylePreferences() {
+      try {
+        const res = await fetch('/api/preferences', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        applyStyle(data && data.style);
+      } catch (err) {
+        // Keep defaults.
+      }
+    }
+
+    function showPrefsFlash(text, isError) {
+      prefsEls.flash.textContent = text;
+      prefsEls.flash.classList.toggle('error', Boolean(isError));
+    }
+
+    /**
+     * PUT the given style fields to /api/preferences.
+     */
+    async function saveStylePreferences(style) {
+      try {
+        const res = await fetch('/api/preferences', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ style }),
+        });
+        if (!res.ok) {
+          showPrefsFlash('Could not save — try again', true);
+          return;
+        }
+        showPrefsFlash('Saved!', false);
+      } catch (err) {
+        showPrefsFlash('Could not save — try again', true);
+      }
+    }
+
+    function openPrefsModal() {
+      if (!currentUser) return; // Preferences are for signed-in players only
+      showPrefsFlash('', false);
+      applyStyle({ paddleColor, ballColor, bgColor });
+      prefsEls.modal.hidden = false;
+      prefsEls.paddle.focus();
+    }
+
+    function closePrefsModal() {
+      prefsEls.modal.hidden = true;
+    }
+
+    // Live preview while dragging a picker; persist once the choice is made.
+    [
+      [prefsEls.paddle, 'paddleColor'],
+      [prefsEls.ball,   'ballColor'],
+      [prefsEls.bg,     'bgColor'],
+    ].forEach(([input, key]) => {
+      input.addEventListener('input', () => applyStyle({ [key]: input.value }));
+      input.addEventListener('change', () => {
+        applyStyle({ [key]: input.value });
+        saveStylePreferences({ [key]: input.value });
+      });
+    });
+
+    [
+      ['pong-prefs-classic', STYLE_CLASSIC],
+      ['pong-prefs-neon',    STYLE_NEON],
+    ].forEach(([id, preset]) => {
+      document.getElementById(id).addEventListener('click', () => {
+        applyStyle(preset);
+        saveStylePreferences(preset);
+      });
+    });
+
+    document.getElementById('pong-prefs-close').addEventListener('click', closePrefsModal);
+    prefsEls.modal.addEventListener('click', (e) => {
+      if (e.target === prefsEls.modal) closePrefsModal();
+    });
+    // Keep keystrokes in the modal away from the game's window-level handlers
+    // (Space would otherwise be swallowed / restart the game).
+    prefsEls.modal.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') closePrefsModal();
+    });
 
     // ── Recent Games panel ────────────────────────────────────────────────
     //
@@ -1409,7 +1637,7 @@
     function render() {
       // Clear to dark blue
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = '#00008b';
+      ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       // Score flash: tinted background for a few frames after scoring
@@ -1440,7 +1668,7 @@
       ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
 
       // Player paddle
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = paddleColor;
       ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
 
       // AI paddle
@@ -1448,6 +1676,7 @@
 
       // Ball (only when playing)
       if (game.phase === 'playing') {
+        ctx.fillStyle = ballColor;
         ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
       }
 

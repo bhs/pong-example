@@ -60,6 +60,7 @@ model User {
   lastPlayedAt DateTime? @map("mendel_exp_last_played_at")
 
   preference   Preference?
+  stylePreference StylePreference?
   highScore    HighScore?
   gameHistory  GameHistory[]
 
@@ -80,6 +81,26 @@ model Preference {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("preferences")
+}
+
+// Per-user visual style (paddle / ball / background colours) chosen in the
+// Preferences modal (see index.html) and persisted by PUT /api/preferences.
+// One row per user, created lazily on the first save. The physical table is
+// named for the 'server-authoritative-modal-panel' variation because this
+// database is shared by every concurrently-running variation of the
+// 'user-style-preferences-pane' hop, each applying its own migration.
+model StylePreference {
+  id          Int      @id @default(autoincrement())
+  userId      String   @unique
+  paddleColor String   @default("#ffffff")
+  ballColor   String   @default("#ffffff")
+  bgColor     String   @default("#00008b")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("modal_panel_style_preferences")
 }
 
 // A single player's best score. One row per user (enforced by the unique

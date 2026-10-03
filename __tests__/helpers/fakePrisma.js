@@ -19,16 +19,19 @@ function notFoundError() {
 function createFakePrisma() {
   const users        = new Map(); // id -> user row
   const preferences  = new Map(); // userId -> preference row
+  const stylePreferences = new Map(); // userId -> stylePreference row
   const highScores   = new Map(); // userId -> highScore row
   const gameHistory  = [];        // array of gameHistory rows (many per user)
 
   let preferenceAutoId  = 1;
+  let stylePreferenceAutoId = 1;
   let highScoreAutoId   = 1;
   let gameHistoryAutoId = 1;
 
   return {
     __users: users,
     __preferences: preferences,
+    __stylePreferences: stylePreferences,
     __highScores: highScores,
     __gameHistory: gameHistory,
 
@@ -74,6 +77,29 @@ function createFakePrisma() {
               updatedAt: now,
             };
         preferences.set(where.userId, row);
+        return row;
+      },
+    },
+
+    stylePreference: {
+      async findUnique({ where }) {
+        return stylePreferences.get(where.userId) || null;
+      },
+      async upsert({ where, update, create }) {
+        const existing = stylePreferences.get(where.userId);
+        const now = new Date();
+        const row = existing
+          ? { ...existing, ...update, updatedAt: now }
+          : {
+              id: stylePreferenceAutoId++,
+              paddleColor: '#ffffff',
+              ballColor: '#ffffff',
+              bgColor: '#00008b',
+              ...create,
+              createdAt: now,
+              updatedAt: now,
+            };
+        stylePreferences.set(where.userId, row);
         return row;
       },
     },
