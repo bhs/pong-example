@@ -1,11 +1,5 @@
 {
   "assignment_unit": "user",
-  "assignment_key": {"source": "cookie", "name": "connect.sid"},
-  "dissonance": "The gear icon next to the avatar, and the 'Settings' modal it opens for editing a nickname, disappear — the player's saved nickname stops showing next to their avatar, in the Recent Games panel, and in the high-score list, reverting to their Google display name/email or a plain 'Player' label.",
-  "metric": {
-    "name": "nickname_set",
-    "per": "user_login",
-    "better": "higher",
-    "description": "Counts how many signed-in sessions result in the player saving a nickname, divided by total signed-in logins."
-  }
+  "assignment_key": {"source": "cookie", "name": "session_id"},
+  "dissonance": "The in-game menu drawn on the canvas disappears: the Start screen, the gear icon in the top-left corner, and the paddle colour, ball speed and difficulty choices are gone, and the game goes back to starting immediately with the standard white paddle, normal ball speed and normal AI."
 }

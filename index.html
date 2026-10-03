@@ -115,6 +115,56 @@
     canvas.width  = CANVAS_W;
     canvas.height = CANVAS_H;
 
+    // ── Customization settings ────────────────────────────────────────────────
+    //
+    // Shared values consumed by the physics/render code below: paddle fill
+    // style, ball speed multiplier and AI difficulty. They are edited through
+    // the in-canvas menu (see 'In-canvas menu' section) — no DOM controls.
+    // The defaults ('Normal' speed/difficulty) reproduce the original game.
+
+    const PADDLE_COLORS = ['#ffffff', '#ffe066', '#7CFC9C', '#ff6b6b', '#6bc7ff'];
+    const BALL_SPEED_PRESETS = [
+      { id: 'slow',   label: 'Slow',   mul: 0.8 },
+      { id: 'normal', label: 'Normal', mul: 1.0 },
+      { id: 'fast',   label: 'Fast',   mul: 1.3 },
+    ];
+    const DIFFICULTY_PRESETS = [
+      { id: 'easy',   label: 'Easy',   lerp: 3.0, lerpRallyInc: 0.08 },
+      { id: 'normal', label: 'Normal', lerp: AI_LERP, lerpRallyInc: AI_LERP_RALLY_INC },
+      { id: 'hard',   label: 'Hard',   lerp: 6.5, lerpRallyInc: 0.25 },
+    ];
+    const SETTINGS_STORAGE_KEY = 'pongSettings';
+
+    const settings = {
+      paddleColor: PADDLE_COLORS[0],
+      ballSpeed:   'normal',
+      difficulty:  'normal',
+    };
+
+    function findPreset(presets, id) {
+      return presets.find((p) => p.id === id) || presets.find((p) => p.id === 'normal');
+    }
+    function ballSpeedInit() { return BALL_SPEED_INIT * findPreset(BALL_SPEED_PRESETS, settings.ballSpeed).mul; }
+    function ballSpeedMax()  { return BALL_SPEED_MAX  * findPreset(BALL_SPEED_PRESETS, settings.ballSpeed).mul; }
+    function aiDifficulty()  { return findPreset(DIFFICULTY_PRESETS, settings.difficulty); }
+
+    try {
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || 'null');
+      if (saved && PADDLE_COLORS.includes(saved.paddleColor)) settings.paddleColor = saved.paddleColor;
+      if (saved && BALL_SPEED_PRESETS.some((p) => p.id === saved.ballSpeed)) settings.ballSpeed = saved.ballSpeed;
+      if (saved && DIFFICULTY_PRESETS.some((p) => p.id === saved.difficulty)) settings.difficulty = saved.difficulty;
+    } catch (err) {
+      // localStorage unavailable or corrupt — keep defaults.
+    }
+
+    // UI state machine: 'menu' (before the first game) → 'playing' ⇄ 'paused'
+    // (the same menu, reopened mid-game with the gear icon).
+    const ui = {
+      state:  'menu',
+      mouseX: -1,
+      mouseY: -1,
+    };
+
     // ── Inject pulsing button animation style ─────────────────────────────────
     //
     // A <style> tag is injected once into <head> so the 'Play Again' button can
@@ -533,6 +583,11 @@
       // Space triggers restart when overlay is visible (accessibility shortcut)
       if (e.code === 'Space' && game.phase === 'gameover') {
         startNewGame();
+      } else if ((e.code === 'Space' || e.code === 'Enter') && ui.state !== 'playing') {
+        // Keyboard shortcut for the menu's Start / Resume button
+        leaveMenu();
+      } else if (e.code === 'Escape' && ui.state === 'playing' && game.phase !== 'gameover') {
+        openMenu();
       }
     });
 
@@ -591,7 +646,7 @@
     function resetBall(dirSign) {
       ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
       ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
-      ball.speed = BALL_SPEED_INIT;
+      ball.speed = ballSpeedInit();
       rally.rallyCount = 0;
 
       const baseAngle  = rand(-Math.PI / 4, Math.PI / 4);
@@ -1274,12 +1329,241 @@
       rafId = requestAnimationFrame(loop);
     }
 
+    // ── In-canvas menu ────────────────────────────────────────────────────────
+    //
+    // A menu/pause overlay drawn entirely with canvas calls: paddle colour
+    // swatches, ball-speed and difficulty presets, and a Start / Resume
+    // button, all as rectangles hit-tested against canvas coordinates. A gear
+    // icon in the top-left corner reopens it while playing. Choosing an
+    // option writes the shared `settings` object used by the physics code.
+
+    const MENU_PANEL = { x: 150, y: 60, w: 500, h: 480 };
+    const GEAR_BTN   = { x: 12, y: 12, w: 32, h: 32 };
+
+    function isPaused() { return ui.state !== 'playing'; }
+
+    /**
+     * Build the menu's clickable rectangles for the current settings.
+     * Each: { x, y, w, h, label, color?, selected, onClick }.
+     */
+    function buildMenuButtons() {
+      const buttons = [];
+      const cx = MENU_PANEL.x + MENU_PANEL.w / 2;
+
+      // Paddle colour swatches
+      const swatch = 44, swGap = 16;
+      const swTotal = PADDLE_COLORS.length * swatch + (PADDLE_COLORS.length - 1) * swGap;
+      PADDLE_COLORS.forEach((color, i) => {
+        buttons.push({
+          x: cx - swTotal / 2 + i * (swatch + swGap), y: 180, w: swatch, h: swatch,
+          color, label: '', selected: settings.paddleColor === color,
+          onClick: () => setSetting('paddleColor', color),
+        });
+      });
+
+      // Preset rows (ball speed, difficulty)
+      const addRow = (presets, key, y) => {
+        const w = 130, gap = 16;
+        const total = presets.length * w + (presets.length - 1) * gap;
+        presets.forEach((p, i) => {
+          buttons.push({
+            x: cx - total / 2 + i * (w + gap), y, w, h: 40,
+            label: p.label, selected: settings[key] === p.id,
+            onClick: () => setSetting(key, p.id),
+          });
+        });
+      };
+      addRow(BALL_SPEED_PRESETS, 'ballSpeed', 290);
+      addRow(DIFFICULTY_PRESETS, 'difficulty', 390);
+
+      // Start / Resume
+      buttons.push({
+        x: cx - 110, y: 460, w: 220, h: 54,
+        label: ui.state === 'menu' ? 'START' : 'RESUME', primary: true, selected: false,
+        onClick: () => leaveMenu(),
+      });
+      return buttons;
+    }
+
+    function pointInRect(px, py, r) {
+      return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+    }
+
+    /**
+     * Update one setting, persist it, and report 'settings_changed' when the
+     * value actually changed.
+     */
+    function setSetting(key, value) {
+      if (settings[key] === value) return;
+      settings[key] = value;
+      try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); } catch (err) { /* ignore */ }
+      sendMendelEvent('settings_changed');
+    }
+
+    function openMenu() {
+      if (ui.state !== 'playing') return;
+      ui.state = 'paused';
+      Object.keys(keys).forEach((k) => { keys[k] = false; });
+    }
+
+    /** Start (from the initial menu) or resume (from pause). */
+    function leaveMenu() {
+      const firstStart = ui.state === 'menu';
+      ui.state = 'playing';
+      Object.keys(keys).forEach((k) => { keys[k] = false; });
+      lastTime = null;
+      if (firstStart) sendMendelEvent('game_started');
+    }
+
+    /** Convert a mouse event to canvas coordinates (canvas may be CSS-scaled). */
+    function canvasPoint(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - rect.left) * (CANVAS_W / rect.width),
+        y: (e.clientY - rect.top)  * (CANVAS_H / rect.height),
+      };
+    }
+
+    function menuHitTest(px, py) {
+      if (!isPaused()) return null;
+      return buildMenuButtons().find((b) => pointInRect(px, py, b)) || null;
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      const p = canvasPoint(e);
+      ui.mouseX = p.x;
+      ui.mouseY = p.y;
+      const overGear = ui.state === 'playing' && game.phase !== 'gameover' && pointInRect(p.x, p.y, GEAR_BTN);
+      canvas.style.cursor = (overGear || menuHitTest(p.x, p.y)) ? 'pointer' : 'default';
+    });
+
+    canvas.addEventListener('mouseleave', () => {
+      ui.mouseX = -1;
+      ui.mouseY = -1;
+      canvas.style.cursor = 'default';
+    });
+
+    canvas.addEventListener('click', (e) => {
+      const p = canvasPoint(e);
+      if (isPaused()) {
+        const hit = menuHitTest(p.x, p.y);
+        if (hit) hit.onClick();
+      } else if (game.phase !== 'gameover' && pointInRect(p.x, p.y, GEAR_BTN)) {
+        openMenu();
+      }
+    });
+
+    function roundRectPath(x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+
+    function drawGearIcon() {
+      const hover = pointInRect(ui.mouseX, ui.mouseY, GEAR_BTN);
+      const cx = GEAR_BTN.x + GEAR_BTN.w / 2;
+      const cy = GEAR_BTN.y + GEAR_BTN.h / 2;
+      ctx.fillStyle = hover ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)';
+      roundRectPath(GEAR_BTN.x, GEAR_BTN.y, GEAR_BTN.w, GEAR_BTN.h, 6);
+      ctx.fill();
+      ctx.strokeStyle = hover ? '#fff' : 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.stroke();
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * 8, cy + Math.sin(a) * 8);
+        ctx.lineTo(cx + Math.cos(a) * 11, cy + Math.sin(a) * 11);
+        ctx.stroke();
+      }
+    }
+
+    function drawMenu() {
+      const cx = CANVAS_W / 2;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+      ctx.fillStyle = '#10123a';
+      roundRectPath(MENU_PANEL.x, MENU_PANEL.y, MENU_PANEL.w, MENU_PANEL.h, 10);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 32px monospace';
+      ctx.fillText(ui.state === 'menu' ? 'PONG' : 'PAUSED', cx, 100);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.font = '14px monospace';
+      ctx.fillText('PADDLE COLOUR', cx, 160);
+      ctx.fillText('BALL SPEED', cx, 270);
+      ctx.fillText('DIFFICULTY', cx, 370);
+
+      buildMenuButtons().forEach((b) => {
+        const hover = pointInRect(ui.mouseX, ui.mouseY, b);
+        if (b.color) {
+          ctx.fillStyle = b.color;
+          roundRectPath(b.x, b.y, b.w, b.h, 6);
+          ctx.fill();
+        } else if (b.primary) {
+          ctx.fillStyle = hover ? '#ffe066' : '#fff';
+          roundRectPath(b.x, b.y, b.w, b.h, 6);
+          ctx.fill();
+          ctx.fillStyle = '#000';
+          ctx.font = 'bold 20px monospace';
+          ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+        } else {
+          ctx.fillStyle = b.selected ? 'rgba(255,224,102,0.25)' : (hover ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.06)');
+          roundRectPath(b.x, b.y, b.w, b.h, 6);
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.font = '16px monospace';
+          ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+        }
+        if (b.selected || (hover && b.color)) {
+          ctx.strokeStyle = b.selected ? '#ffe066' : '#fff';
+          ctx.lineWidth = 3;
+          roundRectPath(b.x - 2, b.y - 2, b.w + 4, b.h + 4, 8);
+          ctx.stroke();
+        }
+      });
+
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.font = '12px monospace';
+      ctx.fillText('Space / Enter to ' + (ui.state === 'menu' ? 'start' : 'resume') + ' • Esc opens this menu', cx, 528);
+    }
+
+    function renderMenuLayer() {
+      if (isPaused()) {
+        drawMenu();
+      } else if (game.phase !== 'gameover') {
+        drawGearIcon();
+      }
+    }
+
     // ── Update ────────────────────────────────────────────────────────────────
     //
     // All simulation is driven by delta-time (dt, in seconds) so the game
     // runs at the same speed regardless of frame rate.
 
     function update(dt) {
+      // Menu / paused: the simulation is frozen while the in-canvas menu is up.
+      if (ui.state !== 'playing') return;
+
       // ── Phase: gameover ──────────────────────────────────────────────────────
       // The RAF loop is paused when gameover; nothing to update.
       if (game.phase === 'gameover') return;
@@ -1317,7 +1601,8 @@
       const ballCentreY   = ball.y + BALL_SIZE / 2;
       const aiCentreY     = aiPaddle.y + PADDLE_H / 2;
       const aiDiff        = ballCentreY - aiCentreY;
-      const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
+      const difficulty    = aiDifficulty();
+      const effectiveLerp = difficulty.lerp + rally.rallyCount * difficulty.lerpRallyInc;
       const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
       aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - PADDLE_H);
 
@@ -1348,7 +1633,7 @@
         // The resulting angle is in the right-travelling hemisphere.
         const relY  = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
         ball.angle  = deflectAngle(relY);
-        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, ballSpeedInit(), ballSpeedMax());
         syncBallVelocity(ball);
         rally.rallyCount += 1;
         if (rally.rallyCount > rally.maxRally) rally.maxRally = rally.rallyCount;
@@ -1364,7 +1649,7 @@
         const relY  = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
         // π - deflectAngle puts the ball in the left-travelling hemisphere.
         ball.angle  = Math.PI - deflectAngle(relY);
-        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, ballSpeedInit(), ballSpeedMax());
         syncBallVelocity(ball);
         rally.rallyCount += 1;
         if (rally.rallyCount > rally.maxRally) rally.maxRally = rally.rallyCount;
@@ -1439,11 +1724,12 @@
       ctx.fillText(playerPaddle.score, CANVAS_W / 4, 20);
       ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
 
-      // Player paddle
-      ctx.fillStyle = '#fff';
+      // Player paddle (colour chosen in the in-canvas menu)
+      ctx.fillStyle = settings.paddleColor;
       ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
 
       // AI paddle
+      ctx.fillStyle = '#fff';
       ctx.fillRect(aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h);
 
       // Ball (only when playing)
@@ -1462,6 +1748,9 @@
 
       // When gameover, the canvas shows the final frozen frame so that the
       // semi-transparent HTML overlay renders above a recognisable game state.
+
+      // In-canvas menu layer: gear icon while playing, full menu otherwise.
+      renderMenuLayer();
     }
 
     // ── Game loop ─────────────────────────────────────────────────────────────
@@ -1497,8 +1786,8 @@
       rafId = requestAnimationFrame(loop);
     }
 
-    // Kick off the animation loop
-    sendMendelEvent('game_started');
+    // Kick off the animation loop (the game itself starts from the menu's
+    // Start button, which is where 'game_started' is reported).
     rafId = requestAnimationFrame(loop);
   </script>
 </body>

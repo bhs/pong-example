@@ -37,6 +37,9 @@ const CLIENT_EVENT_COUNTER_NAMES = [
   'game_started', 'visit',
   // 'page_view' fires once per page load, from the browser.
   'page_view',
+  // 'settings_changed' is also fired by the in-canvas menu when the player
+  // picks a different paddle colour, ball speed or difficulty.
+  'settings_changed',
 ];
 
 // Counters recorded entirely server-side (no browser round-trip): a
