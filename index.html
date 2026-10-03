@@ -444,6 +444,16 @@
       pauseTimer: 1.2,        // seconds to wait before serving next ball
     };
 
+    // Player preferences / customization (paddle colour, canvas theme,
+    // difficulty setting). Deliberately kept apart from the per-game state
+    // above: resetGame() never touches this object, so these values persist
+    // across restarts.
+    const settings = {
+      paddleColor: null,   // null = use the default render colour
+      canvasTheme: null,   // null = use the default canvas theme
+      difficulty:  null,   // null = use the default difficulty
+    };
+
     // Rally state — tracks consecutive paddle hits for difficulty escalation
     // and the short score-flash effect.
     //
@@ -601,9 +611,16 @@
     }
 
     /**
-     * Reset both paddles and scores; start fresh.
+     * Reset ALL mutable game state (ball position/velocity/angle, paddles,
+     * scores, rally/difficulty escalation, game phase) to a fresh game.
+     * Does not touch `settings`, so preferences persist across restarts.
      */
     function resetGame() {
+      ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
+      ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
+      ball.speed = BALL_SPEED_INIT;
+      ball.angle = 0;
+      syncBallVelocity(ball);
       playerPaddle.y = CANVAS_H / 2 - PADDLE_H / 2;
       aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
       playerPaddle.score = 0;
