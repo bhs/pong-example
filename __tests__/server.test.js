@@ -417,7 +417,10 @@ describe('GET /api/preferences', () => {
     const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
     const res = await get(app, '/api/preferences');
     expect(res.status).toBe(200);
-    expect(res.body.preferences).toEqual({ theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' });
+    expect(res.body.preferences).toEqual({
+      theme: 'dark', soundEnabled: true, paddleColor: '#ffffff',
+      ballColor: '#ffffff', bgColor: '#00008b', presetName: null,
+    });
   });
 
   test('returns previously saved preferences', async () => {
@@ -474,6 +477,39 @@ describe('PUT /api/preferences', () => {
     const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
     const res = await put(app, '/api/preferences', { soundEnabled: 'yes' });
     expect(res.status).toBe(400);
+  });
+
+  test('stores ball / background colours and preset name, visible on next GET', async () => {
+    const prisma = createFakePrisma();
+    const app    = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    const res = await put(app, '/api/preferences', {
+      paddleColor: '#00FF00', ballColor: '#ffff00', bgColor: '#000000', presetName: 'neon',
+    });
+    expect(res.status).toBe(200);
+    const row = prisma.__preferences.get(ALICE.id);
+    expect(row.paddleColor).toBe('#00ff00');
+    expect(row.ballColor).toBe('#ffff00');
+    expect(row.bgColor).toBe('#000000');
+    expect(row.presetName).toBe('neon');
+    const got = await get(app, '/api/preferences');
+    expect(got.body.preferences.ballColor).toBe('#ffff00');
+  });
+
+  test('returns 400 for a non-hex ballColor or bgColor', async () => {
+    const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
+    expect((await put(app, '/api/preferences', { ballColor: 'red' })).status).toBe(400);
+    expect((await put(app, '/api/preferences', { bgColor: '#12' })).status).toBe(400);
+    expect((await put(app, '/api/preferences', { presetName: 5 })).status).toBe(400);
+  });
+
+  test('reads are served from the cache after the first fetch', async () => {
+    const prisma = createFakePrisma();
+    const spy = jest.spyOn(prisma.preference, 'findUnique');
+    const app = createApp(prisma, { testAuth: loggedInAs(ALICE) });
+    await put(app, '/api/preferences', { ballColor: '#ff0000' });
+    await get(app, '/api/preferences');
+    await get(app, '/api/preferences');
+    expect(spy).not.toHaveBeenCalled();
   });
 
   test('returns 400 for an invalid paddleColor', async () => {

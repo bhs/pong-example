@@ -74,6 +74,20 @@ model Preference {
   theme        String   @default("dark")
   soundEnabled Boolean  @default(true)
   paddleColor  String   @default("#ffffff")
+
+  // Style preferences edited through the Settings modal's colour pickers and
+  // preset buttons (see index.html), written via a debounced PUT
+  // /api/preferences. `paddleColor` above is the pre-existing column. The
+  // physical columns are prefixed `mendel_exp_style_prefs_` (this table is
+  // shared by every concurrently-running variation of the
+  // 'user-style-preferences-pane' hop, each applying its own migration
+  // against the same database) while the Prisma field names stay unprefixed
+  // for application code. presetName is NULL when the colours were picked by
+  // hand rather than by a preset button.
+  ballColor  String  @default("#ffffff") @map("mendel_exp_style_prefs_ball_color")
+  bgColor    String  @default("#00008b") @map("mendel_exp_style_prefs_bg_color")
+  presetName String? @map("mendel_exp_style_prefs_preset_name")
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

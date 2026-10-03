@@ -28,8 +28,9 @@
  *               when unset. Also tracks lastPlayedAt (bumped on every POST
  *               /api/scores call, regardless of whether that game also set a
  *               new best).
- *   Preference  One row per user (FK → User.id): theme / sound / paddle
- *               color settings.
+ *   Preference  One row per user (FK → User.id): theme / sound settings plus
+ *               the style preferences (paddle / ball / background colours and
+ *               an optional preset name) edited in the Settings modal.
  *   HighScore   One row per user (FK → User.id): that user's personal best
  *               score, plus `longestRally` — that same player's longest-ever
  *               rally (consecutive paddle hits without a miss), an
@@ -99,6 +100,20 @@ const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const telemetry      = require('./telemetry');
 const defaultPrisma  = require('./lib/prisma');
+const { createPreferencesCache } = require('./lib/preferencesCache');
+
+// Defaults returned when a user has no saved Preference row yet.
+const DEFAULT_PREFERENCES = {
+  theme: 'dark',
+  soundEnabled: true,
+  paddleColor: '#ffffff',
+  ballColor: '#ffffff',
+  bgColor: '#00008b',
+  presetName: null,
+};
+
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const PRESET_NAME_MAX_LENGTH = 32;
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -133,6 +148,10 @@ function createApp(prisma = defaultPrisma, options = {}) {
   app.set('trust proxy', 1);
 
   app.use(express.json());
+
+  // Short-TTL LRU in front of Preference reads (per app instance). Writes
+  // always go through Prisma to MySQL and then refresh the cached row.
+  const preferencesCache = createPreferencesCache();
 
   // ── Session middleware (HttpOnly cookie, in-memory store) ────────────────
   //
@@ -410,9 +429,14 @@ function createApp(prisma = defaultPrisma, options = {}) {
     if (!requireLogin(req, res)) return;
 
     try {
-      const pref = await prisma.preference.findUnique({ where: { userId: req.user.id } });
+      const userId = req.user.id;
+      let pref = preferencesCache.get(userId);
+      if (!pref) {
+        pref = await prisma.preference.findUnique({ where: { userId } });
+        if (pref) preferencesCache.set(userId, pref);
+      }
       return res.status(200).json({
-        preferences: pref || { theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' },
+        preferences: pref || { ...DEFAULT_PREFERENCES },
       });
     } catch (err) {
       return next(err);
@@ -422,7 +446,10 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // ── PUT /api/preferences ─────────────────────────────────────────────────
   //
   // Create or update the logged-in user's preferences.
-  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: string }
+  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: string,
+  //         ballColor?: string, bgColor?: string, presetName?: string | null }
+  // Colours must be #rrggbb hex strings. The Settings modal sends this
+  // debounced (~500ms) while a colour picker is being dragged.
 
   app.put('/api/preferences', async (req, res, next) => {
     if (!requireLogin(req, res)) return;
@@ -444,11 +471,22 @@ function createApp(prisma = defaultPrisma, options = {}) {
       data.soundEnabled = body.soundEnabled;
     }
 
-    if (body.paddleColor !== undefined) {
-      if (typeof body.paddleColor !== 'string' || body.paddleColor.trim() === '') {
-        return res.status(400).json({ error: 'paddleColor must be a non-empty string' });
+    for (const field of ['paddleColor', 'ballColor', 'bgColor']) {
+      if (body[field] === undefined) continue;
+      if (typeof body[field] !== 'string' || !HEX_COLOR_RE.test(body[field].trim())) {
+        return res.status(400).json({ error: `${field} must be a #rrggbb hex colour` });
       }
-      data.paddleColor = body.paddleColor.trim();
+      data[field] = body[field].trim().toLowerCase();
+    }
+
+    if (body.presetName !== undefined) {
+      if (body.presetName === null) {
+        data.presetName = null;
+      } else if (typeof body.presetName !== 'string' || body.presetName.trim().length > PRESET_NAME_MAX_LENGTH) {
+        return res.status(400).json({ error: `presetName must be a string of at most ${PRESET_NAME_MAX_LENGTH} characters or null` });
+      } else {
+        data.presetName = body.presetName.trim() || null;
+      }
     }
 
     try {
@@ -457,6 +495,7 @@ function createApp(prisma = defaultPrisma, options = {}) {
         update: data,
         create: { userId: req.user.id, ...data },
       });
+      preferencesCache.set(req.user.id, pref);
       telemetry.recordServerEvent('settings_changed', req);
       return res.status(200).json({ preferences: pref });
     } catch (err) {

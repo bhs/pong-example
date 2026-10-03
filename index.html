@@ -109,6 +109,21 @@
     // shows a value the server would go on to reject.
     const NICKNAME_MAX_LENGTH = 20;
 
+    // ── Style preferences (render variables) ──────────────────────────────────
+    //
+    // Colours used by render(). Updated synchronously by the Settings modal's
+    // colour pickers / preset buttons for instant visual feedback; persisted
+    // to MySQL through a debounced PUT /api/preferences and restored from
+    // GET /api/preferences on login / page load.
+    const DEFAULT_STYLE = { paddleColor: '#ffffff', ballColor: '#ffffff', bgColor: '#00008b', presetName: null };
+    const STYLE_PRESETS = {
+      classic: { label: 'Classic', paddleColor: '#ffffff', ballColor: '#ffffff', bgColor: '#00008b' },
+      neon:    { label: 'Neon',    paddleColor: '#39ff14', ballColor: '#ff2bd6', bgColor: '#0b0b1a' },
+    };
+    const STYLE_SAVE_DEBOUNCE_MS = 500;
+    const styleColors = { ...DEFAULT_STYLE };
+    let styleSaveTimer = null;
+
     // ── Canvas setup ──────────────────────────────────────────────────────────
     const canvas = document.getElementById('gameCanvas');
     const ctx    = canvas.getContext('2d');
@@ -381,6 +396,31 @@
         }
         #pong-nickname-count.invalid {
           color: #ff6b6b;
+        }
+        #pong-style-section {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding-top: 6px;
+          border-top: 1px solid rgba(255,255,255,0.12);
+        }
+        .pong-style-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+        .pong-style-row input[type="color"] {
+          width: 44px;
+          height: 26px;
+          padding: 0;
+          border: 1px solid rgba(255,255,255,0.25);
+          border-radius: 4px;
+          background: transparent;
+          cursor: pointer;
+        }
+        #pong-style-presets {
+          display: flex;
+          gap: 8px;
         }
         #pong-settings-actions {
           display: flex;
@@ -1023,6 +1063,8 @@
       count.id = 'pong-nickname-count';
       card.appendChild(count);
 
+      card.appendChild(buildStyleSection());
+
       const flash = document.createElement('div');
       flash.id = 'pong-settings-flash';
       card.appendChild(flash);
@@ -1057,6 +1099,116 @@
 
       input.focus();
       input.select();
+    }
+
+    /**
+     * Build the "Style" section of the Settings modal: three colour pickers
+     * (paddle / ball / background) and two preset buttons. Any change updates
+     * the in-memory render colours immediately and schedules a debounced save.
+     */
+    function buildStyleSection() {
+      const section = document.createElement('div');
+      section.id = 'pong-style-section';
+
+      const heading = document.createElement('label');
+      heading.textContent = 'Style';
+      section.appendChild(heading);
+
+      const pickers = {};
+      [['paddleColor', 'Paddle'], ['ballColor', 'Ball'], ['bgColor', 'Background']].forEach(([key, text]) => {
+        const row = document.createElement('div');
+        row.className = 'pong-style-row';
+
+        const lbl = document.createElement('label');
+        lbl.setAttribute('for', `pong-style-${key}`);
+        lbl.textContent = text;
+        row.appendChild(lbl);
+
+        const picker = document.createElement('input');
+        picker.type = 'color';
+        picker.id = `pong-style-${key}`;
+        picker.value = styleColors[key];
+        picker.addEventListener('input', () => {
+          applyStyle({ [key]: picker.value, presetName: null });
+        });
+        pickers[key] = picker;
+        row.appendChild(picker);
+        section.appendChild(row);
+      });
+
+      const presets = document.createElement('div');
+      presets.id = 'pong-style-presets';
+      Object.keys(STYLE_PRESETS).forEach((name) => {
+        const preset = STYLE_PRESETS[name];
+        const btn = document.createElement('button');
+        btn.id = `pong-style-preset-${name}`;
+        btn.className = 'pong-auth-btn pong-auth-btn-ghost';
+        btn.textContent = preset.label;
+        btn.addEventListener('click', () => {
+          applyStyle({
+            paddleColor: preset.paddleColor,
+            ballColor:   preset.ballColor,
+            bgColor:     preset.bgColor,
+            presetName:  name,
+          });
+          Object.keys(pickers).forEach((key) => { pickers[key].value = styleColors[key]; });
+        });
+        presets.appendChild(btn);
+      });
+      section.appendChild(presets);
+
+      return section;
+    }
+
+    /**
+     * Apply style changes to the render variables right away, then schedule
+     * a debounced (~500ms) PUT /api/preferences so rapid colour-picker drags
+     * result in a single write. Only persisted while signed in.
+     */
+    function applyStyle(changes) {
+      Object.assign(styleColors, changes);
+      if (!currentUser) return;
+      clearTimeout(styleSaveTimer);
+      styleSaveTimer = setTimeout(saveStylePreferences, STYLE_SAVE_DEBOUNCE_MS);
+    }
+
+    async function saveStylePreferences() {
+      styleSaveTimer = null;
+      if (!currentUser) return;
+      try {
+        await fetch('/api/preferences', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            paddleColor: styleColors.paddleColor,
+            ballColor:   styleColors.ballColor,
+            bgColor:     styleColors.bgColor,
+            presetName:  styleColors.presetName,
+          }),
+        });
+      } catch (err) {
+        // Best-effort: the colours stay applied locally for this session.
+      }
+    }
+
+    /**
+     * Load the signed-in player's saved style from GET /api/preferences into
+     * the render variables. Failures leave the current colours untouched.
+     */
+    async function loadStylePreferences() {
+      try {
+        const res = await fetch('/api/preferences', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const p = (data && data.preferences) || {};
+        ['paddleColor', 'ballColor', 'bgColor'].forEach((key) => {
+          if (typeof p[key] === 'string' && /^#[0-9a-fA-F]{6}$/.test(p[key])) styleColors[key] = p[key];
+        });
+        styleColors.presetName = p.presetName || null;
+      } catch (err) {
+        // Keep defaults.
+      }
     }
 
     /**
@@ -1142,6 +1294,7 @@
           bestRallyBucket = Boolean(data.bestRallyBucket);
           renderSignedIn(bar, data.user);
           refreshRecentGames();
+          loadStylePreferences();
         } else {
           currentUser     = null;
           bestRallyBucket = false;
@@ -1409,7 +1562,7 @@
     function render() {
       // Clear to dark blue
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.fillStyle = '#00008b';
+      ctx.fillStyle = styleColors.bgColor;
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       // Score flash: tinted background for a few frames after scoring
@@ -1440,14 +1593,15 @@
       ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
 
       // Player paddle
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = styleColors.paddleColor;
       ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
 
-      // AI paddle
+      // AI paddle (same colour as the player's paddle)
       ctx.fillRect(aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h);
 
       // Ball (only when playing)
       if (game.phase === 'playing') {
+        ctx.fillStyle = styleColors.ballColor;
         ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
       }
 

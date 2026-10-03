@@ -3,7 +3,17 @@
     {
       "kind": "secret",
       "name": "DATABASE_URL",
-      "description": "MySQL connection string, mysql://user:password@host:3306/dbname"
+      "description": "MySQL connection string, mysql://user:password@host:3306/dbname",
+      "hermetic_alternate": "mysql://app:app_test_password@{{host:mysql}}:3306/app",
+      "instructions": "Create a MySQL 8 database and account, e.g.: CREATE DATABASE app; CREATE USER 'app'@'%' IDENTIFIED BY '<password>'; GRANT ALL PRIVILEGES ON app.* TO 'app'@'%'; GRANT ALL PRIVILEGES ON `mendel\\_sandbox\\_%`.* TO 'app'@'%'; The account 'app' may also create, change and drop databases whose names begin mendel_sandbox_, and nothing else beyond its own database.",
+      "datastore": {
+        "service": "mysql",
+        "data_path": "/var/lib/mysql",
+        "credential_env": "MYSQL_PASSWORD",
+        "value": "mysql://app:{{credential:mysql}}@{{host:mysql}}:3306/app",
+        "capacity_gb": 5,
+        "capacity_basis": "Users, one preference row per user, high scores and one small game-history row per finished game; well under 1 GB per year, 5 GB leaves ample headroom."
+      }
     },
     {
       "kind": "secret",
