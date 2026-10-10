@@ -20,6 +20,7 @@ services:
       context: ..
     environment:
       DATABASE_URL: mysql://pong_test:pong_test_password@mysql:3306/pong_test
+      ENABLED_STUBS: google-sign-in
     depends_on:
       mysql:
         condition: service_healthy

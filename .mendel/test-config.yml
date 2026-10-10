@@ -2,4 +2,4 @@ version: 1
 service: app
 test_command: npm test
 startup_timeout: 120
-seed_command: node prisma/seed.js
+seed_command: npm run seed

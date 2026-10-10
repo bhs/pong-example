@@ -1,54 +1,104 @@
 'use strict';
 
-// Demo seed: fictional players with saved game settings, high scores and
-// history. Deterministic; run with `npm run seed` after migrations.
+/**
+ * prisma/seed.js — fills an empty database with fictional players for demos.
+ *
+ *   npm run seed
+ *
+ * Run by hand (never at startup). Idempotent: players are upserted and their
+ * game history is replaced. These are the people the demo's sign-in picker
+ * offers.
+ */
+
 const prisma = require('../lib/prisma');
 
-const COLORS = ['#ffffff', '#ff5555', '#50fa7b', '#8be9fd', '#f1fa8c', '#bd93f9'];
+const PLAYERS = [
+  ['Avery Lindqvist', 'avery.lindqvist', 'Rally King'],
+  ['Bao Tran', 'bao.tran', null],
+  ['Carmen Ortega', 'carmen.ortega', 'Topspin'],
+  ['Dmitri Volkov', 'dmitri.volkov', null],
+  ['Esi Mensah', 'esi.mensah', 'Esi M'],
+  ['Farah Haddad', 'farah.haddad', null],
+  ['Gustav Berg', 'gustav.berg', 'Gus'],
+  ['Hana Kobayashi', 'hana.kobayashi', null],
+  ['Imani Okafor', 'imani.okafor', 'Smash'],
+  ['Jonas Weber', 'jonas.weber', null],
+  ['Keiko Ito', 'keiko.ito', null],
+  ['Liam Doyle', 'liam.doyle', 'Paddle Pal'],
+];
+
+const THEMES = ['dark', 'light', 'neon'];
 const SPEEDS = ['slow', 'normal', 'fast'];
 const LEVELS = ['easy', 'normal', 'hard'];
-const NAMES = ['Ada Example', 'Ben Sample', 'Cleo Demo', 'Dev Testperson', 'Eli Fictional', 'Fay Placeholder'];
+const COLORS = ['#ffffff', '#ff5555', '#55ff55', '#5599ff'];
+
+// Small deterministic generator (LCG) so every run writes the same data.
+function makeRandom(seed) {
+  let state = seed;
+  return () => {
+    state = (state * 1664525 + 1013904223) % 4294967296;
+    return state / 4294967296;
+  };
+}
 
 async function main() {
+  const rand = makeRandom(20240501);
+  const int = (min, max) => min + Math.floor(rand() * (max - min + 1));
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+
   let games = 0;
-  for (let i = 0; i < NAMES.length; i++) {
-    const id = `seed-user-${i + 1}`;
+  let scores = 0;
+
+  for (let i = 0; i < PLAYERS.length; i += 1) {
+    const [name, handle, nickname] = PLAYERS[i];
+    const id = `demo-player-${String(i + 1).padStart(2, '0')}`;
     const data = {
-      id,
-      email: `player${i + 1}@example.com`,
-      name: NAMES[i],
-      nickname: NAMES[i].split(' ')[0],
+      email: `${handle}@example.com`,
+      name,
+      avatar: null,
+      nickname,
     };
-    await prisma.user.upsert({ where: { id }, update: {}, create: data });
-    const prefs = {
-      paddleColor: COLORS[i % COLORS.length],
-      ballSpeed: SPEEDS[i % SPEEDS.length],
-      difficulty: LEVELS[(i * 2) % LEVELS.length],
-    };
-    await prisma.preference.upsert({
-      where: { userId: id },
-      update: prefs,
-      create: { userId: id, ...prefs },
-    });
-    const best = 5 + i * 4;
+
+    await prisma.user.upsert({ where: { id }, update: data, create: { id, ...data } });
+
+    // A few players keep default preferences; the rest have saved settings.
+    if (i % 3 !== 2) {
+      const pref = { theme: THEMES[i % THEMES.length], soundEnabled: i % 4 !== 1, paddleColor: COLORS[i % COLORS.length], ballSpeed: SPEEDS[i % SPEEDS.length], difficulty: LEVELS[(i * 2) % LEVELS.length] };
+      await prisma.preference.upsert({ where: { userId: id }, update: pref, create: { userId: id, ...pref } });
+    }
+
+    await prisma.gameHistory.deleteMany({ where: { userId: id } });
+    const gameCount = int(3, 14);
+    let best = 0;
+    let bestRally = 0;
+    let lastPlayed = 0;
+    for (let g = 0; g < gameCount; g += 1) {
+      const score = int(1, 11);
+      const duration = int(25, 240);
+      const finishedAt = new Date(now - int(0, 20) * DAY - int(0, 23) * 3600 * 1000);
+      best = Math.max(best, score);
+      bestRally = Math.max(bestRally, int(2, 25));
+      lastPlayed = Math.max(lastPlayed, finishedAt.getTime());
+      await prisma.gameHistory.create({ data: { userId: id, score, duration, finishedAt } });
+      games += 1;
+    }
+
+    await prisma.user.update({ where: { id }, data: { lastPlayedAt: new Date(lastPlayed) } });
     await prisma.highScore.upsert({
       where: { userId: id },
-      update: {},
-      create: { userId: id, score: best, longestRally: 6 + i * 3 },
+      update: { score: best, longestRally: bestRally },
+      create: { userId: id, score: best, longestRally: bestRally },
     });
-    const existing = await prisma.gameHistory.count({ where: { userId: id } });
-    if (existing === 0) {
-      for (let g = 0; g < 4; g++) {
-        await prisma.gameHistory.create({
-          data: { userId: id, score: Math.max(1, best - g * 2), duration: 40 + g * 15 + i * 5 },
-        });
-        games++;
-      }
-    }
+    scores += 1;
   }
-  console.log(`Seeded ${NAMES.length} users with preferences and high scores, ${games} game history rows`);
+
+  console.log(`Seeded ${PLAYERS.length} players, ${scores} high scores, ${games} finished games.`);
 }
 
 main()
-  .catch((e) => { console.error(e); process.exitCode = 1; })
+  .catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  })
   .finally(() => prisma.$disconnect());
