@@ -52,7 +52,7 @@ const SANDBOX_NAME_RE = /^mendel_sandbox_[A-Za-z0-9_]+$/;
 // repository's migrations create, alter and drop tables, indexes and
 // foreign keys (CREATE, ALTER, DROP, INDEX, REFERENCES); MySQL migrations in
 // general may also create/alter/drop views and triggers (CREATE VIEW, SHOW
-// VIEW, TRIGGER, EVENT); and a migration's up/down SQL may read or write
+// VIEW, TRIGGER); and a migration's up/down SQL may read or write
 // rows (INSERT, SELECT, UPDATE, DELETE) — the same rights the application's
 // own credential already has on its own database, just not yet on the
 // mendel_sandbox_ namespace.
@@ -65,7 +65,6 @@ const GRANT_PRIVILEGES = [
   'CREATE VIEW',
   'SHOW VIEW',
   'TRIGGER',
-  'EVENT',
   'INSERT',
   'SELECT',
   'UPDATE',
@@ -96,7 +95,7 @@ const RECORD_STORE_NAME = 'db';
 // migration as applied exactly as it would if it had been committed and
 // deployed normally. Prisma Migrate has no concept of a down-migration to
 // prefer instead, so `down` carries the plain SQL that reverses `up`'s SQL
-// — run directly against the MySQL server by sandbox-down and
+// — run with `prisma db execute` by sandbox-down and
 // production-down — plus the same migration_name, so those two commands can
 // delete the row `up` left in Prisma's own `_prisma_migrations` bookkeeping
 // table, leaving the tool as if the migration had never been applied.
@@ -144,9 +143,9 @@ const MIGRATION_CONTRACT = {
           'Reverses up.sql completely, then deletes the row up left in Prisma\'s own ' +
           '_prisma_migrations bookkeeping table (matched by migration_name), so a later ' +
           'apply of the same migration runs it again instead of finding it already done. ' +
-          'Prisma Migrate does not generate or run down-migrations, so both the SQL and the ' +
-          'bookkeeping deletion are run directly against the MySQL server, never through ' +
-          '`prisma migrate deploy`.',
+          'Prisma Migrate does not generate or run down-migrations, so the SQL is run as one ' +
+          'script with `prisma db execute` and the bookkeeping row is then deleted, never ' +
+          'through `prisma migrate deploy`.',
         properties: {
           migration_name: { $ref: '#/$defs/migrationName' },
           sql: { $ref: '#/$defs/sqlStatements' }
@@ -160,18 +159,18 @@ const MIGRATION_CONTRACT = {
     'prisma/migrations/<up.migration_name>/migration.sql and applied by running ' +
     '`prisma migrate deploy` against the target database, exactly as this application\'s ' +
     'own startup and the migrate stage do. down.sql is plain SQL that undoes up.sql ' +
-    'completely, run directly against the MySQL server (Prisma Migrate has no ' +
+    'completely, run as one script with `prisma db execute` (Prisma Migrate has no ' +
     'down-migration of its own to run instead), after which the row up.migration_name left ' +
     'in _prisma_migrations is deleted, so the tool\'s bookkeeping ends up exactly as if the ' +
     'migration had never been applied.',
   example: {
     up: {
-      migration_name: '20240301000000_add_users_locale',
+      migration_name: '20240601000000_add_users_locale',
       sql:
-        'ALTER TABLE `users` ADD COLUMN `locale` VARCHAR(191) NULL;'
+        '-- AlterTable\nALTER TABLE `users` ADD COLUMN `locale` VARCHAR(191) NULL;'
     },
     down: {
-      migration_name: '20240301000000_add_users_locale',
+      migration_name: '20240601000000_add_users_locale',
       sql: 'ALTER TABLE `users` DROP COLUMN `locale`;'
     }
   }
@@ -203,6 +202,30 @@ function sandboxDatabaseUrl(name) {
   return parsed.toString();
 }
 
+// Runs a SQL script against `databaseUrl` with `prisma db execute`, the
+// migration tool's own way of applying raw SQL. Unlike Prisma Client's raw
+// queries (one statement per call, over the server-side prepared-statement
+// protocol, which MySQL refuses for CREATE TRIGGER), it accepts a whole
+// script. The schema file is only read, for its `url = env("DATABASE_URL")`
+// datasource, so nothing is written to this image's copy of the repository.
+function runSqlScript(databaseUrl, sql) {
+  return spawnSync(
+    'prisma',
+    ['db', 'execute', '--stdin', '--schema', '/app/prisma/schema.prisma'],
+    { input: sql, env: { ...process.env, DATABASE_URL: databaseUrl }, encoding: 'utf8' }
+  );
+}
+
+function scriptFailure(result) {
+  if (result.error) return result.error.message;
+  return ((result.stdout || '') + (result.stderr || '')).trim() || `exit status ${result.status}`;
+}
+
+// Quotes a name as a MySQL identifier.
+function quoteIdent(name) {
+  return '`' + String(name).replace(/`/g, '``') + '`';
+}
+
 // Reads all of stdin and returns it as a string.
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -212,19 +235,6 @@ function readStdin() {
     process.stdin.on('end', () => resolve(data));
     process.stdin.on('error', reject);
   });
-}
-
-// Splits a semicolon-terminated block of SQL statements (the form
-// migration_contract's sqlStatements $def describes) into individual
-// statements. Needed because, like CREATE TRIGGER elsewhere in this file,
-// this program's only available MySQL client (Prisma Client) sends each
-// $executeRawUnsafe call over the server-side prepared-statement protocol,
-// which does not accept more than one statement per call.
-function splitSqlStatements(sql) {
-  return sql
-    .split(';')
-    .map((statement) => statement.trim())
-    .filter((statement) => statement.length > 0);
 }
 
 // The database name the application itself reaches, parsed out of
@@ -325,7 +335,9 @@ async function probe() {
       throw new Error('server returned no version string');
     }
 
-    const versionString = String(raw);
+    // MariaDB prefixes its version with "5.5.5-" for replication
+    // compatibility; the real version follows it.
+    const versionString = String(raw).replace(/^5\.5\.5-(?=\d+\.\d+\.\d+-MariaDB)/i, '');
     const engine = /mariadb/i.test(versionString) ? 'mariadb' : 'mysql';
     const match = /^(\d+\.\d+\.\d+)/.exec(versionString);
     const version = match ? match[1] : versionString;
@@ -359,6 +371,54 @@ async function probe() {
   }
 }
 
+// Exercises, inside the freshly created (still empty) sandbox, every right a
+// rehearsal will need: creating, altering and dropping tables, indexes,
+// foreign keys, views and triggers, and reading and writing rows. Run
+// before anything is copied, so that a credential missing any one of them is
+// told about all of them at once rather than one refusal at a time. Only
+// scratch objects inside the sandbox are touched, and all are removed again.
+async function verifyRights(conn, name, url) {
+  const q = (t) => `${quoteIdent(name)}.${quoteIdent(t)}`;
+  const a = q('_phase_probe_a');
+  const b = q('_phase_probe_b');
+  const v = q('_phase_probe_v');
+  await conn.$executeRawUnsafe(`CREATE TABLE ${a} (id INT NOT NULL, PRIMARY KEY (id))`);
+  await conn.$executeRawUnsafe(`CREATE TABLE ${b} (id INT NOT NULL, a_id INT NOT NULL, PRIMARY KEY (id))`);
+  await conn.$executeRawUnsafe(`ALTER TABLE ${b} ADD COLUMN c INT NULL`);
+  await conn.$executeRawUnsafe(`CREATE INDEX _phase_probe_i ON ${b} (c)`);
+  await conn.$executeRawUnsafe(
+    `ALTER TABLE ${b} ADD CONSTRAINT _phase_probe_fk FOREIGN KEY (a_id) REFERENCES ${a} (id)`
+  );
+  await conn.$executeRawUnsafe(`INSERT INTO ${a} (id) VALUES (1)`);
+  await conn.$queryRawUnsafe(`SELECT id FROM ${a}`);
+  await conn.$executeRawUnsafe(`UPDATE ${a} SET id = 2`);
+  await conn.$executeRawUnsafe(`DELETE FROM ${a}`);
+  await conn.$executeRawUnsafe(`CREATE VIEW ${v} AS SELECT id FROM ${a}`);
+  await conn.$queryRawUnsafe(`SHOW CREATE VIEW ${v}`);
+  await conn.$executeRawUnsafe(`DROP VIEW ${v}`);
+
+  // Triggers can only be created through the tool's script executor. Only a
+  // refusal of the right itself counts here: a server that refuses triggers
+  // for some other reason (e.g. binary logging settings) is not something a
+  // grant can fix.
+  const t = q('_phase_probe_t');
+  const made = runSqlScript(
+    url,
+    `CREATE TRIGGER ${t} BEFORE INSERT ON ${a} FOR EACH ROW SET @phase_probe = 1;\n`
+  );
+  if (made.status === 0) {
+    const dropped = runSqlScript(url, `DROP TRIGGER ${t};\n`);
+    if (dropped.status !== 0) throw new Error(scriptFailure(dropped));
+  } else if (isAccessDeniedError(new Error(scriptFailure(made)))) {
+    throw new Error(scriptFailure(made));
+  } else {
+    process.stderr.write(`phase: note: could not check the TRIGGER right: ${scriptFailure(made)}\n`);
+  }
+
+  await conn.$executeRawUnsafe(`DROP TABLE ${b}`);
+  await conn.$executeRawUnsafe(`DROP TABLE ${a}`);
+}
+
 // Builds `name` as a MySQL database beside the application's own, with the
 // same tables (and views/triggers, if any), no rows, other than a whole
 // copy of _prisma_migrations — the migration tool's own record of which
@@ -378,8 +438,9 @@ async function sandboxBuild(name) {
   const conn = loadPrismaClient();
   try {
     // If a previous run died partway through, start clean.
-    await conn.$executeRawUnsafe(`DROP DATABASE IF EXISTS \`${name}\``);
-    await conn.$executeRawUnsafe(`CREATE DATABASE \`${name}\``);
+    await conn.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${quoteIdent(name)}`);
+    await conn.$executeRawUnsafe(`CREATE DATABASE ${quoteIdent(name)}`);
+    await verifyRights(conn, name, sandboxDatabaseUrl(name));
 
     const objects = await conn.$queryRawUnsafe(
       'SELECT TABLE_NAME AS name, TABLE_TYPE AS type FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?',
@@ -394,26 +455,29 @@ async function sandboxBuild(name) {
     // defaults, indexes, primary/unique/foreign keys) from the server
     // itself, not from this repository's schema files or migrations.
     // Foreign keys are disabled while creating so table order doesn't
-    // matter — every referenced table is created in this same sandbox.
-    await conn.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS=0');
-    try {
-      for (const table of baseTables) {
-        const rows = await conn.$queryRawUnsafe(
-          `SHOW CREATE TABLE \`${appDb}\`.\`${table}\``
-        );
-        // Prisma's MySQL driver doesn't preserve SHOW's own column names
-        // (it reports them positionally as f0, f1, ...); SHOW CREATE TABLE
-        // always returns exactly (Table, Create Table), in that order.
-        const createSql = Object.values(rows[0])[1];
-        const sandboxSql = createSql.replace(
-          /^CREATE TABLE `([^`]+)`/,
-          `CREATE TABLE \`${name}\`.\`$1\``
-        );
-        await conn.$executeRawUnsafe(sandboxSql);
+    // matter — every referenced table is created in this same sandbox. The
+    // setting is per connection, so it all runs in one transaction, which
+    // pins the work to a single connection of Prisma's pool.
+    await conn.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS=0');
+      try {
+        for (const table of baseTables) {
+          const rows = await tx.$queryRawUnsafe(
+            `SHOW CREATE TABLE ${quoteIdent(appDb)}.${quoteIdent(table)}`
+          );
+          // SHOW CREATE TABLE always returns exactly (Table, Create Table),
+          // in that order; read it positionally rather than by name.
+          const createSql = Object.values(rows[0])[1];
+          const sandboxSql = createSql.replace(
+            /^CREATE TABLE `((?:[^`]|``)+)`/,
+            (_, tableName) => `CREATE TABLE ${quoteIdent(name)}.\`${tableName}\``
+          );
+          await tx.$executeRawUnsafe(sandboxSql);
+        }
+      } finally {
+        await tx.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS=1');
       }
-    } finally {
-      await conn.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS=1');
-    }
+    }, { timeout: 600000, maxWait: 60000 });
 
     // Views: information_schema.VIEWS reports the SELECT with its
     // referenced tables already schema-qualified to the production
@@ -428,44 +492,30 @@ async function sandboxBuild(name) {
         appDb,
         view
       );
-      const definition = rows[0].def.replace(appDbQualifier, `\`${name}\`.`);
+      const definition = rows[0].def.replace(appDbQualifier, () => `${quoteIdent(name)}.`);
       await conn.$executeRawUnsafe(
-        `CREATE VIEW \`${name}\`.\`${view}\` AS ${definition}`
+        `CREATE VIEW ${quoteIdent(name)}.${quoteIdent(view)} AS ${definition}`
       );
     }
 
-    // Triggers: SHOW CREATE TRIGGER returns a statement scoped to the
-    // current database with no schema qualifiers — add them, and drop the
-    // DEFINER clause since this credential may not hold the privilege to
-    // set an arbitrary one.
+    // Triggers: rebuilt from information_schema.TRIGGERS (timing, event,
+    // table and body), created inside the sandbox through the tool's script
+    // executor, since MySQL refuses CREATE TRIGGER over the prepared-statement
+    // protocol that Prisma Client's raw queries use. No DEFINER is given, so
+    // they are created as this credential.
     const triggers = await conn.$queryRawUnsafe(
-      'SELECT TRIGGER_NAME AS name FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?',
+      'SELECT TRIGGER_NAME AS name, ACTION_TIMING AS timing, EVENT_MANIPULATION AS event, ' +
+      'EVENT_OBJECT_TABLE AS tbl, ACTION_STATEMENT AS body ' +
+      'FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME',
       appDb
     );
     for (const trig of triggers) {
-      const rows = await conn.$queryRawUnsafe(
-        `SHOW CREATE TRIGGER \`${appDb}\`.\`${trig.name}\``
+      const created = runSqlScript(
+        sandboxDatabaseUrl(name),
+        `CREATE TRIGGER ${quoteIdent(name)}.${quoteIdent(trig.name)} ${trig.timing} ${trig.event} ` +
+        `ON ${quoteIdent(name)}.${quoteIdent(trig.tbl)} FOR EACH ROW ${trig.body};\n`
       );
-      // SHOW CREATE TRIGGER always returns (Trigger, sql_mode,
-      // SQL Original Statement, character_set_client, collation_connection,
-      // Database Collation), in that order — see the SHOW CREATE TABLE
-      // comment above for why this is positional rather than by name.
-      let createSql = Object.values(rows[0])[2];
-      createSql = createSql.replace(/DEFINER=`[^`]*`@`[^`]*`\s*/, '');
-      createSql = createSql.replace(/TRIGGER\s+`([^`]+)`/, `TRIGGER \`${name}\`.\`$1\``);
-      createSql = createSql.replace(/\bON\s+`([^`]+)`/, `ON \`${name}\`.\`$1\``);
-      try {
-        await conn.$executeRawUnsafe(createSql);
-      } catch (err) {
-        if (/1295/.test(String(err && err.message))) {
-          throw new Error(
-            `production has trigger "${trig.name}", but MySQL refuses CREATE TRIGGER over ` +
-            'the server-side prepared-statement protocol that this program\'s only available ' +
-            'MySQL client (Prisma Client) always uses, so it cannot be replicated into the sandbox'
-          );
-        }
-        throw err;
-      }
+      if (created.status !== 0) throw new Error(scriptFailure(created));
     }
 
     // The one exception: the migration tool's own applied-migrations
@@ -473,7 +523,7 @@ async function sandboxBuild(name) {
     const referenceCollections = [];
     if (baseTables.includes('_prisma_migrations')) {
       const inserted = await conn.$executeRawUnsafe(
-        `INSERT INTO \`${name}\`.\`_prisma_migrations\` SELECT * FROM \`${appDb}\`.\`_prisma_migrations\``
+        `INSERT INTO ${quoteIdent(name)}.\`_prisma_migrations\` SELECT * FROM ${quoteIdent(appDb)}.\`_prisma_migrations\``
       );
       referenceCollections.push({ collection: '_prisma_migrations', records: inserted });
     }
@@ -482,6 +532,11 @@ async function sandboxBuild(name) {
     await conn.$disconnect();
     process.exit(0);
   } catch (err) {
+    try {
+      await conn.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${quoteIdent(name)}`);
+    } catch (_) {
+      /* best effort: sandbox-drop is run after a failed build too */
+    }
     if (isAccessDeniedError(err)) {
       await reportAccessDenied(conn, 'sandbox-build', err);
     } else {
@@ -510,7 +565,7 @@ async function sandboxDrop(name) {
 
   const conn = loadPrismaClient();
   try {
-    await conn.$executeRawUnsafe(`DROP DATABASE IF EXISTS \`${name}\``);
+    await conn.$executeRawUnsafe(`DROP DATABASE IF EXISTS ${quoteIdent(name)}`);
     await conn.$disconnect();
     process.exit(0);
   } catch (err) {
@@ -536,10 +591,24 @@ async function sandboxDrop(name) {
 // filter, the same way sandbox-build reads production's own structure
 // above, rather than by connecting with that database selected as default.
 async function describeSchema(conn, schemaName) {
+  // A schema that is not there is an error, not an empty structure.
+  const present = await conn.$queryRawUnsafe(
+    'SELECT SCHEMA_NAME AS name FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?',
+    schemaName
+  );
+  if (present.length === 0) {
+    throw new Error(`there is no database named "${schemaName}" on the server`);
+  }
+
   const tables = await conn.$queryRawUnsafe(
     'SELECT TABLE_NAME AS name, TABLE_TYPE AS type FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME',
     schemaName
   );
+
+  const checkTable = await conn.$queryRawUnsafe(
+    "SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'information_schema' AND TABLE_NAME = 'CHECK_CONSTRAINTS'"
+  );
+  const hasCheckConstraints = checkTable.length > 0;
 
   const collections = {};
     for (const table of tables) {
@@ -577,7 +646,8 @@ async function describeSchema(conn, schemaName) {
       const indexes = {};
       if (isBaseTable) {
         const indexRows = await conn.$queryRawUnsafe(
-          "SELECT INDEX_NAME AS idx, NON_UNIQUE AS nonUnique, COLUMN_NAME AS col FROM information_schema.STATISTICS " +
+          "SELECT INDEX_NAME AS idx, NON_UNIQUE AS nonUnique, COLUMN_NAME AS col, SUB_PART AS subPart, " +
+          "INDEX_TYPE AS indexType, COLLATION AS direction FROM information_schema.STATISTICS " +
           "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME <> 'PRIMARY' ORDER BY INDEX_NAME, SEQ_IN_INDEX",
           schemaName,
           table.name
@@ -585,14 +655,28 @@ async function describeSchema(conn, schemaName) {
         const grouped = new Map();
         for (const row of indexRows) {
           if (!grouped.has(row.idx)) {
-            grouped.set(row.idx, { nonUnique: Number(row.nonUnique), columns: [] });
+            grouped.set(row.idx, {
+              nonUnique: Number(row.nonUnique),
+              indexType: String(row.indexType).toUpperCase(),
+              columns: []
+            });
           }
-          grouped.get(row.idx).columns.push(row.col);
+          // A column's text carries its prefix length and descending order,
+          // so a change to either changes the index's text.
+          grouped.get(row.idx).columns.push(
+            `\`${row.col}\`` +
+            (row.subPart === null || row.subPart === undefined ? '' : `(${Number(row.subPart)})`) +
+            (row.direction === 'D' ? ' DESC' : '')
+          );
         }
         for (const indexName of [...grouped.keys()].sort()) {
-          const { nonUnique, columns } = grouped.get(indexName);
-          const kind = nonUnique === 0 ? 'UNIQUE' : 'INDEX';
-          indexes[indexName] = `${kind} (${columns.map((c) => `\`${c}\``).join(', ')})`;
+          const { nonUnique, indexType, columns } = grouped.get(indexName);
+          const kind =
+            indexType === 'FULLTEXT' || indexType === 'SPATIAL'
+              ? indexType
+              : nonUnique === 0 ? 'UNIQUE' : 'INDEX';
+          const using = indexType === 'BTREE' || kind === indexType ? '' : ` USING ${indexType}`;
+          indexes[indexName] = `${kind} (${columns.join(', ')})${using}`;
         }
       }
 
@@ -633,6 +717,24 @@ async function describeSchema(conn, schemaName) {
             `FOREIGN KEY (${group.columns.map((c) => `\`${c}\``).join(', ')}) ` +
             `REFERENCES \`${group.refTable}\` (${group.refColumns.map((c) => `\`${c}\``).join(', ')}) ` +
             `ON DELETE ${group.deleteRule} ON UPDATE ${group.updateRule}`;
+        }
+      }
+
+      // CHECK constraints, where this server has them (MySQL 8.0.16 and
+      // later, MariaDB 10.2 and later).
+      if (isBaseTable && hasCheckConstraints) {
+        const checkRows = await conn.$queryRawUnsafe(
+          'SELECT tc.CONSTRAINT_NAME AS name, cc.CHECK_CLAUSE AS clause ' +
+          'FROM information_schema.TABLE_CONSTRAINTS tc ' +
+          'JOIN information_schema.CHECK_CONSTRAINTS cc ' +
+          '  ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME ' +
+          "WHERE tc.TABLE_SCHEMA = ? AND tc.TABLE_NAME = ? AND tc.CONSTRAINT_TYPE = 'CHECK' " +
+          'ORDER BY tc.CONSTRAINT_NAME',
+          schemaName,
+          table.name
+        );
+        for (const row of checkRows) {
+          constraints[row.name] = `CHECK (${row.clause})`;
         }
       }
 
@@ -787,16 +889,19 @@ function applyMigrationUp(databaseUrl, up) {
 }
 
 // Runs migration_contract's "down" against `conn`: the plain SQL that
-// reverses "up", statement by statement (see splitSqlStatements), followed
+// reverses "up" (see runSqlScript), followed
 // by deleting the row "up" left in Prisma's own _prisma_migrations
 // bookkeeping table (matched by migration_name) — so the tool's record ends
 // up exactly as if the migration had never been applied, and a later apply
 // of the same migration runs it again instead of finding it already done.
 // Shared by sandbox-down (conn is connected to the sandbox) and
 // production-down (conn is connected to the application's own database).
-async function applyMigrationDown(conn, down) {
-  for (const statement of splitSqlStatements(down.sql)) {
-    await conn.$executeRawUnsafe(statement);
+async function applyMigrationDown(conn, databaseUrl, down) {
+  // The SQL runs through the tool's own script executor (see runSqlScript),
+  // exactly as written, as one script.
+  if (down.sql.trim().length > 0) {
+    const result = runSqlScript(databaseUrl, down.sql);
+    if (result.status !== 0) throw new Error(scriptFailure(result));
   }
   await conn.$executeRawUnsafe(
     'DELETE FROM `_prisma_migrations` WHERE `migration_name` = ?',
@@ -880,7 +985,7 @@ async function sandboxDown(name) {
 
   const conn = loadPrismaClient(sandboxDatabaseUrl(name));
   try {
-    await applyMigrationDown(conn, down);
+    await applyMigrationDown(conn, sandboxDatabaseUrl(name), down);
     await conn.$disconnect();
     process.exit(0);
   } catch (err) {
@@ -910,7 +1015,7 @@ async function productionDown() {
 
   const conn = loadPrismaClient();
   try {
-    await applyMigrationDown(conn, down);
+    await applyMigrationDown(conn, process.env.DATABASE_URL, down);
     await conn.$disconnect();
     process.exit(0);
   } catch (err) {
