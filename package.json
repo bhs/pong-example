@@ -7,6 +7,7 @@
     "start": "node server.js",
     "migrate:deploy": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev",
+    "seed": "node prisma/seed.js",
     "postinstall": "prisma generate",
     "test": "jest --forceExit"
   },
