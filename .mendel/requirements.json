@@ -3,7 +3,16 @@
     {
       "kind": "secret",
       "name": "DATABASE_URL",
-      "description": "MySQL connection string, mysql://user:password@host:3306/dbname"
+      "description": "MySQL connection string, mysql://user:password@host:3306/dbname",
+      "hermetic_alternate": "mysql://pong_test:pong_test_password@{{host:mysql}}:3306/pong_test",
+      "datastore": {
+        "service": "mysql",
+        "data_path": "/var/lib/mysql",
+        "credential_env": "MYSQL_PASSWORD",
+        "value": "mysql://pong_test:{{credential:mysql}}@{{host:mysql}}:3306/pong_test",
+        "capacity_gb": 1,
+        "capacity_basis": "Per-user rows for preferences, one high score and one history row per finished game; a few hundred bytes each, so well under 1 GB for a year."
+      }
     },
     {
       "kind": "secret",
