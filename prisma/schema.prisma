@@ -74,6 +74,17 @@ model Preference {
   theme        String   @default("dark")
   soundEnabled Boolean  @default(true)
   paddleColor  String   @default("#ffffff")
+
+  // Ball speed preset ('slow' | 'normal' | 'fast') and AI difficulty
+  // ('easy' | 'normal' | 'hard') chosen in the pause/settings modal (see
+  // index.html and the validation in server.js's PUT /api/preferences). The
+  // physical columns are prefixed `mendel_exp_` (this table is shared by
+  // every concurrently-running variation of the 'game-customization-options'
+  // hop, each applying its own migration against the same database) while
+  // the Prisma field names stay unprefixed for application code.
+  ballSpeed    String   @default("normal") @map("mendel_exp_ball_speed")
+  difficulty   String   @default("normal") @map("mendel_exp_difficulty")
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 

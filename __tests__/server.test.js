@@ -417,7 +417,9 @@ describe('GET /api/preferences', () => {
     const app = createApp(createFakePrisma(), { testAuth: loggedInAs(ALICE) });
     const res = await get(app, '/api/preferences');
     expect(res.status).toBe(200);
-    expect(res.body.preferences).toEqual({ theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' });
+    expect(res.body.preferences).toEqual({
+      theme: 'dark', soundEnabled: true, paddleColor: '#ffffff', ballSpeed: 'normal', difficulty: 'normal',
+    });
   });
 
   test('returns previously saved preferences', async () => {

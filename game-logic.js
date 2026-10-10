@@ -16,6 +16,23 @@ const MAX_DEFLECT_ANGLE = Math.PI * 75 / 180;  // 75° max deflection at paddle 
 const SCORE_WIN         = 7;      // first to this wins
 const FLASH_FRAMES      = 3;      // number of frames for score-flash effect
 
+// ── Customization presets ───────────────────────────────────────────────────
+// Mirrors the tables of the same names in index.html (a regex test in
+// __tests__/game-settings.test.js keeps them in sync) and the allowed values
+// validated by server.js's PUT /api/preferences.
+const SPEED_PRESETS = {
+  slow:   { init: 220,             max: 520 },
+  normal: { init: BALL_SPEED_INIT, max: BALL_SPEED_MAX },
+  fast:   { init: 400,             max: 900 },
+};
+const DIFFICULTY_PRESETS = {
+  easy:   { aiLerp: 3,       aiLerpRallyInc: 0.08,              aiSpeedScale: 0.75 },
+  normal: { aiLerp: AI_LERP, aiLerpRallyInc: AI_LERP_RALLY_INC, aiSpeedScale: 1 },
+  hard:   { aiLerp: 6,       aiLerpRallyInc: 0.25,              aiSpeedScale: 1.1 },
+};
+const PADDLE_COLORS = ['#ffffff', '#ff6b6b', '#ffe066', '#7cfc9c', '#4dd0ff', '#d58bff'];
+const DEFAULT_SETTINGS = { paddleColor: '#ffffff', speedPreset: 'normal', difficulty: 'normal' };
+
 /**
  * Returns a random float in [min, max).
  */
@@ -165,13 +182,15 @@ function movePlayerPaddle(paddle, keys, dt) {
  * @param {object} ball
  * @param {number} dt
  * @param {number} [rallyCount=0] - current rally hit count for difficulty scaling
+ * @param {object} [difficulty=DIFFICULTY_PRESETS.normal] - AI difficulty preset
  */
-function moveAiPaddle(paddle, ball, dt, rallyCount = 0) {
+function moveAiPaddle(paddle, ball, dt, rallyCount = 0, difficulty = DIFFICULTY_PRESETS.normal) {
   const ballCentreY  = ball.y + BALL_SIZE / 2;
   const aiCentreY    = paddle.y + PADDLE_H / 2;
   const diff         = ballCentreY - aiCentreY;
-  const effectiveLerp = AI_LERP + rallyCount * AI_LERP_RALLY_INC;
-  const move = clamp(diff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
+  const effectiveLerp = difficulty.aiLerp + rallyCount * difficulty.aiLerpRallyInc;
+  const maxMove = PADDLE_SPEED * difficulty.aiSpeedScale * dt;
+  const move = clamp(diff * effectiveLerp * dt, -maxMove, maxMove);
   paddle.y = clamp(paddle.y + move, 0, CANVAS_H - PADDLE_H);
   return paddle;
 }
@@ -197,10 +216,11 @@ function deflectAngle(relY) {
 }
 
 /**
- * Apply a speed multiplier on paddle hit and clamp to BALL_SPEED_MAX.
+ * Apply a speed multiplier on paddle hit and clamp to the speed preset's
+ * range (defaults to the 'normal' preset: BALL_SPEED_INIT..BALL_SPEED_MAX).
  */
-function incrementSpeed(speed) {
-  return clamp(speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+function incrementSpeed(speed, preset = SPEED_PRESETS.normal) {
+  return clamp(speed * BALL_SPEED_MUL, preset.init, preset.max);
 }
 
 /**
@@ -230,8 +250,9 @@ function syncBallVelocity(ball) {
  * @param {object} game          - mutable game phase state
  * @param {number} dt            - delta-time in seconds
  * @param {object} [rally]       - mutable rally state (optional; created if omitted)
+ * @param {object} [speedPreset] - ball speed preset (defaults to 'normal')
  */
-function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
+function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally, speedPreset) {
   if (!rally) rally = makeRally();
 
   ball.x += ball.vx * dt;
@@ -257,7 +278,7 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     ball.x  = playerPaddle.x + playerPaddle.w;
     const relY    = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
     ball.angle    = deflectAngle(relY);      // positive angle → launches right + down/up
-    ball.speed    = incrementSpeed(ball.speed);
+    ball.speed    = incrementSpeed(ball.speed, speedPreset);
     syncBallVelocity(ball);
     rally.rallyCount += 1;
     if (rally.maxRally === undefined || rally.rallyCount > rally.maxRally) {
@@ -275,7 +296,7 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     const relY    = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
     // Reflect back toward the player: π - deflectAngle puts it in the left hemisphere
     ball.angle    = Math.PI - deflectAngle(relY);
-    ball.speed    = incrementSpeed(ball.speed);
+    ball.speed    = incrementSpeed(ball.speed, speedPreset);
     syncBallVelocity(ball);
     rally.rallyCount += 1;
     if (rally.maxRally === undefined || rally.rallyCount > rally.maxRally) {
@@ -332,6 +353,7 @@ module.exports = {
   MAX_DEFLECT_ANGLE,
   SCORE_WIN,
   FLASH_FRAMES,
+  SPEED_PRESETS, DIFFICULTY_PRESETS, PADDLE_COLORS, DEFAULT_SETTINGS,
 
   // Factory functions
   makeBall,

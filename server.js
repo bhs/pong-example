@@ -29,7 +29,8 @@
  *               /api/scores call, regardless of whether that game also set a
  *               new best).
  *   Preference  One row per user (FK → User.id): theme / sound / paddle
- *               color settings.
+ *               color, plus the ball speed preset and AI difficulty chosen in
+ *               the pause/settings modal.
  *   HighScore   One row per user (FK → User.id): that user's personal best
  *               score, plus `longestRally` — that same player's longest-ever
  *               rally (consecutive paddle hits without a miss), an
@@ -104,6 +105,21 @@ const defaultPrisma  = require('./lib/prisma');
 // and the live character-count validation in index.html — both enforce the
 // same limit so the client never shows a count the server would reject).
 const NICKNAME_MAX_LENGTH = 20;
+
+// Allowed values for the game-customization preferences saved through the
+// pause/settings modal (see index.html's SPEED_PRESETS / DIFFICULTY_PRESETS,
+// which use the same keys). A new preset only needs adding here and there.
+const BALL_SPEEDS      = ['slow', 'normal', 'fast'];
+const DIFFICULTIES     = ['easy', 'normal', 'hard'];
+const PADDLE_COLOR_RE  = /^#[0-9a-fA-F]{6}$/;
+
+const DEFAULT_PREFERENCES = {
+  theme: 'dark',
+  soundEnabled: true,
+  paddleColor: '#ffffff',
+  ballSpeed: 'normal',
+  difficulty: 'normal',
+};
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
@@ -412,7 +428,7 @@ function createApp(prisma = defaultPrisma, options = {}) {
     try {
       const pref = await prisma.preference.findUnique({ where: { userId: req.user.id } });
       return res.status(200).json({
-        preferences: pref || { theme: 'dark', soundEnabled: true, paddleColor: '#ffffff' },
+        preferences: pref ? { ...DEFAULT_PREFERENCES, ...pref } : { ...DEFAULT_PREFERENCES },
       });
     } catch (err) {
       return next(err);
@@ -422,7 +438,8 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // ── PUT /api/preferences ─────────────────────────────────────────────────
   //
   // Create or update the logged-in user's preferences.
-  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: string }
+  // Body: { theme?: string, soundEnabled?: boolean, paddleColor?: '#rrggbb',
+  //         ballSpeed?: 'slow'|'normal'|'fast', difficulty?: 'easy'|'normal'|'hard' }
 
   app.put('/api/preferences', async (req, res, next) => {
     if (!requireLogin(req, res)) return;
@@ -445,10 +462,24 @@ function createApp(prisma = defaultPrisma, options = {}) {
     }
 
     if (body.paddleColor !== undefined) {
-      if (typeof body.paddleColor !== 'string' || body.paddleColor.trim() === '') {
-        return res.status(400).json({ error: 'paddleColor must be a non-empty string' });
+      if (typeof body.paddleColor !== 'string' || !PADDLE_COLOR_RE.test(body.paddleColor.trim())) {
+        return res.status(400).json({ error: 'paddleColor must be a #rrggbb hex color' });
       }
-      data.paddleColor = body.paddleColor.trim();
+      data.paddleColor = body.paddleColor.trim().toLowerCase();
+    }
+
+    if (body.ballSpeed !== undefined) {
+      if (!BALL_SPEEDS.includes(body.ballSpeed)) {
+        return res.status(400).json({ error: `ballSpeed must be one of: ${BALL_SPEEDS.join(', ')}` });
+      }
+      data.ballSpeed = body.ballSpeed;
+    }
+
+    if (body.difficulty !== undefined) {
+      if (!DIFFICULTIES.includes(body.difficulty)) {
+        return res.status(400).json({ error: `difficulty must be one of: ${DIFFICULTIES.join(', ')}` });
+      }
+      data.difficulty = body.difficulty;
     }
 
     try {

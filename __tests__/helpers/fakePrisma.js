@@ -69,6 +69,8 @@ function createFakePrisma() {
               theme: 'dark',
               soundEnabled: true,
               paddleColor: '#ffffff',
+              ballSpeed: 'normal',
+              difficulty: 'normal',
               ...create,
               createdAt: now,
               updatedAt: now,

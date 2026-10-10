@@ -79,7 +79,7 @@
 <body>
   <div id="pong-stage">
     <canvas id="gameCanvas"></canvas>
-    <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
+    <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again &nbsp;•&nbsp; Esc/P to pause &amp; customize</p>
     <p id="pong-best-rally"></p>
   </div>
 
@@ -108,6 +108,61 @@
     // NICKNAME_MAX_LENGTH in server.js so the live character count never
     // shows a value the server would go on to reject.
     const NICKNAME_MAX_LENGTH = 20;
+
+    // ── Customization settings ─────────────────────────────────────────────────
+    //
+    // The player-chosen options edited in the pause/Settings modal. update()
+    // and render() read the live values from `settings` through the preset
+    // tables below instead of hard-coded constants. Signed-in players have the
+    // object filled from GET /api/preferences on load and written back with
+    // PUT /api/preferences on every change; guests only keep it for the
+    // session. The preset keys match the values server.js accepts
+    // (ballSpeed: slow|normal|fast, difficulty: easy|normal|hard) and the
+    // tables in game-logic.js. To add an option: add a key here, a preset
+    // table + a SETTING_GROUPS entry, and map it in the server.
+    const SPEED_PRESETS = {
+      slow:   { init: 220,             max: 520 },
+      normal: { init: BALL_SPEED_INIT, max: BALL_SPEED_MAX },
+      fast:   { init: 400,             max: 900 },
+    };
+    const DIFFICULTY_PRESETS = {
+      easy:   { aiLerp: 3,       aiLerpRallyInc: 0.08,              aiSpeedScale: 0.75 },
+      normal: { aiLerp: AI_LERP, aiLerpRallyInc: AI_LERP_RALLY_INC, aiSpeedScale: 1 },
+      hard:   { aiLerp: 6,       aiLerpRallyInc: 0.25,              aiSpeedScale: 1.1 },
+    };
+    const PADDLE_COLORS = ['#ffffff', '#ff6b6b', '#ffe066', '#7cfc9c', '#4dd0ff', '#d58bff'];
+
+    const settings = {
+      paddleColor: '#ffffff',
+      speedPreset: 'normal',
+      difficulty:  'normal',
+    };
+
+    // Modal rows: which settings key each row edits and its choices.
+    const SETTING_GROUPS = [
+      { key: 'speedPreset', label: 'Ball speed', choices: Object.keys(SPEED_PRESETS) },
+      { key: 'difficulty',  label: 'Difficulty', choices: Object.keys(DIFFICULTY_PRESETS) },
+    ];
+
+    /**
+     * Copy any valid fields of `raw` onto `settings`; unknown or invalid
+     * values are ignored so bad server data can never break the game loop.
+     */
+    function applySettings(raw) {
+      if (!raw) return;
+      if (typeof raw.paddleColor === 'string' && PADDLE_COLORS.includes(raw.paddleColor.toLowerCase())) {
+        settings.paddleColor = raw.paddleColor.toLowerCase();
+      }
+      if (Object.prototype.hasOwnProperty.call(SPEED_PRESETS, raw.speedPreset)) {
+        settings.speedPreset = raw.speedPreset;
+      }
+      if (Object.prototype.hasOwnProperty.call(DIFFICULTY_PRESETS, raw.difficulty)) {
+        settings.difficulty = raw.difficulty;
+      }
+    }
+
+    function speedPreset()      { return SPEED_PRESETS[settings.speedPreset]; }
+    function difficultyPreset() { return DIFFICULTY_PRESETS[settings.difficulty]; }
 
     // ── Canvas setup ──────────────────────────────────────────────────────────
     const canvas = document.getElementById('gameCanvas');
@@ -338,7 +393,7 @@
           font-family: monospace;
         }
         #pong-settings-card {
-          width: min(320px, 88vw);
+          width: min(360px, 88vw);
           padding: 24px 22px;
           background: #10123a;
           border: 1px solid rgba(255,255,255,0.15);
@@ -381,6 +436,42 @@
         }
         #pong-nickname-count.invalid {
           color: #ff6b6b;
+        }
+        .pong-settings-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+        .pong-settings-row label {
+          flex-basis: 100%;
+        }
+        .pong-swatch {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          border: 2px solid rgba(255,255,255,0.25);
+          cursor: pointer;
+        }
+        .pong-swatch[aria-pressed="true"] {
+          border-color: #ffe066;
+          box-shadow: 0 0 0 2px #ffe066;
+        }
+        .pong-choice {
+          flex: 1;
+          padding: 7px 0;
+          font-family: monospace;
+          font-size: 0.8rem;
+          text-transform: capitalize;
+          color: rgba(255,255,255,0.8);
+          background: transparent;
+          border: 1px solid rgba(255,255,255,0.3);
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        .pong-choice[aria-pressed="true"] {
+          color: #000;
+          background: #ffe066;
+          border-color: #ffe066;
         }
         #pong-settings-actions {
           display: flex;
@@ -442,6 +533,7 @@
       phase:      'scored',   // start in 'scored' so the ball resets at t=0
       winner:     null,       // 'player' | 'ai' | null
       pauseTimer: 1.2,        // seconds to wait before serving next ball
+      paused:     false,      // true while the settings modal is open
     };
 
     // Rally state — tracks consecutive paddle hits for difficulty escalation
@@ -525,6 +617,17 @@
     const keys = {};
 
     window.addEventListener('keydown', (e) => {
+      // Esc / P toggles pause + the settings modal. P is ignored while
+      // typing in a text field (e.g. the nickname input); Esc always works.
+      const typing = e.target && e.target.tagName === 'INPUT';
+      if (e.code === 'Escape' || (e.code === 'KeyP' && !typing)) {
+        e.preventDefault();
+        if (game.paused) closeSettingsModal(); else openSettingsModal();
+        return;
+      }
+      // While the modal is open, keys belong to the modal (so Space types a
+      // space in the nickname field instead of restarting the game).
+      if (game.paused) return;
       keys[e.code] = true;
       // Prevent page scrolling for arrow keys
       if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
@@ -591,7 +694,7 @@
     function resetBall(dirSign) {
       ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
       ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
-      ball.speed = BALL_SPEED_INIT;
+      ball.speed = speedPreset().init;
       rally.rallyCount = 0;
 
       const baseAngle  = rand(-Math.PI / 4, Math.PI / 4);
@@ -1006,25 +1109,37 @@
       h2.textContent = 'Settings';
       card.appendChild(h2);
 
-      const label = document.createElement('label');
-      label.setAttribute('for', 'pong-nickname-input');
-      label.textContent = 'Nickname';
-      card.appendChild(label);
-
-      const input = document.createElement('input');
-      input.id = 'pong-nickname-input';
-      input.type = 'text';
-      input.maxLength = NICKNAME_MAX_LENGTH;
-      input.autocomplete = 'off';
-      input.value = (currentUser && currentUser.nickname) || '';
-      card.appendChild(input);
-
-      const count = document.createElement('div');
-      count.id = 'pong-nickname-count';
-      card.appendChild(count);
-
       const flash = document.createElement('div');
       flash.id = 'pong-settings-flash';
+
+      // Game customization: paddle colour swatches, then one row of toggle
+      // buttons per SETTING_GROUPS entry. Choices apply immediately (the
+      // game is paused behind the modal) and are saved on each change.
+      card.appendChild(buildSwatchRow(flash));
+      SETTING_GROUPS.forEach((group) => card.appendChild(buildChoiceRow(group, flash)));
+
+      // Nickname editing needs an account; guests only get the game options.
+      let input = null;
+      let count = null;
+      if (currentUser) {
+        const label = document.createElement('label');
+        label.setAttribute('for', 'pong-nickname-input');
+        label.textContent = 'Nickname';
+        card.appendChild(label);
+
+        input = document.createElement('input');
+        input.id = 'pong-nickname-input';
+        input.type = 'text';
+        input.maxLength = NICKNAME_MAX_LENGTH;
+        input.autocomplete = 'off';
+        input.value = (currentUser && currentUser.nickname) || '';
+        card.appendChild(input);
+
+        count = document.createElement('div');
+        count.id = 'pong-nickname-count';
+        card.appendChild(count);
+      }
+
       card.appendChild(flash);
 
       const actions = document.createElement('div');
@@ -1033,38 +1148,160 @@
       const cancelBtn = document.createElement('button');
       cancelBtn.id = 'pong-settings-cancel';
       cancelBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
-      cancelBtn.textContent = 'Cancel';
+      cancelBtn.textContent = 'Resume';
       cancelBtn.addEventListener('click', () => closeSettingsModal());
       actions.appendChild(cancelBtn);
 
-      const saveBtn = document.createElement('button');
-      saveBtn.id = 'pong-settings-save';
-      saveBtn.className = 'pong-auth-btn';
-      saveBtn.textContent = 'Save';
-      saveBtn.addEventListener('click', () => saveNickname(input, saveBtn, flash));
-      actions.appendChild(saveBtn);
+      let saveBtn = null;
+      if (input) {
+        saveBtn = document.createElement('button');
+        saveBtn.id = 'pong-settings-save';
+        saveBtn.className = 'pong-auth-btn';
+        saveBtn.textContent = 'Save nickname';
+        saveBtn.addEventListener('click', () => saveNickname(input, saveBtn, flash));
+        actions.appendChild(saveBtn);
+      }
 
       card.appendChild(actions);
       overlay.appendChild(card);
       document.body.appendChild(overlay);
 
-      updateNicknameCount(input, count, saveBtn);
-      input.addEventListener('input', () => updateNicknameCount(input, count, saveBtn));
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !saveBtn.disabled) saveNickname(input, saveBtn, flash);
-        if (e.key === 'Escape') closeSettingsModal();
-      });
+      // Pause the game behind the modal; closeSettingsModal() resumes it.
+      game.paused = true;
+      Object.keys(keys).forEach((k) => { keys[k] = false; });
 
-      input.focus();
-      input.select();
+      if (input) {
+        updateNicknameCount(input, count, saveBtn);
+        input.addEventListener('input', () => updateNicknameCount(input, count, saveBtn));
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && !saveBtn.disabled) saveNickname(input, saveBtn, flash);
+        });
+        input.focus();
+        input.select();
+      } else {
+        cancelBtn.focus();
+      }
     }
 
     /**
-     * Remove the Settings modal from the DOM if present.
+     * Remove the Settings modal from the DOM if present and resume the game.
      */
     function closeSettingsModal() {
       const existing = document.getElementById('pong-settings-modal');
       if (existing) existing.remove();
+      game.paused = false;
+    }
+
+    /**
+     * Mark the pressed button in a group of toggle buttons.
+     */
+    function markPressed(row, selector, isPressed) {
+      row.querySelectorAll(selector).forEach((btn) => {
+        btn.setAttribute('aria-pressed', isPressed(btn) ? 'true' : 'false');
+      });
+    }
+
+    function buildSwatchRow(flash) {
+      const row = document.createElement('div');
+      row.className = 'pong-settings-row';
+      row.id = 'pong-setting-paddleColor';
+
+      const label = document.createElement('label');
+      label.textContent = 'Paddle color';
+      row.appendChild(label);
+
+      PADDLE_COLORS.forEach((color) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'pong-swatch';
+        btn.dataset.value = color;
+        btn.style.background = color;
+        btn.title = color;
+        btn.setAttribute('aria-label', `Paddle color ${color}`);
+        btn.addEventListener('click', () => {
+          settings.paddleColor = color;
+          markPressed(row, '.pong-swatch', (b) => b.dataset.value === settings.paddleColor);
+          savePreferences(flash);
+        });
+        row.appendChild(btn);
+      });
+      markPressed(row, '.pong-swatch', (b) => b.dataset.value === settings.paddleColor);
+      return row;
+    }
+
+    function buildChoiceRow(group, flash) {
+      const row = document.createElement('div');
+      row.className = 'pong-settings-row';
+      row.id = `pong-setting-${group.key}`;
+
+      const label = document.createElement('label');
+      label.textContent = group.label;
+      row.appendChild(label);
+
+      group.choices.forEach((choice) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'pong-choice';
+        btn.dataset.value = choice;
+        btn.textContent = choice;
+        btn.addEventListener('click', () => {
+          settings[group.key] = choice;
+          markPressed(row, '.pong-choice', (b) => b.dataset.value === settings[group.key]);
+          savePreferences(flash);
+        });
+        row.appendChild(btn);
+      });
+      markPressed(row, '.pong-choice', (b) => b.dataset.value === settings[group.key]);
+      return row;
+    }
+
+    // ── Server-saved preferences ──────────────────────────────────────────
+    //
+    // Signed-in players: GET /api/preferences fills `settings` on load, and
+    // every change in the modal PUTs the full set back (serialised so the
+    // last click always wins). Guests make no calls — their choices live in
+    // `settings` for the session only.
+
+    let prefSaveChain = Promise.resolve();
+
+    async function loadPreferences() {
+      if (!currentUser) return;
+      try {
+        const res = await fetch('/api/preferences', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const p = (data && data.preferences) || {};
+        applySettings({ paddleColor: p.paddleColor, speedPreset: p.ballSpeed, difficulty: p.difficulty });
+      } catch (err) {
+        // Keep the defaults — the game must start regardless.
+      }
+    }
+
+    function savePreferences(flash) {
+      if (!currentUser) return;
+      const body = JSON.stringify({
+        paddleColor: settings.paddleColor,
+        ballSpeed:   settings.speedPreset,
+        difficulty:  settings.difficulty,
+      });
+      prefSaveChain = prefSaveChain.then(async () => {
+        let ok = false;
+        try {
+          const res = await fetch('/api/preferences', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body,
+          });
+          ok = res.ok;
+        } catch (err) {
+          ok = false;
+        }
+        if (flash && flash.isConnected) {
+          flash.style.color = ok ? '#7CFC9C' : '#ff6b6b';
+          flash.textContent = ok ? 'Settings saved' : 'Could not save settings';
+        }
+      });
     }
 
     /**
@@ -1142,6 +1379,7 @@
           bestRallyBucket = Boolean(data.bestRallyBucket);
           renderSignedIn(bar, data.user);
           refreshRecentGames();
+          loadPreferences();
         } else {
           currentUser     = null;
           bestRallyBucket = false;
@@ -1281,8 +1519,9 @@
 
     function update(dt) {
       // ── Phase: gameover ──────────────────────────────────────────────────────
-      // The RAF loop is paused when gameover; nothing to update.
-      if (game.phase === 'gameover') return;
+      // The RAF loop is paused when gameover; nothing to update. Also frozen
+      // while the settings modal is open.
+      if (game.phase === 'gameover' || game.paused) return;
 
       // ── Phase: scored (brief pause before next serve) ────────────────────
       if (game.phase === 'scored') {
@@ -1317,8 +1556,10 @@
       const ballCentreY   = ball.y + BALL_SIZE / 2;
       const aiCentreY     = aiPaddle.y + PADDLE_H / 2;
       const aiDiff        = ballCentreY - aiCentreY;
-      const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
-      const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
+      const ai            = difficultyPreset();
+      const effectiveLerp = ai.aiLerp + rally.rallyCount * ai.aiLerpRallyInc;
+      const aiMaxMove     = PADDLE_SPEED * ai.aiSpeedScale * dt;
+      const aiMove = clamp(aiDiff * effectiveLerp * dt, -aiMaxMove, aiMaxMove);
       aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - PADDLE_H);
 
       // Move ball
@@ -1348,7 +1589,7 @@
         // The resulting angle is in the right-travelling hemisphere.
         const relY  = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
         ball.angle  = deflectAngle(relY);
-        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, speedPreset().init, speedPreset().max);
         syncBallVelocity(ball);
         rally.rallyCount += 1;
         if (rally.rallyCount > rally.maxRally) rally.maxRally = rally.rallyCount;
@@ -1364,7 +1605,7 @@
         const relY  = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
         // π - deflectAngle puts the ball in the left-travelling hemisphere.
         ball.angle  = Math.PI - deflectAngle(relY);
-        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, speedPreset().init, speedPreset().max);
         syncBallVelocity(ball);
         rally.rallyCount += 1;
         if (rally.rallyCount > rally.maxRally) rally.maxRally = rally.rallyCount;
@@ -1439,11 +1680,12 @@
       ctx.fillText(playerPaddle.score, CANVAS_W / 4, 20);
       ctx.fillText(aiPaddle.score, (CANVAS_W / 4) * 3, 20);
 
-      // Player paddle
-      ctx.fillStyle = '#fff';
+      // Player paddle (colour chosen in the settings modal)
+      ctx.fillStyle = settings.paddleColor;
       ctx.fillRect(playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h);
 
       // AI paddle
+      ctx.fillStyle = '#fff';
       ctx.fillRect(aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h);
 
       // Ball (only when playing)
@@ -1482,6 +1724,8 @@
       const dt = Math.min((timestamp - lastTime) / 1000, 0.1);  // seconds, capped
       lastTime = timestamp;
 
+      // update() is a no-op while game.paused (settings modal open); render()
+      // keeps drawing so the paddle colour previews live behind the modal.
       update(dt);
       render();
 
