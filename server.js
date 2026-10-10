@@ -100,6 +100,8 @@ const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const telemetry      = require('./telemetry');
 const defaultPrisma  = require('./lib/prisma');
+const { isStubEnabled } = require('./lib/stubs');
+const signInStub     = require('./lib/sign-in-stub');
 const { createPreferencesCache } = require('./lib/preferencesCache');
 
 // Defaults returned when a user has no saved Preference row yet.
@@ -294,6 +296,18 @@ function createApp(prisma = defaultPrisma, options = {}) {
     telemetry.recordClientEvent(eventName, req);
     return res.status(204).end();
   });
+
+  // ── SignIn interface ──────────────────────────────────────────────────────
+  //
+  // SignIn is GET /auth/google (begin) plus GET /auth/google/callback
+  // (complete: establish the session, count 'user_login'). The real
+  // implementation is the Google OAuth pair of routes below; when the
+  // "google-sign-in" stub is enabled (ENABLED_STUBS, demos only) the stub
+  // registers the same two routes first — a picker over the seeded users —
+  // so the real ones are never reached.
+  if (isStubEnabled(signInStub.STUB_NAME)) {
+    signInStub.registerStubSignIn(app, prisma, telemetry);
+  }
 
   // ── GET /auth/google ──────────────────────────────────────────────────────
   //
