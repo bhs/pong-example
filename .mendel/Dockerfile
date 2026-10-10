@@ -2,10 +2,7 @@
 #   docker build -f .mendel/Dockerfile --target migrate .
 #   docker build -f .mendel/Dockerfile --target adapter .
 #
-# The files that, when changed, mean this Dockerfile and .mendel/phase/
-# should be written again (not the migrations themselves, and not
-# prisma/schema.prisma, since an ordinary schema change edits both of those
-# and must not make this file look stale):
+# The files that, when changed, mean this file should be written again:
 # depends-on: lib/prisma.js package.json
 #
 # Pong now stores users, preferences and high scores in MySQL through Prisma
@@ -92,4 +89,5 @@ FROM migrate AS adapter
 COPY .mendel/phase/phase.js /mendel/phase
 RUN chmod +x /mendel/phase
 
-ENTRYPOINT ["/mendel/phase"]
+# No ENTRYPOINT: it is run as `/mendel/phase <step>`, and the inherited CMD
+# (apply migrations) stays the default.
