@@ -35,7 +35,13 @@ describe('event-driven restart', () => {
 
   test('Play Again button and Space both go through the controller', () => {
     expect(html).toMatch(/btn\.addEventListener\('click', \(\) => GameController\.restart\(\)\)/);
-    expect(html).toMatch(/e\.code === 'Space' && game\.phase === 'gameover'/);
+    expect(html).toMatch(/e\.code === 'Space' \|\| e\.code === 'KeyR'/);
+    expect(html).toMatch(/game\.phase === 'gameover'/);
+  });
+
+  test('overlay shows the "Press R to play again" hint under the button', () => {
+    expect(html).toMatch(/hint\.textContent = 'Press R to play again'/);
+    expect(html.indexOf("overlay.appendChild(btn)")).toBeLessThan(html.indexOf("overlay.appendChild(hint)"));
   });
 
   test('still counts play_again_click and game_started', () => {

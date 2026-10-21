@@ -687,7 +687,7 @@
       // Keyboard hint
       const hint = document.createElement('p');
       hint.className = 'hint';
-      hint.textContent = 'or press Space';
+      hint.textContent = 'Press R to play again';
       overlay.appendChild(hint);
 
       document.body.appendChild(overlay);
@@ -1277,9 +1277,9 @@
 
     /**
      * GameController — owns the `running` flag the main loop checks and
-     * turns the Play Again click / Space press into a 'game:restart' event.
+     * turns the Play Again click / Space or R press into a 'game:restart' event.
      *
-     *   init()    wires the Space shortcut (the button is wired when the
+     *   init()    wires the Space / R shortcut (the button is wired when the
      *             overlay is built) — called once at start-up.
      *   pause()   called on game-over; the rAF loop stops scheduling frames.
      *   restart() removes the overlay, dispatches 'game:restart' and resumes
@@ -1290,8 +1290,8 @@
 
       init() {
         window.addEventListener('keydown', (e) => {
-          // Space triggers restart when overlay is visible (accessibility shortcut)
-          if (e.code === 'Space' && game.phase === 'gameover') {
+          // Space or R triggers restart when overlay is visible
+          if ((e.code === 'Space' || e.code === 'KeyR') && !e.repeat && game.phase === 'gameover') {
             GameController.restart();
           }
         });
