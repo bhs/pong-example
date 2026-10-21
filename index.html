@@ -605,6 +605,9 @@
     // and no listener touches them.
 
     const GAME_RESTART_EVENT = 'game:restart';
+    // How long the canvas shows "Get ready…" after a restart before the
+    // first serve — long enough for a player (or a reviewer) to see it.
+    const RESTART_PAUSE_SECONDS = 4;
     const gameEvents = new EventTarget();
 
     // Ball module — back to the centre, at rest until the next serve.
@@ -628,7 +631,7 @@
       aiPaddle.score     = 0;
       game.winner     = null;
       game.phase      = 'scored';
-      game.pauseTimer = 1.5;
+      game.pauseTimer = RESTART_PAUSE_SECONDS;
       rally.rallyCount  = 0;
       rally.maxRally    = 0;
       rally.flashFrames = 0;
@@ -1510,7 +1513,7 @@
 
       // 'Get ready…' hint during the inter-point pause
       if (game.phase === 'scored') {
-        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
         ctx.font = '22px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
