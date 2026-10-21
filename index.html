@@ -1557,6 +1557,16 @@
       }
     }
 
+    // Demo shortcut: opening the page as /?demo=gameover starts it already at
+    // the end of a lost game (AI 7, player 0), so the game-over overlay —
+    // Play Again button, "Press R" hint — can be tried without playing a
+    // full match. Pressing Play Again then runs the normal restart path.
+    if (new URLSearchParams(window.location.search).get('demo') === 'gameover') {
+      aiPaddle.score = SCORE_WIN;
+      game.phase     = 'gameover';
+      game.winner    = 'ai';
+    }
+
     // Kick off the animation loop
     GameController.init();
     sendMendelEvent('game_started');

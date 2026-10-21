@@ -48,4 +48,9 @@ describe('event-driven restart', () => {
     expect(html).toMatch(/sendMendelEvent\('play_again_click'\)/);
     expect(html).toMatch(/sendMendelEvent\('game_started'\)/);
   });
+
+  test('?demo=gameover opens the page straight on the game-over overlay', () => {
+    expect(html).toMatch(/get\('demo'\) === 'gameover'/);
+    expect(html).toMatch(/game\.phase\s*=\s*'gameover'/);
+  });
 });
