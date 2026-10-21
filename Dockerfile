@@ -35,4 +35,8 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=5 \
 # fails fast with a clear "Environment variable not found: DATABASE_URL"
 # error and the container stops instead of silently starting a server that
 # can't reach a database.
-CMD ["sh", "-c", "npx prisma migrate deploy && exec node server.js"]
+#
+# The database container can report healthy a moment before it accepts the
+# application's login, so a failed migration is retried a few times; once the
+# retries are used up the container still exits non-zero, loudly.
+CMD ["sh", "-c", "n=0; until npx prisma migrate deploy; do n=$((n+1)); if [ \"$n\" -ge 10 ]; then echo 'prisma migrate deploy failed; giving up' >&2; exit 1; fi; echo 'prisma migrate deploy failed; retrying in 3s' >&2; sleep 3; done; exec node server.js"]
