@@ -102,6 +102,7 @@ const telemetry      = require('./telemetry');
 const defaultPrisma  = require('./lib/prisma');
 const { isStubEnabled } = require('./lib/stubs');
 const signInStub     = require('./lib/sign-in-stub');
+const requestLog     = require('./lib/request-log');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -149,6 +150,10 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // "https://…/auth/google/callback" to "http://…/auth/google/callback",
   // which no longer matches the URI registered in Google Cloud Console.
   app.set('trust proxy', 1);
+
+  // One JSON line per request (and per unhandled error) on stdout.
+  // `options.logWrite` lets tests capture the lines.
+  app.use(requestLog.requestLogger(options.logWrite));
 
   app.use(express.json());
 
@@ -673,6 +678,8 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return next(err);
     }
   });
+
+  app.use(requestLog.errorLogger(options.logWrite));
 
   return app;
 }
