@@ -55,4 +55,18 @@ describe('arcade cabinet', () => {
   test('control hints stay on one line on the control panel', () => {
     expect(html).toMatch(/#pong-cabinet #pong-control-hints \{[^}]*white-space: nowrap/);
   });
+
+  test('has a three-layer pure-CSS parallax starfield behind the cabinet', () => {
+    for (const [id, dur] of [['far', 240], ['mid', 160], ['near', 100]]) {
+      expect(html).toMatch(new RegExp('id="pong-stars-' + id + '" class="pong-stars"'));
+      expect(html).toMatch(new RegExp('#pong-stars-' + id + ' \\{[^}]*animation-duration: ' + dur + 's'));
+    }
+    expect(html).toMatch(/\.pong-stars \{[^}]*position: fixed;[^}]*z-index: 0;[^}]*pointer-events: none;[^}]*animation: pong-stars-drift linear infinite/);
+    expect(html).toMatch(/#pong-cabinet \{\s*position: relative;\s*z-index: 1;/);
+    expect(html).toMatch(/@keyframes pong-stars-drift \{[^}]*\}[^}]*to\s*\{ background-position: calc\(-1 \* var\(--tile\)\) var\(--tile\)/);
+  });
+
+  test('starfield stops animating with prefers-reduced-motion', () => {
+    expect(html).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.pong-stars \{ animation: none; \}/);
+  });
 });

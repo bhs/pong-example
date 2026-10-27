@@ -86,6 +86,65 @@
     #pong-best-rally:empty {
       display: none;
     }
+    /* ── Slow parallax starfield (pure CSS, behind the cabinet) ───────────── */
+    /*
+     * Three fixed full-window layers of radial-gradient dots drawn over the
+     * purple page background. Each drifts down and to the left by exactly
+     * one tile per loop, so the loop has no visible seam. Farther layers
+     * are smaller, dimmer and slower.
+     */
+    .pong-stars {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-repeat: repeat;
+      animation: pong-stars-drift linear infinite;
+    }
+    @keyframes pong-stars-drift {
+      from { background-position: 0 0; }
+      to   { background-position: calc(-1 * var(--tile)) var(--tile); }
+    }
+    #pong-stars-far {
+      --tile: 300px;
+      opacity: 0.35;
+      background-size: 300px 300px;
+      background-image:
+        radial-gradient(circle at 20px 40px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 110px 210px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 190px 90px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 270px 250px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 60px 140px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 240px 160px, #fff 0.5px, transparent 1px);
+      animation-duration: 240s;
+    }
+    #pong-stars-mid {
+      --tile: 420px;
+      opacity: 0.5;
+      background-size: 420px 420px;
+      background-image:
+        radial-gradient(circle at 50px 80px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 300px 40px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 160px 250px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 370px 330px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 90px 380px, #fff 0.75px, transparent 1.25px);
+      animation-duration: 160s;
+    }
+    #pong-stars-near {
+      --tile: 600px;
+      opacity: 0.6;
+      background-size: 600px 600px;
+      background-image:
+        radial-gradient(circle at 120px 100px, #fff 1px, transparent 1.5px),
+        radial-gradient(circle at 460px 180px, #fff 1px, transparent 1.5px),
+        radial-gradient(circle at 280px 420px, #fff 1px, transparent 1.5px),
+        radial-gradient(circle at 540px 520px, #fff 1px, transparent 1.5px);
+      animation-duration: 100s;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pong-stars { animation: none; }
+    }
+
     /* ── Arcade cabinet (pure CSS frame around the game) ─────────────────── */
     /*
      * Every dimension is a multiple of --u so the whole cabinet scales
@@ -94,6 +153,7 @@
      */
     #pong-cabinet {
       position: relative;
+      z-index: 1;
       flex: none;
       width: calc(700 * var(--u));
       height: calc(790 * var(--u));
@@ -210,6 +270,9 @@
   </style>
 </head>
 <body>
+  <div id="pong-stars-far" class="pong-stars" aria-hidden="true"></div>
+  <div id="pong-stars-mid" class="pong-stars" aria-hidden="true"></div>
+  <div id="pong-stars-near" class="pong-stars" aria-hidden="true"></div>
   <div id="pong-cabinet">
     <div id="pong-marquee">PONG</div>
     <div id="pong-bezel"></div>
