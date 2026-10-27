@@ -26,8 +26,8 @@
       width: 100%;
       height: 100%;
       /* Lighter purple arcade-room backdrop with a soft radial glow */
-      background: #3d2d66;
-      background: radial-gradient(ellipse at 50% 45%, #6a4fa3 0%, #4f3a82 45%, #3d2d66 100%);
+      background: #2e2250;
+      background: radial-gradient(ellipse at 50% 45%, #46346f 0%, #392a5e 45%, #2e2250 100%);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -187,7 +187,7 @@
     #pong-panel-readout {
       position: absolute;
       left: calc(125 * var(--u));
-      width: calc(350 * var(--u));
+      width: calc(390 * var(--u));
       top: 0;
       bottom: 0;
       display: flex;
@@ -198,9 +198,10 @@
     /* Hints and best-rally caption keep their own rules above; on the
        control panel they take the arcade-yellow colour and scale with it. */
     #pong-cabinet #pong-control-hints {
-      font-size: calc(15 * var(--u));
+      font-size: calc(14 * var(--u));
       color: #ffe066;
       margin-top: 0;
+      white-space: nowrap;
     }
     #pong-cabinet #pong-best-rally {
       font-size: calc(12 * var(--u));

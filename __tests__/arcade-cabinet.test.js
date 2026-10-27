@@ -49,6 +49,10 @@ describe('arcade cabinet', () => {
   });
 
   test('page background is a mid-tone purple radial gradient, not near-black', () => {
-    expect(html).toMatch(/radial-gradient\(ellipse at 50% 45%, #6a4fa3[^;]*#3d2d66/);
+    expect(html).toMatch(/radial-gradient\(ellipse at 50% 45%, #46346f[^;]*#2e2250/);
+  });
+
+  test('control hints stay on one line on the control panel', () => {
+    expect(html).toMatch(/#pong-cabinet #pong-control-hints \{[^}]*white-space: nowrap/);
   });
 });
