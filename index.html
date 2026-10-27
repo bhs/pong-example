@@ -12,10 +12,22 @@
       padding: 0;
     }
 
+    /*
+     * Cabinet scale unit: 1 design pixel of the 700x790 cabinet. It is 1px
+     * on windows big enough to hold the cabinet and shrinks proportionally
+     * (by width or height, whichever is tighter) on smaller windows, so the
+     * whole cabinet always fits with no scrolling.
+     */
+    :root {
+      --u: min(1px, 100vw / 700, 100vh / 800);
+    }
+
     html, body {
       width: 100%;
       height: 100%;
-      background: #00008b;
+      /* Lighter purple arcade-room backdrop with a soft radial glow */
+      background: #2e2250;
+      background: radial-gradient(ellipse at 50% 45%, #46346f 0%, #392a5e 45%, #2e2250 100%);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -74,13 +86,208 @@
     #pong-best-rally:empty {
       display: none;
     }
+    /* ── Slow parallax starfield (pure CSS, behind the cabinet) ───────────── */
+    /*
+     * Three fixed full-window layers of radial-gradient dots drawn over the
+     * purple page background. Each drifts down and to the left by exactly
+     * one tile per loop, so the loop has no visible seam. Farther layers
+     * are smaller, dimmer and slower.
+     */
+    .pong-stars {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-repeat: repeat;
+      animation: pong-stars-drift linear infinite;
+    }
+    @keyframes pong-stars-drift {
+      from { background-position: 0 0; }
+      to   { background-position: calc(-1 * var(--tile)) var(--tile); }
+    }
+    #pong-stars-far {
+      --tile: 300px;
+      opacity: 0.35;
+      background-size: 300px 300px;
+      background-image:
+        radial-gradient(circle at 20px 40px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 110px 210px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 190px 90px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 270px 250px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 60px 140px, #fff 0.5px, transparent 1px),
+        radial-gradient(circle at 240px 160px, #fff 0.5px, transparent 1px);
+      animation-duration: 240s;
+    }
+    #pong-stars-mid {
+      --tile: 420px;
+      opacity: 0.5;
+      background-size: 420px 420px;
+      background-image:
+        radial-gradient(circle at 50px 80px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 300px 40px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 160px 250px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 370px 330px, #fff 0.75px, transparent 1.25px),
+        radial-gradient(circle at 90px 380px, #fff 0.75px, transparent 1.25px);
+      animation-duration: 160s;
+    }
+    #pong-stars-near {
+      --tile: 600px;
+      opacity: 0.6;
+      background-size: 600px 600px;
+      background-image:
+        radial-gradient(circle at 120px 100px, #fff 1px, transparent 1.5px),
+        radial-gradient(circle at 460px 180px, #fff 1px, transparent 1.5px),
+        radial-gradient(circle at 280px 420px, #fff 1px, transparent 1.5px),
+        radial-gradient(circle at 540px 520px, #fff 1px, transparent 1.5px);
+      animation-duration: 100s;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pong-stars { animation: none; }
+    }
+
+    /* ── Arcade cabinet (pure CSS frame around the game) ─────────────────── */
+    /*
+     * Every dimension is a multiple of --u so the whole cabinet scales
+     * proportionally. The canvas keeps its 800x600 internal resolution and
+     * is simply displayed at 560x420 design pixels inside the bezel.
+     */
+    #pong-cabinet {
+      position: relative;
+      z-index: 1;
+      flex: none;
+      width: calc(700 * var(--u));
+      height: calc(790 * var(--u));
+      overflow: hidden;
+      border-radius: calc(60 * var(--u)) calc(60 * var(--u)) 0 0;
+      background: linear-gradient(90deg, #5e1a14 0%, #8f2b1f 14%, #8f2b1f 86%, #5e1a14 100%);
+      box-shadow: 0 calc(10 * var(--u)) calc(40 * var(--u)) rgba(0, 0, 0, 0.45);
+    }
+    #pong-marquee {
+      position: absolute;
+      left: calc(68 * var(--u));
+      top: calc(15 * var(--u));
+      width: calc(564 * var(--u));
+      height: calc(65 * var(--u));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #ffd644;
+      border: calc(3 * var(--u)) solid #4a1410;
+      border-radius: calc(10 * var(--u));
+      box-shadow: 0 calc(3 * var(--u)) calc(8 * var(--u)) rgba(0, 0, 0, 0.5);
+      font-size: calc(40 * var(--u));
+      font-weight: bold;
+      letter-spacing: 0.3em;
+      text-indent: 0.3em;
+      color: #b3261e;
+      text-shadow: calc(2 * var(--u)) calc(2 * var(--u)) 0 #5a120d;
+    }
+    #pong-bezel {
+      position: absolute;
+      left: calc(48 * var(--u));
+      top: calc(96 * var(--u));
+      width: calc(604 * var(--u));
+      height: calc(464 * var(--u));
+      background: #111;
+      border-radius: calc(32 * var(--u));
+      box-shadow: inset 0 0 calc(12 * var(--u)) #000;
+    }
+    #pong-screen {
+      position: absolute;
+      left: calc(70 * var(--u));
+      top: calc(118 * var(--u));
+      width: calc(560 * var(--u));
+      height: calc(420 * var(--u));
+      overflow: hidden;
+      border-radius: calc(20 * var(--u));
+      background: #000022;
+    }
+    #pong-screen canvas {
+      width: 100%;
+      height: 100%;
+    }
+    #pong-control-panel {
+      position: absolute;
+      left: calc(50 * var(--u));
+      top: calc(576 * var(--u));
+      width: calc(600 * var(--u));
+      height: calc(156 * var(--u));
+      background: #2b2b30;
+      border-top: calc(5 * var(--u)) solid #46464d;
+      border-radius: calc(14 * var(--u)) calc(14 * var(--u)) 0 0;
+    }
+    #pong-cabinet-base {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: calc(732 * var(--u));
+      bottom: 0;
+      background: #3a0f0a;
+    }
+    #pong-panel-button {
+      position: absolute;
+      left: calc(50 * var(--u));
+      top: calc(41 * var(--u));
+      width: calc(70 * var(--u));
+      height: calc(70 * var(--u));
+      border-radius: 50%;
+      background: radial-gradient(circle at 50% 50%, #ff5a5a 0%, #d82a2a 55%, #b01e1e 100%);
+      box-shadow: 0 calc(6 * var(--u)) 0 #6b0f0f;
+    }
+    #pong-panel-joystick {
+      position: absolute;
+      left: calc(524 * var(--u));
+      top: calc(36 * var(--u));
+      width: calc(26 * var(--u));
+      height: calc(80 * var(--u));
+      border-radius: calc(13 * var(--u));
+      background: #111;
+      box-shadow: inset 0 0 calc(4 * var(--u)) #000;
+    }
+    #pong-panel-readout {
+      position: absolute;
+      left: calc(125 * var(--u));
+      width: calc(390 * var(--u));
+      top: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    /* Hints and best-rally caption keep their own rules above; on the
+       control panel they take the arcade-yellow colour and scale with it. */
+    #pong-cabinet #pong-control-hints {
+      font-size: calc(14 * var(--u));
+      color: #ffe066;
+      margin-top: 0;
+      white-space: nowrap;
+    }
+    #pong-cabinet #pong-best-rally {
+      font-size: calc(12 * var(--u));
+      margin-top: calc(4 * var(--u));
+    }
   </style>
 </head>
 <body>
-  <div id="pong-stage">
-    <canvas id="gameCanvas"></canvas>
-    <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
-    <p id="pong-best-rally"></p>
+  <div id="pong-stars-far" class="pong-stars" aria-hidden="true"></div>
+  <div id="pong-stars-mid" class="pong-stars" aria-hidden="true"></div>
+  <div id="pong-stars-near" class="pong-stars" aria-hidden="true"></div>
+  <div id="pong-cabinet">
+    <div id="pong-marquee">PONG</div>
+    <div id="pong-bezel"></div>
+    <div id="pong-screen">
+      <canvas id="gameCanvas"></canvas>
+    </div>
+    <div id="pong-control-panel">
+      <div id="pong-panel-button"></div>
+      <div id="pong-panel-readout">
+        <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
+        <p id="pong-best-rally"></p>
+      </div>
+      <div id="pong-panel-joystick"></div>
+    </div>
+    <div id="pong-cabinet-base"></div>
   </div>
 
   <script>
@@ -180,7 +387,7 @@
           100% { transform: scale(1);    box-shadow: 0 0 0   0   rgba(255,255,255,0.4); }
         }
         #pong-overlay {
-          position: fixed;
+          position: absolute;
           inset: 0;
           z-index: 10;
           display: flex;
@@ -189,41 +396,41 @@
           justify-content: center;
           background: rgba(0, 0, 0, 0.72);
           backdrop-filter: blur(2px);
-          gap: 18px;
+          gap: calc(12 * var(--u));
           font-family: monospace;
         }
         #pong-overlay h1 {
-          font-size: clamp(2rem, 6vw, 3.5rem);
+          font-size: calc(40 * var(--u));
           color: #fff;
           letter-spacing: 0.06em;
           text-shadow: 0 0 24px rgba(255,255,255,0.5);
           text-align: center;
         }
         #pong-overlay .final-score {
-          font-size: clamp(1rem, 3vw, 1.5rem);
+          font-size: calc(14 * var(--u));
           color: rgba(255,255,255,0.75);
           letter-spacing: 0.08em;
         }
         #pong-overlay .hint {
-          font-size: 0.85rem;
+          font-size: calc(12 * var(--u));
           color: rgba(255,255,255,0.4);
           letter-spacing: 0.05em;
           margin-top: 4px;
         }
         #pong-overlay .personal-best {
-          font-size: 0.95rem;
+          font-size: calc(13 * var(--u));
           color: rgba(255,255,255,0.6);
           letter-spacing: 0.06em;
           margin-top: -6px;
         }
         #pong-overlay .last-played {
-          font-size: 0.85rem;
+          font-size: calc(12 * var(--u));
           color: rgba(255,255,255,0.5);
           letter-spacing: 0.05em;
           margin-top: -6px;
         }
         #pong-overlay .signin-link {
-          font-size: 0.85rem;
+          font-size: calc(12 * var(--u));
           color: #ffe066;
           letter-spacing: 0.05em;
           margin-top: -6px;
@@ -234,10 +441,10 @@
           color: #fff;
         }
         #pong-play-again {
-          margin-top: 8px;
-          padding: 14px 40px;
+          margin-top: calc(4 * var(--u));
+          padding: calc(12 * var(--u)) calc(32 * var(--u));
           font-family: monospace;
-          font-size: 1.1rem;
+          font-size: calc(14 * var(--u));
           font-weight: bold;
           letter-spacing: 0.1em;
           color: #000;
@@ -674,12 +881,12 @@
 
     // ── DOM Overlay ───────────────────────────────────────────────────────────
     //
-    // The game-over overlay is a full-screen semi-transparent div injected
-    // into the document via JS DOM APIs.  It is removed (not hidden) on restart
+    // The game-over overlay is a semi-transparent div, confined to the
+    // cabinet's screen area, injected via JS DOM APIs.  It is removed (not hidden) on restart
     // so a clean element is created each game-over.
 
     /**
-     * Build and show the full-screen game-over overlay.
+     * Build and show the game-over overlay over the cabinet screen.
      * Attaches a 'Play Again' button that calls startNewGame() on click.
      *
      * @param {string} winnerLabel - Human-readable winner string (e.g. 'You win! 🎉')
@@ -720,7 +927,7 @@
       hint.textContent = 'or press Space';
       overlay.appendChild(hint);
 
-      document.body.appendChild(overlay);
+      document.getElementById('pong-screen').appendChild(overlay);
 
       // Focus the button immediately so keyboard users can activate it
       btn.focus();
