@@ -108,6 +108,9 @@ const passport       = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const telemetry      = require('./telemetry');
 const defaultPrisma  = require('./lib/prisma');
+const { isStubEnabled } = require('./lib/stubs');
+const signInStub     = require('./lib/sign-in-stub');
+const requestLog     = require('./lib/request-log');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -152,6 +155,10 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // "https://…/auth/google/callback" to "http://…/auth/google/callback",
   // which no longer matches the URI registered in Google Cloud Console.
   app.set('trust proxy', 1);
+
+  // One JSON line per request (and per unhandled error) on stdout.
+  // `options.logWrite` lets tests capture the lines.
+  app.use(requestLog.requestLogger(options.logWrite));
 
   app.use(express.json());
 
@@ -296,6 +303,18 @@ function createApp(prisma = defaultPrisma, options = {}) {
     telemetry.recordClientEvent(eventName, req);
     return res.status(204).end();
   });
+
+  // ── SignIn interface ──────────────────────────────────────────────────────
+  //
+  // SignIn is GET /auth/google (begin) plus GET /auth/google/callback
+  // (complete: establish the session, count 'user_login'). The real
+  // implementation is the Google OAuth pair of routes below; when the
+  // "google-sign-in" stub is enabled (ENABLED_STUBS, demos only) the stub
+  // registers the same two routes first — a picker over the seeded users —
+  // so the real ones are never reached.
+  if (isStubEnabled(signInStub.STUB_NAME)) {
+    signInStub.registerStubSignIn(app, prisma, telemetry);
+  }
 
   // ── GET /auth/google ──────────────────────────────────────────────────────
   //
@@ -691,6 +710,8 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return next(err);
     }
   });
+
+  app.use(requestLog.errorLogger(options.logWrite));
 
   return app;
 }

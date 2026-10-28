@@ -15,6 +15,10 @@
 const { createApp } = require('../server');
 const { createFakePrisma } = require('./helpers/fakePrisma');
 
+// These suites exercise the real Google OAuth routes, so demo stubs stay off
+// even where the test stack sets ENABLED_STUBS.
+beforeAll(() => { delete process.env.ENABLED_STUBS; });
+
 // ── Minimal HTTP request helper (mirrors __tests__/server.test.js) ────────
 
 function makeRequest(app, method, url, body = null, extraHeaders = {}) {

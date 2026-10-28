@@ -36,6 +36,9 @@ function createFakePrisma() {
     __gameHistory: gameHistory,
 
     user: {
+      async findMany() {
+        return [...users.values()];
+      },
       async findUnique({ where }) {
         return users.get(where.id) || null;
       },
