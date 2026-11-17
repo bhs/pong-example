@@ -68,6 +68,10 @@
         {
           "value": "splash-then-badge",
           "path": "lib/mode-announcements/splash-then-badge.js"
+        },
+        {
+          "value": "marquee-swap",
+          "path": "lib/mode-announcements/marquee-swap.js"
         }
       ]
     }

@@ -13,8 +13,8 @@ const path = require('path');
 
 const {
   CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT,
-  BARRIER_LAYOUT, MODES, FUN_MODE_KEYS, SPLASH_MS,
-  pickFunMode, applyMode, serveBalls, splashThenBadge,
+  BARRIER_LAYOUT, MODES, FUN_MODE_KEYS, SPLASH_MS, MARQUEE_DEFAULT_TEXT,
+  pickFunMode, applyMode, serveBalls, splashThenBadge, marqueeSwap,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
   moveAiPaddle, updateBall, updateBalls, bounceOffBarriers, pickAiTarget,
 } = require('../game-logic');
@@ -22,6 +22,7 @@ const {
 const controlPanelButton = require('../lib/fun-button-placements/control-panel-button');
 const gameOverScreenButton = require('../lib/fun-button-placements/game-over-screen-button');
 const splashThenBadgeOption = require('../lib/mode-announcements/splash-then-badge');
+const marqueeSwapOption = require('../lib/mode-announcements/marquee-swap');
 const funModeConfig = require('../lib/fun-mode-config');
 
 function newState() {
@@ -252,6 +253,39 @@ describe('splash-then-badge option', () => {
   test('server-side option code and config', () => {
     expect(splashThenBadgeOption.clientConfig()).toEqual({ announcement: 'splash-then-badge', splashMs: 1500 });
     expect(funModeConfig.modeAnnouncement({})).toEqual(splashThenBadgeOption.clientConfig());
+  });
+});
+
+describe('marquee-swap option', () => {
+  test('its own code puts the mode name on the marquee', () => {
+    expect(marqueeSwap('bigPaddle')).toEqual({ marqueeText: 'BIG PADDLE MODE' });
+    expect(marqueeSwap('multiBall')).toEqual({ marqueeText: 'MULTI-BALL MODE' });
+    expect(marqueeSwap('bouncyBarriers')).toEqual({ marqueeText: 'BOUNCY BARRIERS MODE' });
+  });
+
+  test('Normal play (and an unknown mode) restores PONG', () => {
+    expect(MARQUEE_DEFAULT_TEXT).toBe('PONG');
+    expect(marqueeSwap('normal')).toEqual({ marqueeText: 'PONG' });
+    expect(marqueeSwap('nonsense')).toEqual({ marqueeText: 'PONG' });
+  });
+
+  test('server-side option code and dispatch case', () => {
+    expect(marqueeSwapOption.clientConfig()).toEqual({ announcement: 'marquee-swap' });
+    expect(funModeConfig.modeAnnouncement({ HOW_THE_MODE_IS_ANNOUNCED: 'marquee-swap' }))
+      .toEqual(marqueeSwapOption.clientConfig());
+    expect(marqueeSwapOption.clientConfig()).not.toEqual(splashThenBadgeOption.clientConfig());
+  });
+
+  test('an unknown value still takes the default announcement', () => {
+    expect(funModeConfig.modeAnnouncement({ HOW_THE_MODE_IS_ANNOUNCED: 'nope' }))
+      .toEqual(splashThenBadgeOption.clientConfig());
+  });
+
+  test('index.html swaps the marquee text and restores PONG', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    expect(html).toMatch(/'marquee-swap': announceMarqueeSwap/);
+    expect(html).toMatch(/marquee\.textContent = MARQUEE_DEFAULT_TEXT/);
+    expect(html).toMatch(/marquee\.textContent = mode\.name\.toUpperCase\(\) \+ ' MODE'/);
   });
 });
 

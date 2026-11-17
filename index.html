@@ -182,6 +182,12 @@
       color: #b3261e;
       text-shadow: calc(2 * var(--u)) calc(2 * var(--u)) 0 #5a120d;
     }
+    /* Marquee swap announcement: the longer mode name needs a smaller type size. */
+    #pong-marquee.pong-marquee-mode {
+      font-size: calc(28 * var(--u));
+      letter-spacing: 0.15em;
+      text-indent: 0.15em;
+    }
     #pong-bezel {
       position: absolute;
       left: calc(48 * var(--u));
@@ -1189,6 +1195,32 @@
       }, SPLASH_MS);
     }
 
+    // ── Mode announcement: 'marquee-swap' ─────────────────────────────────────
+    //
+    // The PONG marquee text is replaced by the mode name (BIG PADDLE MODE) for
+    // the duration of the fun game, and PONG is restored on Normal play. Every
+    // call first clears any splash and badge and puts PONG back, so no stale
+    // text survives a restart or a switch to Normal.
+
+    const MARQUEE_DEFAULT_TEXT = 'PONG';
+
+    function restoreMarquee() {
+      const marquee = document.getElementById('pong-marquee');
+      if (!marquee) return null;
+      marquee.textContent = MARQUEE_DEFAULT_TEXT;
+      marquee.classList.remove('pong-marquee-mode');
+      return marquee;
+    }
+
+    function announceMarqueeSwap(modeKey) {
+      clearModeAnnouncement();
+      const marquee = restoreMarquee();
+      const mode = MODES[modeKey];
+      if (!marquee || !mode || !mode.fun) return;
+      marquee.textContent = mode.name.toUpperCase() + ' MODE';
+      marquee.classList.add('pong-marquee-mode');
+    }
+
     // ── Page settings: where the fun button sits, how the mode is announced ──
     //
     // Each Trait's chosen option is handed out by GET /api/config. The tables
@@ -1204,6 +1236,7 @@
 
     const MODE_ANNOUNCERS = {
       'splash-then-badge': announceSplashThenBadge,
+      'marquee-swap': announceMarqueeSwap,
     };
 
     function announceMode(modeKey) {
