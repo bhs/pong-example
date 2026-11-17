@@ -7,7 +7,23 @@
       "interface": "server.js:SignIn",
       "path": "lib/sign-in-stub.js",
       "tbd": false,
-      "needed_by": ["serving"]
+      "needed_by": [
+        "serving"
+      ]
+    },
+    {
+      "kind": "trait",
+      "name": "where-the-leaderboard-appears",
+      "description": "Where the global leaderboard is shown: as a modal opened from a trophy button, as part of the game-over screen, or as its own page.",
+      "env": "WHERE_THE_LEADERBOARD_APPEARS",
+      "dispatch": "lib/leaderboard-placement.js:leaderboardConfig",
+      "default": "modal-from-a-button",
+      "options": [
+        {
+          "value": "modal-from-a-button",
+          "path": "lib/leaderboard-placements/modal-from-a-button.js"
+        }
+      ]
     },
     {
       "kind": "secret",
