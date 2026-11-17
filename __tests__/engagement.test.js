@@ -106,6 +106,10 @@ describe('trait options', () => {
     expect(traits.toastOverTheScreen()).toEqual({ placement: 'toast-over-the-screen', durationMs: 5000 });
   });
 
+  test('stripOnTheControlPanel describes a permanent control-panel line', () => {
+    expect(traits.stripOnTheControlPanel()).toEqual({ placement: 'strip-on-the-control-panel' });
+  });
+
   test('signedOutStreakOff turns the signed-out streak off with a sign-in line', () => {
     expect(traits.signedOutStreakOff()).toEqual({ enabled: false, line: 'Sign in to build a streak' });
   });

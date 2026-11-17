@@ -280,6 +280,16 @@
     #pong-streak-note a { color: #ffe066; text-decoration: none; }
     #pong-streak:empty,
     #pong-streak-note:empty { display: none; }
+    /* 'Beat your yesterday' strip on the control panel: hidden while empty. */
+    #pong-yesterday-strip {
+      font-family: monospace;
+      text-align: center;
+      font-size: calc(13 * var(--u));
+      color: #ffe066;
+      margin-top: calc(4 * var(--u));
+      white-space: nowrap;
+    }
+    #pong-yesterday-strip:empty { display: none; }
     /* 'Beat your yesterday' toast: fades in over the canvas, never blocks input. */
     #pong-yesterday-toast {
       position: absolute;
@@ -317,6 +327,7 @@
         <p id="pong-streak"></p>
         <p id="pong-streak-note"></p>
         <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
+        <p id="pong-yesterday-strip"></p>
         <p id="pong-best-rally"></p>
       </div>
       <div id="pong-panel-joystick"></div>

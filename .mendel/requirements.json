@@ -50,6 +50,10 @@
         {
           "value": "toast-over-the-screen",
           "path": "lib/engagement-traits.js:toastOverTheScreen"
+        },
+        {
+          "value": "strip-on-the-control-panel",
+          "path": "lib/engagement-traits.js:stripOnTheControlPanel"
         }
       ]
     },

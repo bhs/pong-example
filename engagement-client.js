@@ -7,6 +7,9 @@
  *     empty and therefore hidden when there is no streak);
  *   - a short 'Beat your yesterday: N' toast over the screen (#pong-screen)
  *     on load, gone after a few seconds or on the first key press;
+ *   - with the `strip-on-the-control-panel` placement, the same prompt as a
+ *     permanent line (#pong-yesterday-strip) on the control panel instead of
+ *     the toast, kept up to date after each score;
  *   - for signed-out players, a 'Sign in to build a streak' line instead
  *     (#pong-streak-note) — no streak, no toast.
  *
@@ -21,6 +24,7 @@
 }(typeof self !== 'undefined' ? self : this, function () {
   const TOAST_ID = 'pong-yesterday-toast';
   const FADE_MS  = 400;
+  const STRIP_PLACEMENT = 'strip-on-the-control-panel';
 
   function streakLabel(streak) {
     return streak > 0 ? '🔥 ' + streak + '-day streak' : '';
@@ -52,6 +56,7 @@
 
     let latest = 0;       // sequence number: only the newest response is applied
     let toast = null;     // { el, timer }
+    let strip = false;    // true when the prompt lives on the control panel
 
     function setText(id, text) {
       const el = doc.getElementById(id);
@@ -103,7 +108,10 @@
 
       setText('pong-streak-note', '');
       setText('pong-streak', data ? streakLabel(data.streak) : '');
-      if (data && config && config.prompt) {
+      if (config && config.prompt) strip = config.prompt.placement === STRIP_PLACEMENT;
+      if (strip) {
+        setText('pong-yesterday-strip', data ? promptText(data) : '');
+      } else if (data && config && config.prompt) {
         showToast(promptText(data), config.prompt.durationMs || 5000);
       }
     }
@@ -118,6 +126,7 @@
         latest += 1;
         dismissToast();
         setText('pong-streak', '');
+        setText('pong-yesterday-strip', '');
         const note = doc.getElementById('pong-streak-note');
         if (!note) return;
         const line = (config && config.signedOut && config.signedOut.line) || 'Sign in to build a streak';
