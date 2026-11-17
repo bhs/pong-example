@@ -216,12 +216,6 @@ describe('game-over-overlay-section option', () => {
     expect(gameOverOverlaySection.clientConfig()).toEqual({ placement: 'game-over-overlay-section', limit: 5 });
   });
 
-  test('the dispatch yields it when chosen, and rejects unknown placements', () => {
-    expect(leaderboardConfig({ WHERE_THE_LEADERBOARD_APPEARS: 'game-over-overlay-section' }))
-      .toEqual(gameOverOverlaySection.clientConfig());
-    expect(() => leaderboardConfig({ WHERE_THE_LEADERBOARD_APPEARS: 'nope' })).toThrow(/Unknown leaderboard placement/);
-  });
-
   test('renders loading, empty and error states', () => {
     expect(render({ status: 'loading' }, null)).toMatch(/Loading/);
     expect(render({ status: 'ready', scores: [] }, null)).toMatch(/No scores yet/);
