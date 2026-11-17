@@ -81,6 +81,15 @@
  *                                 recent finished games (newest first).
  *                                 Requires an authenticated Google session.
  *
+ *   GET    /api/engagement       Returns the logged-in user's daily-play streak
+ *                                 and yesterday's / today's best score,
+ *                                 derived from their last 400 days of
+ *                                 GameHistory (lib/engagement.js). Query:
+ *                                 ?tzOffset=<minutes> (the browser's
+ *                                 getTimezoneOffset()) decides where one
+ *                                 local day ends and the next begins.
+ *                                 Requires an authenticated Google session.
+ *
  *   GET  /health                 Basic health check (200 OK).
  *
  *   POST /api/client-events      Fire-and-forget pings for browser-only
@@ -109,6 +118,8 @@ const { isStubEnabled } = require('./lib/stubs');
 const signInStub     = require('./lib/sign-in-stub');
 const requestLog     = require('./lib/request-log');
 const modalFromAButton = require('./lib/leaderboard-placements/modal-from-a-button');
+const engagement     = require('./lib/engagement');
+const engagementConfig = require('./lib/engagement-config');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -366,9 +377,14 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return res.status(200).json({
         user: { id, email, name, avatar, nickname: nickname || null },
         bestRallyBucket: isBestRallyBucketed(id),
+        engagement: engagementConfig.engagementConfig(),
       });
     }
-    return res.status(200).json({ user: null, bestRallyBucket: false });
+    return res.status(200).json({
+      user: null,
+      bestRallyBucket: false,
+      engagement: engagementConfig.engagementConfig(),
+    });
   });
 
   // ── Auth guard helper ────────────────────────────────────────────────────
@@ -675,6 +691,38 @@ function createApp(prisma = defaultPrisma, options = {}) {
 
       const games = rows.map(toGameHistoryEntry);
       return res.status(200).json({ games });
+    } catch (err) {
+      return next(err);
+    }
+  });
+
+  // ── GET /api/engagement ───────────────────────────────────────────────────
+  //
+  // The retention numbers for the signed-in player: current daily-play
+  // streak, whether they've played today, and yesterday's / today's best
+  // score. Read-only and derived from GameHistory, so there is nothing to
+  // keep in sync. `options.now` (a () => ms function) is a testing seam for
+  // the clock.
+
+  app.get('/api/engagement', async (req, res, next) => {
+    if (!requireLogin(req, res)) return;
+
+    const tzOffset = engagement.parseTzOffset(req.query.tzOffset);
+    if (tzOffset === null) {
+      return res.status(400).json({ error: 'tzOffset must be a whole number of minutes between -840 and 840' });
+    }
+
+    try {
+      const now   = typeof options.now === 'function' ? options.now() : Date.now();
+      const since = new Date(now - engagement.HISTORY_DAYS * engagement.DAY_MS);
+      const rows  = await prisma.gameHistory.findMany({
+        where:   { userId: req.user.id, finishedAt: { gte: since } },
+        select:  { finishedAt: true, score: true },
+        orderBy: { finishedAt: 'desc' },
+      });
+
+      res.set('Cache-Control', 'no-store');
+      return res.status(200).json(engagement.computeEngagement(rows, tzOffset, now));
     } catch (err) {
       return next(err);
     }
