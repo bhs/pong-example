@@ -12,24 +12,6 @@
       ]
     },
     {
-      "kind": "trait",
-      "name": "where-the-leaderboard-appears",
-      "description": "Where the global leaderboard is shown: as a modal opened from a trophy button, as part of the game-over screen, or as its own page.",
-      "env": "WHERE_THE_LEADERBOARD_APPEARS",
-      "dispatch": "lib/leaderboard-placement.js:leaderboardConfig",
-      "default": "modal-from-a-button",
-      "options": [
-        {
-          "value": "modal-from-a-button",
-          "path": "lib/leaderboard-placements/modal-from-a-button.js"
-        },
-        {
-          "value": "game-over-overlay-section",
-          "path": "lib/leaderboard-placements/game-over-overlay-section.js"
-        }
-      ]
-    },
-    {
       "kind": "secret",
       "name": "DATABASE_URL",
       "description": "MySQL connection string, mysql://user:password@host:3306/dbname",

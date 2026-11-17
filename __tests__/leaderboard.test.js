@@ -17,7 +17,6 @@ const http = require('http');
 const { createApp } = require('../server');
 const { createFakePrisma } = require('./helpers/fakePrisma');
 const modalFromAButton = require('../lib/leaderboard-placements/modal-from-a-button');
-const { leaderboardConfig, DEFAULT_PLACEMENT } = require('../lib/leaderboard-placement');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 
@@ -119,16 +118,11 @@ describe('modal-from-a-button option', () => {
     expect(modalFromAButton.clientConfig()).toEqual({ placement: 'modal-from-a-button', limit: 10 });
   });
 
-  test('is what the dispatch yields with nothing set', () => {
-    expect(DEFAULT_PLACEMENT).toBe('modal-from-a-button');
-    expect(leaderboardConfig({})).toEqual(modalFromAButton.clientConfig());
-  });
-
-  test('GET /api/config serves whatever the dispatch yields', async () => {
+  test('GET /api/config serves the option\'s client config', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
     const res = await getJson(app, '/api/config');
     expect(res.status).toBe(200);
-    expect(res.body.leaderboard).toEqual(leaderboardConfig());
+    expect(res.body.leaderboard).toEqual(modalFromAButton.clientConfig());
   });
 });
 
@@ -195,54 +189,5 @@ describe('leaderboard modal in index.html', () => {
     const out = render({ status: 'ready', scores: evil }, null);
     expect(out).not.toMatch(/<img/);
     expect(out).toMatch(/&lt;img src=x onerror=alert\(1\)&gt;&quot;&amp;/);
-  });
-});
-
-describe('game-over-overlay-section option', () => {
-  const gameOverOverlaySection = require('../lib/leaderboard-placements/game-over-overlay-section');
-  const fn = (name) => {
-    const m = html.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n    \\}\\n`));
-    if (!m) throw new Error(`function ${name} not found`);
-    return m[0];
-  };
-  const ctx = {};
-  vm.createContext(ctx);
-  vm.runInContext(`${fn('escapeHtml')}\n${fn('renderOverlayLeaderboard')}`, ctx);
-  const render = (state, me) => ctx.renderOverlayLeaderboard(state, me);
-
-  const scores = [
-    { rank: 1, userId: 'u1', player: 'Ann', score: 11, longestRally: 21 },
-    { rank: 2, userId: 'u2', player: 'Bo',  score: 9,  longestRally: 7 },
-  ];
-
-  test('its own code describes a compact top-5 list', () => {
-    expect(gameOverOverlaySection.clientConfig()).toEqual({ placement: 'game-over-overlay-section', limit: 5 });
-  });
-
-  test('renders loading, empty and error states', () => {
-    expect(render({ status: 'loading' }, null)).toMatch(/Loading/);
-    expect(render({ status: 'ready', scores: [] }, null)).toMatch(/No scores yet/);
-    expect(render({ status: 'error' }, null)).toMatch(/unavailable/);
-  });
-
-  test('lists rank, player and score, highlighting only the signed-in player', () => {
-    const out = render({ status: 'ready', scores }, 'u2');
-    expect(out).toMatch(/<td class="overlay-lb-rank">1<\/td><td class="overlay-lb-player">Ann<\/td><td>11<\/td>/);
-    expect(out.match(/overlay-lb-me/g)).toHaveLength(1);
-    expect(out).toMatch(/overlay-lb-me"><td class="overlay-lb-rank">2<\/td><td class="overlay-lb-player">Bo \(you\)/);
-    expect(render({ status: 'ready', scores }, null)).not.toMatch(/overlay-lb-me/);
-  });
-
-  test('escapes player names', () => {
-    const evil = [{ rank: 1, userId: 'x', player: '<img src=x onerror=alert(1)>', score: 1 }];
-    expect(render({ status: 'ready', scores: evil }, null)).not.toMatch(/<img/);
-  });
-
-  test('is fetched with the configured limit only after the score POST resolves', () => {
-    const badge = fn('renderPersonalBestBadge');
-    expect(badge.indexOf("method: 'POST'")).toBeGreaterThan(-1);
-    expect(badge.indexOf('refreshOverlayLeaderboard(overlay, user.id)')).toBeGreaterThan(badge.indexOf("method: 'POST'"));
-    expect(fn('refreshOverlayLeaderboard')).toMatch(/fetch\(`\/api\/scores\?limit=\$\{encodeURIComponent\(leaderboardConfig\.limit\)\}`/);
-    expect(fn('refreshOverlayLeaderboard')).toMatch(/placement !== 'game-over-overlay-section'\) return;/);
   });
 });

@@ -65,7 +65,7 @@
  *                                 tie); every entry carries a 1-based `rank`.
  *                                 ?limit=N — default 10, capped at 100.
  *   GET    /api/config           Browser-facing settings (where the leaderboard
- *                                 appears — see lib/leaderboard-placement.js).
+ *                                 appears — see lib/leaderboard-placements/modal-from-a-button.js).
  *   POST   /api/scores           Create or update the logged-in user's high
  *                                 score. Requires an authenticated Google
  *                                 session — every HighScore row is tied to a
@@ -108,7 +108,7 @@ const defaultPrisma  = require('./lib/prisma');
 const { isStubEnabled } = require('./lib/stubs');
 const signInStub     = require('./lib/sign-in-stub');
 const requestLog     = require('./lib/request-log');
-const { leaderboardConfig } = require('./lib/leaderboard-placement');
+const modalFromAButton = require('./lib/leaderboard-placements/modal-from-a-button');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -498,10 +498,10 @@ function createApp(prisma = defaultPrisma, options = {}) {
   // ── GET /api/config ───────────────────────────────────────────────────────
   //
   // Settings the browser needs but cannot read itself: where the leaderboard
-  // appears (see lib/leaderboard-placement.js).
+  // appears (see lib/leaderboard-placements/modal-from-a-button.js).
 
   app.get('/api/config', (req, res) => {
-    return res.status(200).json({ leaderboard: leaderboardConfig() });
+    return res.status(200).json({ leaderboard: modalFromAButton.clientConfig() });
   });
 
   // ── GET /api/scores ───────────────────────────────────────────────────────
