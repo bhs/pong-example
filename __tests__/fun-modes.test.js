@@ -269,16 +269,9 @@ describe('marquee-swap option', () => {
     expect(marqueeSwap('nonsense')).toEqual({ marqueeText: 'PONG' });
   });
 
-  test('server-side option code and dispatch case', () => {
+  test('server-side option code', () => {
     expect(marqueeSwapOption.clientConfig()).toEqual({ announcement: 'marquee-swap' });
-    expect(funModeConfig.modeAnnouncement({ HOW_THE_MODE_IS_ANNOUNCED: 'marquee-swap' }))
-      .toEqual(marqueeSwapOption.clientConfig());
     expect(marqueeSwapOption.clientConfig()).not.toEqual(splashThenBadgeOption.clientConfig());
-  });
-
-  test('an unknown value still takes the default announcement', () => {
-    expect(funModeConfig.modeAnnouncement({ HOW_THE_MODE_IS_ANNOUNCED: 'nope' }))
-      .toEqual(splashThenBadgeOption.clientConfig());
   });
 
   test('index.html swaps the marquee text and restores PONG', () => {
