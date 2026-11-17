@@ -127,6 +127,9 @@ function createFakePrisma() {
         if (where && where.userId) {
           rows = rows.filter((row) => row.userId === where.userId);
         }
+        if (where && where.finishedAt && where.finishedAt.gte) {
+          rows = rows.filter((row) => row.finishedAt >= where.finishedAt.gte);
+        }
         if (orderBy && orderBy.finishedAt === 'desc') {
           rows = rows.sort((a, b) => b.finishedAt - a.finishedAt);
         }

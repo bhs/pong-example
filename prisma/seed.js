@@ -27,6 +27,16 @@ const PLAYERS = [
   ['Liam Doyle', 'liam.doyle', 'Paddle Pal'],
 ];
 
+// Players whose games fall on scripted days (0 = today, 1 = yesterday, ...) so
+// the demo shows each streak state: a 7-day streak that already includes
+// today, a 3-day streak still alive (nothing played yet today), and a streak
+// broken by missed days.
+const SCRIPTED_DAYS = {
+  0: [0, 1, 2, 3, 4, 5, 6],
+  1: [1, 2, 3],
+  2: [3, 4],
+};
+
 const THEMES = ['dark', 'light', 'neon'];
 const COLORS = ['#ffffff', '#ff5555', '#55ff55', '#5599ff'];
 
@@ -67,14 +77,16 @@ async function main() {
     }
 
     await prisma.gameHistory.deleteMany({ where: { userId: id } });
-    const gameCount = int(3, 14);
+    const scripted = SCRIPTED_DAYS[i];
+    const gameCount = scripted ? scripted.length : int(3, 14);
     let best = 0;
     let bestRally = 0;
     let lastPlayed = 0;
     for (let g = 0; g < gameCount; g += 1) {
       const score = int(1, 11);
       const duration = int(25, 240);
-      const finishedAt = new Date(now - int(0, 20) * DAY - int(0, 23) * 3600 * 1000);
+      const randomAgo = int(0, 20) * DAY + int(0, 23) * 3600 * 1000;
+      const finishedAt = new Date(now - (scripted ? scripted[g] * DAY : randomAgo));
       best = Math.max(best, score);
       bestRally = Math.max(bestRally, int(2, 25));
       lastPlayed = Math.max(lastPlayed, finishedAt.getTime());
