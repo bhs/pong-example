@@ -38,6 +38,34 @@
       "instructions": "Add {{deploy_url}}/auth/google/callback to Authorized redirect URIs for the OAuth client.",
       "console_url": "https://console.cloud.google.com/apis/credentials",
       "unread_with_stub": "google-sign-in"
+    },
+    {
+      "kind": "trait",
+      "name": "where-the-fun-button-sits",
+      "description": "Where the random fun mode button sits: players may find it during play or only between games.",
+      "env": "WHERE_THE_FUN_BUTTON_SITS",
+      "dispatch": "lib/fun-mode-config.js:funButtonPlacement",
+      "default": "control-panel-button",
+      "options": [
+        {
+          "value": "control-panel-button",
+          "path": "lib/fun-button-placements/control-panel-button.js"
+        }
+      ]
+    },
+    {
+      "kind": "trait",
+      "name": "how-the-mode-is-announced",
+      "description": "How the fun mode is announced: whether a player notices and understands the mode without it getting in the way of play.",
+      "env": "HOW_THE_MODE_IS_ANNOUNCED",
+      "dispatch": "lib/fun-mode-config.js:modeAnnouncement",
+      "default": "splash-then-badge",
+      "options": [
+        {
+          "value": "splash-then-badge",
+          "path": "lib/mode-announcements/splash-then-badge.js"
+        }
+      ]
     }
   ]
 }

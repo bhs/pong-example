@@ -30,10 +30,11 @@ describe('arcade cabinet', () => {
     expect(html.indexOf('<p id="pong-best-rally">')).toBeGreaterThan(panelStart);
   });
 
-  test('has decorative button and joystick with no handlers', () => {
+  test('has a red fun-mode button and a decorative joystick with no handlers', () => {
     expect(html).toMatch(/id="pong-panel-button"/);
     expect(html).toMatch(/id="pong-panel-joystick"/);
-    expect(html).not.toMatch(/getElementById\('pong-panel-/);
+    expect(html).toMatch(/getElementById\('pong-panel-button'\)/);
+    expect(html).not.toMatch(/getElementById\('pong-panel-joystick'\)/);
   });
 
   test('scales proportionally with CSS and uses no images', () => {

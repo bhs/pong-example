@@ -37,6 +37,10 @@ const CLIENT_EVENT_COUNTER_NAMES = [
   'game_started', 'visit',
   // 'page_view' fires once per page load, from the browser.
   'page_view',
+  // 'fun_mode_started' fires when the control panel button starts a game in a
+  // fun mode. The browser also sends the mode name with the ping, but the
+  // counter takes no attribute beyond the analysis bucket, so it is not kept.
+  'fun_mode_started',
 ];
 
 // Counters recorded entirely server-side (no browser round-trip): a
@@ -192,6 +196,7 @@ function createTelemetry() {
       nickname_set:         meter.createCounter('nickname_set'),
       user_login:           meter.createCounter('user_login'),
       page_view:            meter.createCounter('page_view'),
+      fun_mode_started:     meter.createCounter('fun_mode_started'),
       settings_changed:     meter.createCounter('settings_changed'),
       mendel_participants:  meter.createCounter('mendel_participants'),
       mendel_requests:      meter.createCounter('mendel_requests'),
