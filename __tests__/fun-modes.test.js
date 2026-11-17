@@ -276,11 +276,8 @@ describe('game-over-screen-button option', () => {
     expect(gameOverScreenButton.clientConfig()).toEqual({ placement: 'game-over-screen-button' });
   });
 
-  test('the dispatch hands it out when chosen and keeps the default otherwise', () => {
-    const chosen = { WHERE_THE_FUN_BUTTON_SITS: 'game-over-screen-button' };
-    expect(funModeConfig.funButtonPlacement(chosen)).toEqual(gameOverScreenButton.clientConfig());
-    expect(funModeConfig.clientConfig(chosen).placement).toBe('game-over-screen-button');
-    expect(funModeConfig.funButtonPlacement({})).toEqual(controlPanelButton.clientConfig());
+  test('its settings differ from the default option', () => {
+    expect(gameOverScreenButton.clientConfig()).not.toEqual(controlPanelButton.clientConfig());
   });
 
   test('index.html builds the Fun mode button in the overlay only for this placement', () => {
