@@ -119,13 +119,16 @@ describe('modal-from-a-button option', () => {
     expect(modalFromAButton.clientConfig()).toEqual({ placement: 'modal-from-a-button', limit: 10 });
   });
 
-  test('is what the dispatch yields with nothing set, and GET /api/config serves it', async () => {
+  test('is what the dispatch yields with nothing set', () => {
     expect(DEFAULT_PLACEMENT).toBe('modal-from-a-button');
     expect(leaderboardConfig({})).toEqual(modalFromAButton.clientConfig());
+  });
+
+  test('GET /api/config serves whatever the dispatch yields', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
     const res = await getJson(app, '/api/config');
     expect(res.status).toBe(200);
-    expect(res.body.leaderboard.placement).toBe('modal-from-a-button');
+    expect(res.body.leaderboard).toEqual(leaderboardConfig());
   });
 });
 
