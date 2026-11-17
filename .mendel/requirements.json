@@ -50,6 +50,10 @@
         {
           "value": "control-panel-button",
           "path": "lib/fun-button-placements/control-panel-button.js"
+        },
+        {
+          "value": "game-over-screen-button",
+          "path": "lib/fun-button-placements/game-over-screen-button.js"
         }
       ]
     },

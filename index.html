@@ -502,6 +502,36 @@
           outline: none;
         }
 
+        /* Game-over Fun mode button ('game-over-screen-button' placement) */
+        #pong-overlay .pong-overlay-buttons {
+          display: flex;
+          flex-direction: row;
+          align-items: center;
+          gap: calc(12 * var(--u));
+          margin-top: calc(4 * var(--u));
+        }
+        #pong-overlay .pong-overlay-buttons #pong-play-again {
+          margin-top: 0;
+        }
+        #pong-fun-mode {
+          padding: calc(12 * var(--u)) calc(24 * var(--u));
+          font-family: monospace;
+          font-size: calc(14 * var(--u));
+          font-weight: bold;
+          letter-spacing: 0.1em;
+          color: #000;
+          background: #ffd84a;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: background 0.15s, color 0.15s;
+        }
+        #pong-fun-mode:hover,
+        #pong-fun-mode:focus {
+          background: #fff;
+          outline: none;
+        }
+
         /* ── Auth bar (Google OAuth) ─────────────────────────────────────── */
         #pong-auth-bar {
           position: fixed;
@@ -1205,21 +1235,86 @@
       const btn = document.getElementById('pong-panel-button');
       btn.addEventListener('click', onFunButtonPress);
       btn.addEventListener('keydown', onFunButtonPress);
+      return () => {
+        btn.removeEventListener('click', onFunButtonPress);
+        btn.removeEventListener('keydown', onFunButtonPress);
+      };
+    }
+
+    // ── Fun button: 'game-over-screen-button' ─────────────────────────────────
+    //
+    // A Fun mode button beside Play Again in the game-over overlay, built by
+    // showGameOverOverlay() only while this placement is installed, so it
+    // exists only after a game ends. The red panel button is left unwired.
+    // Enter or Space on the focused button starts the fun game and is kept
+    // from reaching the window's Space shortcut (which starts Normal); presses
+    // share the debounce of the other placement.
+
+    let gameOverFunButtonEnabled = false;
+
+    function onOverlayFunButtonPress(e) {
+      if (e.type === 'keydown') {
+        if ((e.code !== 'Enter' && e.code !== 'Space') || e.repeat) return;
+        e.stopPropagation();
+      }
+      e.preventDefault();
+      if (game.phase !== 'gameover') return;
+      const now = Date.now();
+      if (now - lastFunStartAt < FUN_BUTTON_DEBOUNCE_MS) return;
+      lastFunStartAt = now;
+      startFunGame();
+    }
+
+    function createOverlayFunButton() {
+      const btn = document.createElement('button');
+      btn.id = 'pong-fun-mode';
+      btn.type = 'button';
+      btn.textContent = 'Fun mode';
+      btn.title = 'Start a new game in a random fun mode';
+      btn.addEventListener('click', onOverlayFunButtonPress);
+      btn.addEventListener('keydown', onOverlayFunButtonPress);
+      return btn;
+    }
+
+    function enableGameOverFunButton() {
+      gameOverFunButtonEnabled = true;
+      return () => { gameOverFunButtonEnabled = false; };
+    }
+
+    /**
+     * Put the overlay's buttons in: Play Again alone, or with the Fun mode
+     * button beside it when the game-over placement is installed.
+     */
+    function appendOverlayButtons(overlay, playAgainBtn) {
+      if (!gameOverFunButtonEnabled) {
+        overlay.appendChild(playAgainBtn);
+        return;
+      }
+      const row = document.createElement('div');
+      row.className = 'pong-overlay-buttons';
+      row.appendChild(playAgainBtn);
+      row.appendChild(createOverlayFunButton());
+      overlay.appendChild(row);
     }
 
     const FUN_BUTTON_PLACEMENTS = {
       'control-panel-button': wireControlPanelButton,
+      'game-over-screen-button': enableGameOverFunButton,
     };
 
     // Wired once at start with the default, and again once the page settings
     // arrive; installing the same placement twice does nothing.
+    // A placement's wiring returns the function that takes it down again, so
+    // switching placements leaves only the chosen one in place.
     let installedPlacement = null;
+    let uninstallPlacement = null;
 
     function installFunButton() {
       const key = FUN_BUTTON_PLACEMENTS[funModeConfig.placement] ? funModeConfig.placement : FUN_BUTTON_DEFAULT_PLACEMENT;
       if (installedPlacement === key) return;
+      if (uninstallPlacement) uninstallPlacement();
       installedPlacement = key;
-      FUN_BUTTON_PLACEMENTS[key]();
+      uninstallPlacement = FUN_BUTTON_PLACEMENTS[key]();
     }
 
     // ── DOM Overlay ───────────────────────────────────────────────────────────
@@ -1262,7 +1357,7 @@
       btn.id = 'pong-play-again';
       btn.textContent = 'Play Again';
       btn.addEventListener('click', startNewGame);
-      overlay.appendChild(btn);
+      appendOverlayButtons(overlay, btn);
 
       // Keyboard hint
       const hint = document.createElement('p');

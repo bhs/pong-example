@@ -20,6 +20,7 @@ const {
 } = require('../game-logic');
 
 const controlPanelButton = require('../lib/fun-button-placements/control-panel-button');
+const gameOverScreenButton = require('../lib/fun-button-placements/game-over-screen-button');
 const splashThenBadgeOption = require('../lib/mode-announcements/splash-then-badge');
 const funModeConfig = require('../lib/fun-mode-config');
 
@@ -266,6 +267,29 @@ describe('control-panel-button option', () => {
       announcement: 'splash-then-badge',
       splashMs: 1500,
     });
+  });
+});
+
+describe('game-over-screen-button option', () => {
+  test('its own code describes the game-over screen button', () => {
+    expect(gameOverScreenButton.PLACEMENT).toBe('game-over-screen-button');
+    expect(gameOverScreenButton.clientConfig()).toEqual({ placement: 'game-over-screen-button' });
+  });
+
+  test('the dispatch hands it out when chosen and keeps the default otherwise', () => {
+    const chosen = { WHERE_THE_FUN_BUTTON_SITS: 'game-over-screen-button' };
+    expect(funModeConfig.funButtonPlacement(chosen)).toEqual(gameOverScreenButton.clientConfig());
+    expect(funModeConfig.clientConfig(chosen).placement).toBe('game-over-screen-button');
+    expect(funModeConfig.funButtonPlacement({})).toEqual(controlPanelButton.clientConfig());
+  });
+
+  test('index.html builds the Fun mode button in the overlay only for this placement', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    expect(html).toMatch(/'game-over-screen-button': enableGameOverFunButton/);
+    expect(html).toMatch(/btn\.id = 'pong-fun-mode'/);
+    expect(html).toMatch(/appendOverlayButtons\(overlay, btn\)/);
+    expect(html).toMatch(/if \(!gameOverFunButtonEnabled\) \{\s*overlay\.appendChild\(playAgainBtn\)/);
+    expect(html).toMatch(/function startNewGame\(\) \{[^}]*beginGame\('normal'\)/);
   });
 });
 
