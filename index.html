@@ -233,6 +233,15 @@
       border-radius: 50%;
       background: radial-gradient(circle at 50% 50%, #ff5a5a 0%, #d82a2a 55%, #b01e1e 100%);
       box-shadow: 0 calc(6 * var(--u)) 0 #6b0f0f;
+      cursor: pointer;
+    }
+    #pong-panel-button:active {
+      transform: translateY(calc(4 * var(--u)));
+      box-shadow: 0 calc(2 * var(--u)) 0 #6b0f0f;
+    }
+    #pong-panel-button:focus-visible {
+      outline: calc(3 * var(--u)) solid #ffd84a;
+      outline-offset: calc(3 * var(--u));
     }
     #pong-panel-joystick {
       position: absolute;
@@ -299,6 +308,39 @@
       transition: opacity 0.4s ease;
     }
     #pong-yesterday-toast.visible { opacity: 1; }
+    /* Fun-mode announcement: a big centred splash at game start, then a small
+       corner badge. Both sit inside the screen, under the game-over overlay. */
+    #pong-mode-splash {
+      position: absolute;
+      inset: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      font-family: monospace;
+      font-size: calc(56 * var(--u));
+      font-weight: bold;
+      letter-spacing: 0.08em;
+      color: #ffd84a;
+      text-align: center;
+      text-shadow: 0 0 calc(24 * var(--u)) rgba(255, 216, 74, 0.7), 0 calc(3 * var(--u)) 0 #000;
+    }
+    #pong-mode-badge {
+      position: absolute;
+      left: calc(10 * var(--u));
+      bottom: calc(10 * var(--u));
+      z-index: 5;
+      pointer-events: none;
+      padding: calc(3 * var(--u)) calc(10 * var(--u));
+      border-radius: calc(10 * var(--u));
+      font-family: monospace;
+      font-size: calc(13 * var(--u));
+      letter-spacing: 0.06em;
+      color: #1a1a1a;
+      background: #ffd84a;
+      opacity: 0.9;
+    }
   </style>
 </head>
 <body>
@@ -312,7 +354,7 @@
       <canvas id="gameCanvas"></canvas>
     </div>
     <div id="pong-control-panel">
-      <div id="pong-panel-button"></div>
+      <div id="pong-panel-button" role="button" tabindex="0" aria-label="Fun mode: start a new game in a random mode" title="Fun mode: start a new game in a random mode"></div>
       <div id="pong-panel-readout">
         <p id="pong-streak"></p>
         <p id="pong-streak-note"></p>
@@ -345,6 +387,20 @@
     const DIVIDER_DASH      = 20;    // centre-line dash length
     const DIVIDER_GAP       = 10;    // centre-line gap length
     const FLASH_FRAMES      = 3;     // frames of tinted flash on score
+    const BIG_PADDLE_FACTOR = 1.6;   // player paddle height multiplier in 'bigPaddle' mode
+    const EXTRA_BALL_COUNT  = 2;     // balls added to the primary one in 'multiBall' mode
+    const EXTRA_BALL_SPREAD = 40;    // px between stacked balls at serve in 'multiBall' mode
+    const SPLASH_MS         = 1500;  // how long the mode name is shown large at game start
+    const FUN_BUTTON_DEBOUNCE_MS = 400;  // ignore a second fun-button trigger inside this window
+
+    // Fixed rectangles in the middle of the field for 'bouncyBarriers' mode.
+    // They leave the centre spawn point clear.
+    const BARRIER_LAYOUT = [
+      { x: 380, y: 120, w: 40, h: 110 },
+      { x: 380, y: 370, w: 40, h: 110 },
+      { x: 250, y: 270, w: 20, h: 60 },
+      { x: 530, y: 270, w: 20, h: 60 },
+    ];
 
     // Longest nickname the Settings modal accepts — mirrors
     // NICKNAME_MAX_LENGTH in server.js so the live character count never
@@ -798,6 +854,9 @@
       phase:      'scored',   // start in 'scored' so the ball resets at t=0
       winner:     null,       // 'player' | 'ai' | null
       pauseTimer: 1.2,        // seconds to wait before serving next ball
+      mode:       'normal',   // key of MODES
+      extraBalls: [],         // balls besides `ball` ('multiBall' mode)
+      barriers:   [],         // rectangles the ball bounces off ('bouncyBarriers' mode)
     };
 
     // Rally state — tracks consecutive paddle hits for difficulty escalation
@@ -837,9 +896,9 @@
 
     const MENDEL_GAME_OVER_FLAG = 'mendelGameOverShown';
 
-    function sendMendelEvent(eventName) {
+    function sendMendelEvent(eventName, detail) {
       try {
-        const payload = JSON.stringify({ event: eventName });
+        const payload = JSON.stringify(Object.assign({ event: eventName }, detail));
         if (navigator.sendBeacon) {
           navigator.sendBeacon('/api/client-events', new Blob([payload], { type: 'application/json' }));
         } else {
@@ -932,36 +991,121 @@
     /**
      * Compute the deflection angle from the ball's relative hit position on a
      * paddle face.  relY is positive when the ball hit below paddle centre.
+     * paddleH is the height of the paddle that was hit.
      * Returns a value in [-MAX_DEFLECT_ANGLE, +MAX_DEFLECT_ANGLE].
      */
-    function deflectAngle(relY) {
-      const norm = clamp(relY / (PADDLE_H / 2), -1, 1);
+    function deflectAngle(relY, paddleH) {
+      const norm = clamp(relY / (paddleH / 2), -1, 1);
       return norm * MAX_DEFLECT_ANGLE;
     }
 
     /**
-     * Reset the ball to the centre and launch it in a random direction,
-     * away from whichever side just scored (dirSign: +1 = toward AI, -1 = toward player).
-     * Resets the rally counter.
+     * Put one ball at the centre (shifted down by yOffset) and launch it in a
+     * random direction (dirSign: +1 = toward AI, -1 = toward player).
      */
-    function resetBall(dirSign) {
-      ball.x     = CANVAS_W / 2 - BALL_SIZE / 2;
-      ball.y     = CANVAS_H / 2 - BALL_SIZE / 2;
-      ball.speed = BALL_SPEED_INIT;
-      rally.rallyCount = 0;
+    function launchBall(b, dirSign, yOffset) {
+      b.x     = CANVAS_W / 2 - BALL_SIZE / 2;
+      b.y     = CANVAS_H / 2 - BALL_SIZE / 2 + yOffset;
+      b.speed = BALL_SPEED_INIT;
 
       const baseAngle  = rand(-Math.PI / 4, Math.PI / 4);
       // dirSign >= 0 → launch right; < 0 → launch left (mirror across y-axis)
-      ball.angle = dirSign >= 0 ? baseAngle : Math.PI - baseAngle;
-      syncBallVelocity(ball);
+      b.angle = dirSign >= 0 ? baseAngle : Math.PI - baseAngle;
+      syncBallVelocity(b);
     }
 
     /**
-     * Reset both paddles and scores; start fresh.
+     * Make `count` extra balls, stacked vertically around the centre spawn.
+     */
+    function makeExtraBalls(count) {
+      const balls = [];
+      for (let i = 0; i < count; i++) {
+        balls.push({ x: 0, y: 0, speed: 0, angle: 0, vx: 0, vy: 0, w: BALL_SIZE, h: BALL_SIZE });
+      }
+      return balls;
+    }
+
+    /**
+     * Reset the ball (and every extra ball in multi-ball mode) to the centre
+     * and launch toward dirSign. Resets the rally counter.
+     */
+    function resetBall(dirSign) {
+      rally.rallyCount = 0;
+      launchBall(ball, dirSign, 0);
+      game.extraBalls.forEach((b, i) => {
+        const step = Math.floor(i / 2) + 1;
+        launchBall(b, dirSign, (i % 2 === 0 ? -1 : 1) * step * EXTRA_BALL_SPREAD);
+      });
+    }
+
+    // ── Game modes ────────────────────────────────────────────────────────────
+    //
+    // Each mode has a display name, whether the fun button may pick it, and a
+    // setup / teardown pair. applyMode() always tears the previous mode down
+    // first, so every effect is removed again when the next game starts in
+    // Normal. To add a mode, add an entry here (and its effect in update /
+    // render if it needs one); the fun button picks it up automatically.
+
+    function centrePaddle(paddle) {
+      paddle.y = clamp(CANVAS_H / 2 - paddle.h / 2, 0, CANVAS_H - paddle.h);
+    }
+
+    const MODES = {
+      normal: {
+        name: 'Normal',
+        fun:  false,
+        setup() {},
+        teardown() {},
+      },
+      bigPaddle: {
+        name: 'Big Paddle',
+        fun:  true,
+        setup()    { playerPaddle.h = Math.round(PADDLE_H * BIG_PADDLE_FACTOR); centrePaddle(playerPaddle); },
+        teardown() { playerPaddle.h = PADDLE_H; centrePaddle(playerPaddle); },
+      },
+      multiBall: {
+        name: 'Multi-Ball',
+        fun:  true,
+        setup()    { game.extraBalls = makeExtraBalls(EXTRA_BALL_COUNT); },
+        teardown() { game.extraBalls = []; },
+      },
+      bouncyBarriers: {
+        name: 'Bouncy Barriers',
+        fun:  true,
+        setup()    { game.barriers = BARRIER_LAYOUT.map((b) => Object.assign({}, b)); },
+        teardown() { game.barriers = []; },
+      },
+    };
+
+    const FUN_MODE_KEYS = Object.keys(MODES).filter((key) => MODES[key].fun);
+
+    /**
+     * Pick one fun mode key. `rng` returns a float in [0, 1) and is injectable
+     * so tests can fix the pick.
+     */
+    function pickFunMode(rng = Math.random) {
+      const i = Math.floor(rng() * FUN_MODE_KEYS.length);
+      return FUN_MODE_KEYS[clamp(i, 0, FUN_MODE_KEYS.length - 1)];
+    }
+
+    /**
+     * Switch to `modeKey` (unknown keys fall back to 'normal'): tear down the
+     * current mode, then set up the new one.
+     */
+    function applyMode(modeKey) {
+      const next = MODES[modeKey] ? modeKey : 'normal';
+      MODES[game.mode].teardown();
+      game.mode = next;
+      MODES[next].setup();
+    }
+
+    /**
+     * Reset both paddles and scores, and return to Normal play; start fresh.
      */
     function resetGame() {
-      playerPaddle.y = CANVAS_H / 2 - PADDLE_H / 2;
-      aiPaddle.y     = CANVAS_H / 2 - PADDLE_H / 2;
+      applyMode('normal');
+      centrePaddle(playerPaddle);
+      centrePaddle(aiPaddle);
       playerPaddle.score = 0;
       aiPaddle.score     = 0;
       game.winner     = null;
@@ -971,6 +1115,75 @@
       rally.maxRally    = 0;
       rally.flashFrames = 0;
       gameElapsedSeconds = 0;
+    }
+
+    // ── Mode announcement: 'splash-then-badge' ────────────────────────────────
+    //
+    // The mode name is shown large in the centre of the screen for SPLASH_MS as
+    // the game starts, then a small badge stays in a corner for the rest of the
+    // game. Normal play shows neither. Every call first clears the previous
+    // splash timer, splash and badge, so nothing stale survives a restart.
+
+    let splashTimer = null;
+
+    function clearModeAnnouncement() {
+      if (splashTimer !== null) {
+        clearTimeout(splashTimer);
+        splashTimer = null;
+      }
+      ['pong-mode-splash', 'pong-mode-badge'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+      });
+    }
+
+    function announceSplashThenBadge(modeKey) {
+      clearModeAnnouncement();
+      const mode = MODES[modeKey];
+      if (!mode || !mode.fun) return;
+
+      const screen = document.getElementById('pong-screen');
+
+      const badge = document.createElement('div');
+      badge.id = 'pong-mode-badge';
+      badge.textContent = mode.name;
+      screen.appendChild(badge);
+
+      const splash = document.createElement('div');
+      splash.id = 'pong-mode-splash';
+      splash.textContent = mode.name;
+      screen.appendChild(splash);
+      splashTimer = setTimeout(() => {
+        splashTimer = null;
+        splash.remove();
+      }, SPLASH_MS);
+    }
+
+    // ── Fun button: the control panel button ──────────────────────────────────
+    //
+    // The red button on the cabinet control panel starts a fresh game in a
+    // random fun mode, in any game phase. Enter on the focused button does the
+    // same; Space is left to the game's own shortcut. The button gives up focus
+    // after each press so a later Space cannot press it again, and presses
+    // inside FUN_BUTTON_DEBOUNCE_MS of the last one are ignored.
+
+    let lastFunStartAt = -Infinity;
+
+    function onFunButtonPress(e) {
+      if (e.type === 'keydown' && (e.code !== 'Enter' || e.repeat)) return;
+      e.preventDefault();
+      const el = e.currentTarget;
+      if (el && el.blur) el.blur();
+      const now = Date.now();
+      if (now - lastFunStartAt < FUN_BUTTON_DEBOUNCE_MS) return;
+      lastFunStartAt = now;
+      startFunGame();
+    }
+
+    function wireControlPanelButton() {
+      const btn = document.getElementById('pong-panel-button');
+      btn.addEventListener('click', onFunButtonPress);
+      btn.addEventListener('keydown', onFunButtonPress);
     }
 
     // ── DOM Overlay ───────────────────────────────────────────────────────────
@@ -1515,6 +1728,7 @@
         if (data && data.leaderboard && data.leaderboard.placement) {
           leaderboardConfig = Object.assign({}, LEADERBOARD_DEFAULT_CONFIG, data.leaderboard);
         }
+
       } catch (err) {
         // keep the default
       }
@@ -1804,18 +2018,20 @@
     }
 
     /**
-     * Tear down the current overlay, reset all state, and restart the animation loop.
-     * Called by the 'Play Again' button click and the Space keyboard shortcut.
+     * Tear down the current overlay, reset all state to `modeKey`, announce the
+     * mode and restart the animation loop. Safe in any game phase.
      */
-    function startNewGame() {
+    function beginGame(modeKey) {
       if (game.phase === 'gameover') {
         try { sessionStorage.removeItem(MENDEL_GAME_OVER_FLAG); } catch (err) { /* ignore */ }
-        sendMendelEvent('play_again_click');
       }
       removeGameOverOverlay();
       clearBestRallyDisplay();
       resetGame();
+      applyMode(modeKey);
+      announceSplashThenBadge(modeKey);
       sendMendelEvent('game_started');
+      if (MODES[modeKey].fun) sendMendelEvent('fun_mode_started', { mode: modeKey });
       // Clear the key map so a held-Space doesn't immediately trigger movement
       Object.keys(keys).forEach((k) => { keys[k] = false; });
       // Cancel any stale RAF handle before starting a new loop
@@ -1825,6 +2041,22 @@
       }
       lastTime = null;
       rafId = requestAnimationFrame(loop);
+    }
+
+    /**
+     * Start a fresh Normal game. Called by the 'Play Again' button click and
+     * the Space keyboard shortcut.
+     */
+    function startNewGame() {
+      if (game.phase === 'gameover') sendMendelEvent('play_again_click');
+      beginGame('normal');
+    }
+
+    /**
+     * Start a fresh game in a random fun mode (the control panel button).
+     */
+    function startFunGame() {
+      beginGame(pickFunMode());
     }
 
     // ── Update ────────────────────────────────────────────────────────────────
@@ -1863,68 +2095,128 @@
       if (keys['KeyS'] || keys['ArrowDown']) {
         playerPaddle.y += PADDLE_SPEED * dt;
       }
-      playerPaddle.y = clamp(playerPaddle.y, 0, CANVAS_H - PADDLE_H);
+      playerPaddle.y = clamp(playerPaddle.y, 0, CANVAS_H - playerPaddle.h);
 
-      // AI paddle movement — lerp toward ball centre; lerp speed increases
-      // slightly each rally hit (difficulty escalation).
-      const ballCentreY   = ball.y + BALL_SIZE / 2;
-      const aiCentreY     = aiPaddle.y + PADDLE_H / 2;
+      // AI paddle movement — lerp toward the ball centre (in multi-ball mode,
+      // the incoming ball nearest the AI); lerp speed increases slightly each
+      // rally hit (difficulty escalation).
+      const target        = pickAiTarget();
+      const ballCentreY   = target.y + BALL_SIZE / 2;
+      const aiCentreY     = aiPaddle.y + aiPaddle.h / 2;
       const aiDiff        = ballCentreY - aiCentreY;
       const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
       const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
-      aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - PADDLE_H);
+      aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - aiPaddle.h);
 
-      // Move ball
-      ball.x += ball.vx * dt;
-      ball.y += ball.vy * dt;
+      // Move every ball. The first to leave the field scores the point and
+      // ends the play phase, so the rest are not advanced this frame.
+      for (const b of [ball].concat(game.extraBalls)) {
+        if (game.phase !== 'playing') break;
+        updateBall(b, dt);
+      }
+    }
+
+    /**
+     * The ball the AI chases: the incoming ball nearest its paddle, or the
+     * primary ball when none is heading its way.
+     */
+    function pickAiTarget() {
+      const incoming = [ball].concat(game.extraBalls).filter((b) => b.vx > 0);
+      if (incoming.length === 0) return ball;
+      return incoming.reduce((best, b) => (b.x > best.x ? b : best));
+    }
+
+    /**
+     * Reflect `b` off any barrier it overlaps, along the axis of least
+     * penetration, and push it back out. A ball already moving away from the
+     * face it penetrates is left alone so it cannot get stuck.
+     */
+    function bounceOffBarriers(b) {
+      for (const bar of game.barriers) {
+        if (!aabbOverlap(b.x, b.y, b.w, b.h, bar.x, bar.y, bar.w, bar.h)) continue;
+
+        const fromLeft   = b.x + b.w - bar.x;
+        const fromRight  = bar.x + bar.w - b.x;
+        const fromTop    = b.y + b.h - bar.y;
+        const fromBottom = bar.y + bar.h - b.y;
+        const least      = Math.min(fromLeft, fromRight, fromTop, fromBottom);
+
+        if (least === fromLeft && b.vx > 0) {
+          b.x = bar.x - b.w;
+          b.angle = Math.PI - b.angle;
+        } else if (least === fromRight && b.vx < 0) {
+          b.x = bar.x + bar.w;
+          b.angle = Math.PI - b.angle;
+        } else if (least === fromTop && b.vy > 0) {
+          b.y = bar.y - b.h;
+          b.angle = -b.angle;
+        } else if (least === fromBottom && b.vy < 0) {
+          b.y = bar.y + bar.h;
+          b.angle = -b.angle;
+        } else {
+          continue;
+        }
+        syncBallVelocity(b);
+      }
+    }
+
+    /**
+     * Advance one ball a tick and resolve walls, barriers, paddles and exits.
+     */
+    function updateBall(b, dt) {
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
 
       // ── Ball vs top / bottom walls ────────────────────────────────────────
       // Reflect the angle across the horizontal axis (negate it).
-      if (ball.y <= 0) {
-        ball.y     = 0;
-        ball.angle = -ball.angle;
-        syncBallVelocity(ball);
-      } else if (ball.y + BALL_SIZE >= CANVAS_H) {
-        ball.y     = CANVAS_H - BALL_SIZE;
-        ball.angle = -ball.angle;
-        syncBallVelocity(ball);
+      if (b.y <= 0) {
+        b.y     = 0;
+        b.angle = -b.angle;
+        syncBallVelocity(b);
+      } else if (b.y + BALL_SIZE >= CANVAS_H) {
+        b.y     = CANVAS_H - BALL_SIZE;
+        b.angle = -b.angle;
+        syncBallVelocity(b);
       }
+
+      // ── Ball vs barriers (none outside 'bouncyBarriers' mode) ─────────────
+      bounceOffBarriers(b);
 
       // ── Ball vs player paddle ─────────────────────────────────────────────
       if (
-        ball.vx < 0 &&
-        aabbOverlap(ball.x, ball.y, ball.w, ball.h,
+        b.vx < 0 &&
+        aabbOverlap(b.x, b.y, b.w, b.h,
                     playerPaddle.x, playerPaddle.y, playerPaddle.w, playerPaddle.h)
       ) {
-        ball.x  = playerPaddle.x + playerPaddle.w;
+        b.x  = playerPaddle.x + playerPaddle.w;
         // Deflection angle: centre hit → shallow; edge hit → steep (up to ±75°).
         // The resulting angle is in the right-travelling hemisphere.
-        const relY  = (ball.y + BALL_SIZE / 2) - (playerPaddle.y + PADDLE_H / 2);
-        ball.angle  = deflectAngle(relY);
-        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
-        syncBallVelocity(ball);
+        const relY  = (b.y + BALL_SIZE / 2) - (playerPaddle.y + playerPaddle.h / 2);
+        b.angle  = deflectAngle(relY, playerPaddle.h);
+        b.speed  = clamp(b.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        syncBallVelocity(b);
         rally.rallyCount += 1;
         if (rally.rallyCount > rally.maxRally) rally.maxRally = rally.rallyCount;
       }
 
       // ── Ball vs AI paddle ─────────────────────────────────────────────────
       if (
-        ball.vx > 0 &&
-        aabbOverlap(ball.x, ball.y, ball.w, ball.h,
+        b.vx > 0 &&
+        aabbOverlap(b.x, b.y, b.w, b.h,
                     aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h)
       ) {
-        ball.x  = aiPaddle.x - BALL_SIZE;
-        const relY  = (ball.y + BALL_SIZE / 2) - (aiPaddle.y + PADDLE_H / 2);
+        b.x  = aiPaddle.x - BALL_SIZE;
+        const relY  = (b.y + BALL_SIZE / 2) - (aiPaddle.y + aiPaddle.h / 2);
         // π - deflectAngle puts the ball in the left-travelling hemisphere.
-        ball.angle  = Math.PI - deflectAngle(relY);
-        ball.speed  = clamp(ball.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
-        syncBallVelocity(ball);
+        b.angle  = Math.PI - deflectAngle(relY, aiPaddle.h);
+        b.speed  = clamp(b.speed * BALL_SPEED_MUL, BALL_SPEED_INIT, BALL_SPEED_MAX);
+        syncBallVelocity(b);
         rally.rallyCount += 1;
         if (rally.rallyCount > rally.maxRally) rally.maxRally = rally.rallyCount;
       }
 
       // ── Ball exits left → AI scores ───────────────────────────────────────
-      if (ball.x + BALL_SIZE < 0) {
+      if (b.x + BALL_SIZE < 0) {
         aiPaddle.score += 1;
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
@@ -1938,7 +2230,7 @@
       }
 
       // ── Ball exits right → player scores ─────────────────────────────────
-      if (ball.x > CANVAS_W) {
+      if (b.x > CANVAS_W) {
         playerPaddle.score += 1;
         rally.flashFrames = FLASH_FRAMES;
         rally.rallyCount  = 0;
@@ -1999,9 +2291,14 @@
       // AI paddle
       ctx.fillRect(aiPaddle.x, aiPaddle.y, aiPaddle.w, aiPaddle.h);
 
-      // Ball (only when playing)
+      // Barriers ('bouncyBarriers' mode; the list is empty otherwise)
+      ctx.fillStyle = '#ffb000';
+      game.barriers.forEach((bar) => ctx.fillRect(bar.x, bar.y, bar.w, bar.h));
+      ctx.fillStyle = '#fff';
+
+      // Balls (only when playing; extra balls only in 'multiBall' mode)
       if (game.phase === 'playing') {
-        ctx.fillRect(ball.x, ball.y, ball.w, ball.h);
+        [ball].concat(game.extraBalls).forEach((b) => ctx.fillRect(b.x, b.y, b.w, b.h));
       }
 
       // 'Get ready…' hint during the inter-point pause
@@ -2051,6 +2348,7 @@
     }
 
     // Kick off the animation loop
+    wireControlPanelButton();
     sendMendelEvent('game_started');
     rafId = requestAnimationFrame(loop);
   </script>
