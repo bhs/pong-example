@@ -59,7 +59,13 @@
  *   PUT    /api/preferences      Create or update the logged-in user's
  *                                 preferences.
  *
- *   GET    /api/scores           List high scores (sorted desc by score).
+ *   GET    /api/scores           Public global leaderboard: high scores ranked by
+ *                                 score desc, then longestRally desc, then
+ *                                 updatedAt asc (earliest to get there wins a
+ *                                 tie); every entry carries a 1-based `rank`.
+ *                                 ?limit=N — default 10, capped at 100.
+ *   GET    /api/config           Browser-facing settings (where the leaderboard
+ *                                 appears — see lib/leaderboard-placements/modal-from-a-button.js).
  *   POST   /api/scores           Create or update the logged-in user's high
  *                                 score. Requires an authenticated Google
  *                                 session — every HighScore row is tied to a
@@ -111,6 +117,7 @@ const defaultPrisma  = require('./lib/prisma');
 const { isStubEnabled } = require('./lib/stubs');
 const signInStub     = require('./lib/sign-in-stub');
 const requestLog     = require('./lib/request-log');
+const modalFromAButton = require('./lib/leaderboard-placements/modal-from-a-button');
 const engagement     = require('./lib/engagement');
 const engagementConfig = require('./lib/engagement-config');
 
@@ -118,6 +125,11 @@ const engagementConfig = require('./lib/engagement-config');
 // and the live character-count validation in index.html — both enforce the
 // same limit so the client never shows a count the server would reject).
 const NICKNAME_MAX_LENGTH = 20;
+
+// GET /api/scores returns the top 10 unless ?limit=N says otherwise, never
+// more than 100.
+const DEFAULT_SCORES_LIMIT = 10;
+const MAX_SCORES_LIMIT     = 100;
 
 // ── App factory ────────────────────────────────────────────────────────────
 //
@@ -499,22 +511,42 @@ function createApp(prisma = defaultPrisma, options = {}) {
     }
   });
 
+  // ── GET /api/config ───────────────────────────────────────────────────────
+  //
+  // Settings the browser needs but cannot read itself: where the leaderboard
+  // appears (see lib/leaderboard-placements/modal-from-a-button.js).
+
+  app.get('/api/config', (req, res) => {
+    return res.status(200).json({ leaderboard: modalFromAButton.clientConfig() });
+  });
+
   // ── GET /api/scores ───────────────────────────────────────────────────────
   //
-  // Returns high scores sorted by score descending.
-  // Optional query param: ?limit=N  (max 100)
+  // The public global leaderboard: one row per player (HighScore.userId is
+  // unique, so no duplicates), ordered by score desc, then longestRally desc,
+  // then updatedAt asc (whoever reached the tied result first ranks higher),
+  // then id asc so the order is always total and stable. Each entry carries
+  // its 1-based `rank`. The leading `score` sort uses the high_scores(score)
+  // index; the tie-breakers only matter inside a group of equal scores.
+  // Optional query param: ?limit=N  (default 10, max 100)
 
   app.get('/api/scores', async (req, res, next) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 100);
+    const requested = parseInt(req.query.limit, 10);
+    const limit = Math.min(requested > 0 ? requested : DEFAULT_SCORES_LIMIT, MAX_SCORES_LIMIT);
 
     try {
       const rows = await prisma.highScore.findMany({
-        orderBy: { score: 'desc' },
+        orderBy: [
+          { score: 'desc' },
+          { longestRally: 'desc' },
+          { updatedAt: 'asc' },
+          { id: 'asc' },
+        ],
         take:    limit,
         include: { user: true },
       });
 
-      const scores = rows.map(toScoreEntry);
+      const scores = rows.map((row, index) => toScoreEntry(row, index + 1));
       return res.status(200).json({ scores });
     } catch (err) {
       return next(err);
@@ -711,16 +743,17 @@ function createApp(prisma = defaultPrisma, options = {}) {
  * before that column existed. `lastPlayedAt` is the attached user's
  * User.lastPlayedAt (see server.js's POST /api/scores) — null for users who
  * haven't finished a game since that column existed, or when no `user` was
- * included in the query.
+ * included in the query. `rank` (1-based leaderboard position) is added
+ * only when the caller passes one, i.e. for GET /api/scores.
  */
-function toScoreEntry(row) {
+function toScoreEntry(row, rank) {
   const user   = row.user || {};
   const player = user.nickname || user.name || user.email || row.userId;
   const updatedAt = row.updatedAt instanceof Date ? row.updatedAt.getTime() : row.updatedAt;
   const lastPlayedAt = user.lastPlayedAt instanceof Date
     ? user.lastPlayedAt.getTime()
     : (user.lastPlayedAt || null);
-  return {
+  const entry = {
     player,
     userId: row.userId,
     score: row.score,
@@ -728,6 +761,8 @@ function toScoreEntry(row) {
     updatedAt,
     lastPlayedAt,
   };
+  if (rank !== undefined) entry.rank = rank;
+  return entry;
 }
 
 /**

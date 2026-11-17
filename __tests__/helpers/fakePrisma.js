@@ -98,8 +98,8 @@ function createFakePrisma() {
       },
       async findMany({ orderBy, take, include } = {}) {
         let rows = Array.from(highScores.values());
-        if (orderBy && orderBy.score === 'desc') {
-          rows = rows.sort((a, b) => b.score - a.score);
+        if (orderBy) {
+          rows = rows.sort(comparatorFor(orderBy));
         }
         if (typeof take === 'number') {
           rows = rows.slice(0, take);
@@ -139,6 +139,29 @@ function createFakePrisma() {
         return rows;
       },
     },
+  };
+}
+
+/**
+ * Builds a sort comparator from a Prisma `orderBy`: either one
+ * { field: 'asc' | 'desc' } object or an array of them, applied in order
+ * (later keys only break ties of earlier ones). Dates compare by time.
+ */
+function comparatorFor(orderBy) {
+  const keys = [];
+  (Array.isArray(orderBy) ? orderBy : [orderBy]).forEach((clause) => {
+    Object.entries(clause).forEach(([field, dir]) => keys.push([field, dir]));
+  });
+  const value = (v) => (v instanceof Date ? v.getTime() : (v === undefined ? 0 : v));
+  return (a, b) => {
+    for (const [field, dir] of keys) {
+      const av = value(a[field]);
+      const bv = value(b[field]);
+      if (av === bv) continue;
+      const cmp = av < bv ? -1 : 1;
+      return dir === 'desc' ? -cmp : cmp;
+    }
+    return 0;
   };
 }
 

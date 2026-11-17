@@ -73,8 +73,10 @@ describe('personal best badge', () => {
     expect(html).toMatch(/a\.href = '\/auth\/google';/);
   });
 
-  test('there is no separate leaderboard UI in the overlay flow', () => {
-    expect(html).not.toMatch(/leaderboard/i);
+  test('the game-over overlay flow does not embed the leaderboard (it lives in its own modal)', () => {
+    const fnMatch = html.match(/function showGameOverOverlay\([\s\S]*?\n    \}\n/);
+    expect(fnMatch).not.toBeNull();
+    expect(fnMatch[0]).not.toMatch(/leaderboard/i);
   });
 
   test('game-over overlay renders the personal best badge right after showing the overlay', () => {

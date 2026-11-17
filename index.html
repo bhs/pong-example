@@ -636,6 +636,120 @@
           letter-spacing: 0.04em;
           min-height: 1.1em;
         }
+
+        /* ── Leaderboard trophy button + modal ───────────────────────────── */
+        /*
+         * Same overlay + card pattern as the Settings modal above, with
+         * light text on the dark card and a gold highlight for your own row.
+         */
+        #pong-leaderboard-btn {
+          width: 28px;
+          height: 28px;
+          padding: 0;
+          font-size: 1rem;
+          line-height: 1;
+          border-radius: 50%;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+        #pong-leaderboard-modal {
+          position: fixed;
+          inset: 0;
+          z-index: 30;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(0, 0, 0, 0.72);
+          backdrop-filter: blur(2px);
+          font-family: monospace;
+        }
+        #pong-leaderboard-card {
+          width: min(520px, 92vw);
+          max-height: 88vh;
+          overflow-y: auto;
+          padding: 24px 22px;
+          background: #10123a;
+          border: 1px solid rgba(255,255,255,0.15);
+          border-radius: 8px;
+          box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          color: #fff;
+        }
+        #pong-leaderboard-card h2 {
+          font-size: 1.05rem;
+          color: #fff;
+          letter-spacing: 0.05em;
+        }
+        #pong-leaderboard-body {
+          color: rgba(255,255,255,0.85);
+          font-size: 0.85rem;
+        }
+        .pong-lb-status {
+          padding: 18px 0;
+          text-align: center;
+          color: rgba(255,255,255,0.7);
+        }
+        .pong-lb-status.error {
+          color: #ff6b6b;
+        }
+        .pong-lb-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .pong-lb-table th {
+          padding: 6px 8px;
+          text-align: right;
+          font-size: 0.7rem;
+          font-weight: normal;
+          letter-spacing: 0.05em;
+          color: rgba(255,255,255,0.6);
+          border-bottom: 1px solid rgba(255,255,255,0.2);
+        }
+        .pong-lb-table td {
+          padding: 7px 8px;
+          text-align: right;
+          color: #fff;
+          border-bottom: 1px solid rgba(255,255,255,0.08);
+        }
+        .pong-lb-table th.pong-lb-player,
+        .pong-lb-table td.pong-lb-player {
+          text-align: left;
+          max-width: 200px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .pong-lb-table th.pong-lb-rank,
+        .pong-lb-table td.pong-lb-rank {
+          width: 2.5em;
+          text-align: left;
+          color: rgba(255,255,255,0.7);
+        }
+        .pong-lb-table tr.pong-lb-top td.pong-lb-rank {
+          color: #ffe066;
+          font-weight: bold;
+        }
+        .pong-lb-table tr.pong-lb-me td {
+          background: rgba(255, 224, 102, 0.18);
+          color: #ffe066;
+          font-weight: bold;
+        }
+        .pong-lb-note {
+          margin-top: 10px;
+          font-size: 0.8rem;
+          color: rgba(255,255,255,0.7);
+        }
+        .pong-lb-note a {
+          color: #ffe066;
+        }
+        #pong-leaderboard-actions {
+          display: flex;
+          justify-content: flex-end;
+          margin-top: 4px;
+        }
       `;
       document.head.appendChild(style);
     })();
@@ -992,15 +1106,14 @@
           // No HighScore row could be read back (shouldn't normally happen
           // right after a successful POST) — fall back to this round's score.
           appendPersonalBestLine(overlay, finalScore);
-          return;
+        } else {
+          const data  = await res.json();
+          const best  = data && data.entry && typeof data.entry.score === 'number'
+            ? data.entry.score
+            : finalScore;
+          appendPersonalBestLine(overlay, best);
+          appendLastPlayedLine(overlay, data && data.entry && data.entry.lastPlayedAt);
         }
-
-        const data  = await res.json();
-        const best  = data && data.entry && typeof data.entry.score === 'number'
-          ? data.entry.score
-          : finalScore;
-        appendPersonalBestLine(overlay, best);
-        appendLastPlayedLine(overlay, data && data.entry && data.entry.lastPlayedAt);
       } catch (err) {
         // Network error — fail silently, no badge shown for this round.
       }
@@ -1121,6 +1234,7 @@
         window.location.href = '/auth/google';
       });
       bar.appendChild(btn);
+      appendLeaderboardButton(bar);
     }
 
     /**
@@ -1133,6 +1247,8 @@
      */
     function renderSignedIn(bar, user) {
       bar.innerHTML = '';
+
+      appendLeaderboardButton(bar);
 
       if (user.avatar) {
         const img = document.createElement('img');
@@ -1373,12 +1489,196 @@
       }
     }
 
+    // ── Global leaderboard (modal from a trophy button) ───────────────────
+    //
+    // A trophy button in the auth bar opens a modal, styled like the Settings
+    // modal, listing the top players from the public GET /api/scores (the
+    // board size comes from GET /api/config, with a default if that can't be
+    // fetched). The
+    // board is fetched afresh on every open and shows loading / empty / error
+    // states. The row whose userId matches the signed-in user (from GET /me)
+    // is highlighted; signed-out visitors see the whole board plus a sign-in
+    // link.
+
+    const LEADERBOARD_DEFAULT_CONFIG = { placement: 'modal-from-a-button', limit: 10 };
+    let leaderboardConfig = LEADERBOARD_DEFAULT_CONFIG;
+
+    /**
+     * Ask the server for the leaderboard settings. Any failure keeps the
+     * defaults.
+     */
+    async function loadLeaderboardConfig() {
+      try {
+        const res = await fetch('/api/config', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data && data.leaderboard && data.leaderboard.placement) {
+          leaderboardConfig = Object.assign({}, LEADERBOARD_DEFAULT_CONFIG, data.leaderboard);
+        }
+      } catch (err) {
+        // keep the default
+      }
+    }
+
+    /**
+     * Add the trophy button to the auth bar.
+     */
+    function appendLeaderboardButton(bar) {
+      const btn = document.createElement('button');
+      btn.id = 'pong-leaderboard-btn';
+      btn.className = 'pong-auth-btn pong-auth-btn-ghost';
+      btn.textContent = '🏆';
+      btn.title = 'Leaderboard';
+      btn.setAttribute('aria-label', 'Leaderboard');
+      btn.addEventListener('click', () => openLeaderboardModal());
+      bar.appendChild(btn);
+    }
+
+    /**
+     * Escape a value for safe insertion into HTML text/attributes (player
+     * names are user-chosen).
+     */
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+      ));
+    }
+
+    /**
+     * Pure: the HTML for the modal body.
+     *
+     * @param {{status:'loading'|'error'|'ready', scores?:Array}} state
+     * @param {?string} myUserId  the signed-in user's id, or null when signed out
+     */
+    function renderLeaderboardBody(state, myUserId) {
+      if (state.status === 'loading') {
+        return '<div class="pong-lb-status" id="pong-lb-loading">Loading leaderboard…</div>';
+      }
+      if (state.status === 'error') {
+        return '<div class="pong-lb-status error" id="pong-lb-error">Could not load the leaderboard — try again.</div>';
+      }
+
+      const scores = state.scores || [];
+      let html = '';
+      if (scores.length === 0) {
+        html += '<div class="pong-lb-status" id="pong-lb-empty">No scores yet — be the first on the board!</div>';
+      } else {
+        html += '<table class="pong-lb-table"><thead><tr>'
+          + '<th class="pong-lb-rank">#</th>'
+          + '<th class="pong-lb-player">Player</th>'
+          + '<th>Score</th>'
+          + '<th>Longest rally</th>'
+          + '</tr></thead><tbody>';
+        scores.forEach((entry, i) => {
+          const rank = entry.rank || i + 1;
+          const isMe = Boolean(myUserId) && entry.userId === myUserId;
+          const classes = [];
+          if (rank <= 3) classes.push('pong-lb-top');
+          if (isMe) classes.push('pong-lb-me');
+          html += `<tr${classes.length ? ` class="${classes.join(' ')}"` : ''}>`
+            + `<td class="pong-lb-rank">${escapeHtml(rank)}</td>`
+            + `<td class="pong-lb-player">${escapeHtml(entry.player)}${isMe ? ' (you)' : ''}</td>`
+            + `<td>${escapeHtml(entry.score)}</td>`
+            + `<td>${escapeHtml(entry.longestRally || 0)}</td>`
+            + '</tr>';
+        });
+        html += '</tbody></table>';
+      }
+
+      if (!myUserId) {
+        html += '<div class="pong-lb-note"><a id="pong-lb-signin" href="/auth/google">Sign in with Google to get on the board</a></div>';
+      } else if (scores.length > 0 && !scores.some((e) => e.userId === myUserId)) {
+        html += '<div class="pong-lb-note" id="pong-lb-not-ranked">Finish a game to climb onto the board.</div>';
+      }
+      return html;
+    }
+
+    /**
+     * Build and show the Leaderboard modal, then fetch the board.
+     */
+    function openLeaderboardModal() {
+      closeLeaderboardModal(); // defensive guard against a pre-existing modal
+
+      const overlay = document.createElement('div');
+      overlay.id = 'pong-leaderboard-modal';
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeLeaderboardModal();
+      });
+
+      const card = document.createElement('div');
+      card.id = 'pong-leaderboard-card';
+      card.setAttribute('role', 'dialog');
+      card.setAttribute('aria-label', 'Leaderboard');
+
+      const h2 = document.createElement('h2');
+      h2.textContent = '🏆 Leaderboard — Top ' + leaderboardConfig.limit;
+      card.appendChild(h2);
+
+      const body = document.createElement('div');
+      body.id = 'pong-leaderboard-body';
+      card.appendChild(body);
+
+      const actions = document.createElement('div');
+      actions.id = 'pong-leaderboard-actions';
+      const closeBtn = document.createElement('button');
+      closeBtn.id = 'pong-leaderboard-close';
+      closeBtn.className = 'pong-auth-btn pong-auth-btn-ghost';
+      closeBtn.textContent = 'Close';
+      closeBtn.addEventListener('click', () => closeLeaderboardModal());
+      actions.appendChild(closeBtn);
+      card.appendChild(actions);
+
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      closeBtn.focus();
+
+      const onKey = (e) => {
+        if (e.key === 'Escape') closeLeaderboardModal();
+      };
+      document.addEventListener('keydown', onKey);
+      overlay.addEventListener('pong-leaderboard-closed', () => document.removeEventListener('keydown', onKey));
+
+      loadLeaderboardInto(body);
+    }
+
+    /**
+     * Fetch GET /api/scores?limit=N (every time the modal opens) and render
+     * the result into the modal body. Ignores a response that arrives after
+     * the modal was closed or re-opened.
+     */
+    async function loadLeaderboardInto(body) {
+      const myUserId = currentUser ? currentUser.id : null;
+      body.innerHTML = renderLeaderboardBody({ status: 'loading' }, myUserId);
+      try {
+        const res = await fetch(`/api/scores?limit=${encodeURIComponent(leaderboardConfig.limit)}`, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (!document.body.contains(body)) return;
+        body.innerHTML = renderLeaderboardBody({ status: 'ready', scores: data.scores || [] }, myUserId);
+      } catch (err) {
+        if (!document.body.contains(body)) return;
+        body.innerHTML = renderLeaderboardBody({ status: 'error' }, myUserId);
+      }
+    }
+
+    /**
+     * Remove the Leaderboard modal from the DOM if present.
+     */
+    function closeLeaderboardModal() {
+      const existing = document.getElementById('pong-leaderboard-modal');
+      if (existing) {
+        existing.dispatchEvent(new Event('pong-leaderboard-closed'));
+        existing.remove();
+      }
+    }
+
     /**
      * Fetch the current session's user (if any) from GET /me and render
      * the appropriate auth bar state. Called once on page load.
      */
     async function initAuthBar() {
       const bar = getAuthBar();
+      await loadLeaderboardConfig();
       try {
         const res  = await fetch('/me', { credentials: 'same-origin' });
         const data = await res.json();
