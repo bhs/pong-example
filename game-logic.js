@@ -182,19 +182,6 @@ function splashThenBadge(modeKey) {
   return { splashText: mode.name, splashMs: SPLASH_MS, badgeText: mode.name };
 }
 
-const MARQUEE_DEFAULT_TEXT = 'PONG';
-
-/**
- * The 'marquee-swap' announcement of a mode: the cabinet marquee reads the
- * mode name in capitals plus MODE (BIG PADDLE MODE) for the fun game, and PONG
- * again on Normal play. No splash and no badge.
- */
-function marqueeSwap(modeKey) {
-  const mode = MODES[modeKey];
-  if (!mode || !mode.fun) return { marqueeText: MARQUEE_DEFAULT_TEXT };
-  return { marqueeText: `${mode.name.toUpperCase()} MODE` };
-}
-
 /**
  * Switch the game to `modeKey` (unknown keys fall back to 'normal'): tear down
  * the current mode, then set up the new one. Mutates and returns state.game.
@@ -531,8 +518,8 @@ module.exports = {
   BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT, BARRIER_LAYOUT,
 
   // Game modes
-  MODES, FUN_MODE_KEYS, SPLASH_MS, MARQUEE_DEFAULT_TEXT,
-  splashThenBadge, marqueeSwap,
+  MODES, FUN_MODE_KEYS, SPLASH_MS,
+  splashThenBadge,
   pickFunMode,
   applyMode,
   makeExtraBalls,

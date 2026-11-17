@@ -5,7 +5,7 @@
  *
  * The random fun mode button: mode registry and picking, bigger paddle hit
  * box, multi-ball scoring, bouncy barriers, return to Normal, the splash +
- * badge announcement plan, and the code of each Trait option.
+ * badge announcement plan, and the code of the kept options.
  */
 
 const fs   = require('fs');
@@ -13,17 +13,14 @@ const path = require('path');
 
 const {
   CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT,
-  BARRIER_LAYOUT, MODES, FUN_MODE_KEYS, SPLASH_MS, MARQUEE_DEFAULT_TEXT,
-  pickFunMode, applyMode, serveBalls, splashThenBadge, marqueeSwap,
+  BARRIER_LAYOUT, MODES, FUN_MODE_KEYS, SPLASH_MS,
+  pickFunMode, applyMode, serveBalls, splashThenBadge,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
   moveAiPaddle, updateBall, updateBalls, bounceOffBarriers, pickAiTarget,
 } = require('../game-logic');
 
 const controlPanelButton = require('../lib/fun-button-placements/control-panel-button');
-const gameOverScreenButton = require('../lib/fun-button-placements/game-over-screen-button');
 const splashThenBadgeOption = require('../lib/mode-announcements/splash-then-badge');
-const marqueeSwapOption = require('../lib/mode-announcements/marquee-swap');
-const funModeConfig = require('../lib/fun-mode-config');
 
 function newState() {
   return { game: makeGame(), playerPaddle: makePlayerPaddle(), aiPaddle: makeAiPaddle() };
@@ -252,68 +249,12 @@ describe('splash-then-badge option', () => {
 
   test('server-side option code and config', () => {
     expect(splashThenBadgeOption.clientConfig()).toEqual({ announcement: 'splash-then-badge', splashMs: 1500 });
-    expect(funModeConfig.modeAnnouncement({})).toEqual(splashThenBadgeOption.clientConfig());
-  });
-});
-
-describe('marquee-swap option', () => {
-  test('its own code puts the mode name on the marquee', () => {
-    expect(marqueeSwap('bigPaddle')).toEqual({ marqueeText: 'BIG PADDLE MODE' });
-    expect(marqueeSwap('multiBall')).toEqual({ marqueeText: 'MULTI-BALL MODE' });
-    expect(marqueeSwap('bouncyBarriers')).toEqual({ marqueeText: 'BOUNCY BARRIERS MODE' });
-  });
-
-  test('Normal play (and an unknown mode) restores PONG', () => {
-    expect(MARQUEE_DEFAULT_TEXT).toBe('PONG');
-    expect(marqueeSwap('normal')).toEqual({ marqueeText: 'PONG' });
-    expect(marqueeSwap('nonsense')).toEqual({ marqueeText: 'PONG' });
-  });
-
-  test('server-side option code', () => {
-    expect(marqueeSwapOption.clientConfig()).toEqual({ announcement: 'marquee-swap' });
-    expect(marqueeSwapOption.clientConfig()).not.toEqual(splashThenBadgeOption.clientConfig());
-  });
-
-  test('index.html swaps the marquee text and restores PONG', () => {
-    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-    expect(html).toMatch(/'marquee-swap': announceMarqueeSwap/);
-    expect(html).toMatch(/marquee\.textContent = MARQUEE_DEFAULT_TEXT/);
-    expect(html).toMatch(/marquee\.textContent = mode\.name\.toUpperCase\(\) \+ ' MODE'/);
   });
 });
 
 describe('control-panel-button option', () => {
   test('its own code describes the control panel button', () => {
     expect(controlPanelButton.clientConfig()).toEqual({ placement: 'control-panel-button' });
-  });
-
-  test('with nothing configured the default option is served', () => {
-    expect(funModeConfig.funButtonPlacement({})).toEqual(controlPanelButton.clientConfig());
-    expect(funModeConfig.clientConfig({})).toEqual({
-      placement: 'control-panel-button',
-      announcement: 'splash-then-badge',
-      splashMs: 1500,
-    });
-  });
-});
-
-describe('game-over-screen-button option', () => {
-  test('its own code describes the game-over screen button', () => {
-    expect(gameOverScreenButton.PLACEMENT).toBe('game-over-screen-button');
-    expect(gameOverScreenButton.clientConfig()).toEqual({ placement: 'game-over-screen-button' });
-  });
-
-  test('its settings differ from the default option', () => {
-    expect(gameOverScreenButton.clientConfig()).not.toEqual(controlPanelButton.clientConfig());
-  });
-
-  test('index.html builds the Fun mode button in the overlay only for this placement', () => {
-    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-    expect(html).toMatch(/'game-over-screen-button': enableGameOverFunButton/);
-    expect(html).toMatch(/btn\.id = 'pong-fun-mode'/);
-    expect(html).toMatch(/appendOverlayButtons\(overlay, btn\)/);
-    expect(html).toMatch(/if \(!gameOverFunButtonEnabled\) \{\s*overlay\.appendChild\(playAgainBtn\)/);
-    expect(html).toMatch(/function startNewGame\(\) \{[^}]*beginGame\('normal'\)/);
   });
 });
 
@@ -333,7 +274,7 @@ describe('index.html wiring', () => {
   });
 
   test('announces the mode and reports fun_mode_started with the mode name', () => {
-    expect(html).toMatch(/announceMode\(modeKey\)/);
+    expect(html).toMatch(/announceSplashThenBadge\(modeKey\)/);
     expect(html).toMatch(/sendMendelEvent\('fun_mode_started', \{ mode: modeKey \}\)/);
   });
 });
