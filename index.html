@@ -267,6 +267,38 @@
       font-size: calc(12 * var(--u));
       margin-top: calc(4 * var(--u));
     }
+    /* Daily-play streak badge and signed-out invitation: hidden while empty. */
+    #pong-streak,
+    #pong-streak-note {
+      font-family: monospace;
+      text-align: center;
+      font-size: calc(13 * var(--u));
+      margin-bottom: calc(4 * var(--u));
+      white-space: nowrap;
+    }
+    #pong-streak { color: #ff9f43; font-weight: bold; }
+    #pong-streak-note a { color: #ffe066; text-decoration: none; }
+    #pong-streak:empty,
+    #pong-streak-note:empty { display: none; }
+    /* 'Beat your yesterday' toast: fades in over the canvas, never blocks input. */
+    #pong-yesterday-toast {
+      position: absolute;
+      left: 50%;
+      top: calc(40 * var(--u));
+      transform: translateX(-50%);
+      z-index: 9;
+      padding: calc(8 * var(--u)) calc(18 * var(--u));
+      border-radius: calc(16 * var(--u));
+      background: rgba(0, 0, 0, 0.7);
+      color: #ffe066;
+      font-family: monospace;
+      font-size: calc(16 * var(--u));
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    #pong-yesterday-toast.visible { opacity: 1; }
   </style>
 </head>
 <body>
@@ -282,6 +314,8 @@
     <div id="pong-control-panel">
       <div id="pong-panel-button"></div>
       <div id="pong-panel-readout">
+        <p id="pong-streak"></p>
+        <p id="pong-streak-note"></p>
         <p id="pong-control-hints">Move: W/S or ↑/↓ &nbsp;•&nbsp; Space to play again</p>
         <p id="pong-best-rally"></p>
       </div>
@@ -290,6 +324,7 @@
     <div id="pong-cabinet-base"></div>
   </div>
 
+  <script src="/engagement-client.js"></script>
   <script>
     'use strict';
 
@@ -947,6 +982,9 @@
         // read back whatever best is on record.
       }
 
+      // The finished game may have extended today's streak.
+      if (engagementUI) engagementUI.refresh();
+
       try {
         const res = await fetch(`/api/scores/${encodeURIComponent(user.id)}`, { credentials: 'include' });
 
@@ -1349,19 +1387,27 @@
           bestRallyBucket = Boolean(data.bestRallyBucket);
           renderSignedIn(bar, data.user);
           refreshRecentGames();
+          if (engagementUI) engagementUI.load(data.engagement);
         } else {
           currentUser     = null;
           bestRallyBucket = false;
           renderSignedOut(bar);
           removeRecentGamesPanel();
+          if (engagementUI) engagementUI.showSignedOut(data && data.engagement);
         }
       } catch (err) {
         currentUser     = null;
         bestRallyBucket = false;
         renderSignedOut(bar);
         removeRecentGamesPanel();
+        if (engagementUI) engagementUI.showSignedOut(null);
       }
     }
+
+    // Daily-play streak badge and 'beat your yesterday' toast (engagement-client.js).
+    const engagementUI = window.PongEngagement
+      ? window.PongEngagement.create({ document, window, fetch: window.fetch.bind(window) })
+      : null;
 
     initAuthBar();
 

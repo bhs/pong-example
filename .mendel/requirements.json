@@ -7,7 +7,9 @@
       "interface": "server.js:SignIn",
       "path": "lib/sign-in-stub.js",
       "tbd": false,
-      "needed_by": ["serving"]
+      "needed_by": [
+        "serving"
+      ]
     },
     {
       "kind": "secret",
