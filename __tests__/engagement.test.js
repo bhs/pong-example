@@ -4,11 +4,11 @@
  * __tests__/engagement.test.js
  *
  * Unit tests for lib/engagement.js (streak and yesterday/today bests) and
- * the two option functions of lib/engagement-traits.js, called directly.
+ * the two config functions of lib/engagement-config.js, called directly.
  */
 
 const { computeEngagement, parseTzOffset, localDay, DAY_MS } = require('../lib/engagement');
-const traits = require('../lib/engagement-traits');
+const config = require('../lib/engagement-config');
 
 const NOW = Date.UTC(2024, 5, 15, 12, 0, 0); // Sat 15 Jun 2024, 12:00 UTC
 const game = (daysAgo, score = 5, extraMs = 0) => ({ finishedAt: new Date(NOW - daysAgo * DAY_MS + extraMs), score });
@@ -101,16 +101,12 @@ describe('localDay / parseTzOffset', () => {
   });
 });
 
-describe('trait options', () => {
+describe('engagement config', () => {
   test('toastOverTheScreen describes a timed toast', () => {
-    expect(traits.toastOverTheScreen()).toEqual({ placement: 'toast-over-the-screen', durationMs: 5000 });
-  });
-
-  test('stripOnTheControlPanel describes a permanent control-panel line', () => {
-    expect(traits.stripOnTheControlPanel()).toEqual({ placement: 'strip-on-the-control-panel' });
+    expect(config.toastOverTheScreen()).toEqual({ placement: 'toast-over-the-screen', durationMs: 5000 });
   });
 
   test('signedOutStreakOff turns the signed-out streak off with a sign-in line', () => {
-    expect(traits.signedOutStreakOff()).toEqual({ enabled: false, line: 'Sign in to build a streak' });
+    expect(config.signedOutStreakOff()).toEqual({ enabled: false, line: 'Sign in to build a streak' });
   });
 });

@@ -94,16 +94,13 @@ describe('GET /api/engagement', () => {
   });
 });
 
-// Whichever option of the placement Trait the process runs with.
-const PLACEMENTS = ['toast-over-the-screen', 'strip-on-the-control-panel'];
-
 describe('GET /me engagement config', () => {
   test('is included for signed-out and signed-in players', async () => {
     const prisma = createFakePrisma();
     const out = await get(createApp(prisma), '/me');
     expect(out.body.engagement.signedOut).toEqual({ enabled: false, line: 'Sign in to build a streak' });
-    expect(PLACEMENTS).toContain(out.body.engagement.prompt.placement);
+    expect(out.body.engagement.prompt.placement).toBe('toast-over-the-screen');
     const signedIn = await get(createApp(prisma, { testAuth: loggedInAs(ALICE) }), '/me');
-    expect(PLACEMENTS).toContain(signedIn.body.engagement.prompt.placement);
+    expect(signedIn.body.engagement.prompt.placement).toBe('toast-over-the-screen');
   });
 });

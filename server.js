@@ -112,7 +112,7 @@ const { isStubEnabled } = require('./lib/stubs');
 const signInStub     = require('./lib/sign-in-stub');
 const requestLog     = require('./lib/request-log');
 const engagement     = require('./lib/engagement');
-const engagementTraits = require('./lib/engagement-traits');
+const engagementConfig = require('./lib/engagement-config');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -365,13 +365,13 @@ function createApp(prisma = defaultPrisma, options = {}) {
       return res.status(200).json({
         user: { id, email, name, avatar, nickname: nickname || null },
         bestRallyBucket: isBestRallyBucketed(id),
-        engagement: engagementTraits.engagementConfig(),
+        engagement: engagementConfig.engagementConfig(),
       });
     }
     return res.status(200).json({
       user: null,
       bestRallyBucket: false,
-      engagement: engagementTraits.engagementConfig(),
+      engagement: engagementConfig.engagementConfig(),
     });
   });
 

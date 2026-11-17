@@ -38,38 +38,6 @@
       "instructions": "Add {{deploy_url}}/auth/google/callback to Authorized redirect URIs for the OAuth client.",
       "console_url": "https://console.cloud.google.com/apis/credentials",
       "unread_with_stub": "google-sign-in"
-    },
-    {
-      "kind": "trait",
-      "name": "where-the-yesterday-prompt-appears",
-      "description": "Where the 'beat your yesterday' prompt appears on the cabinet.",
-      "env": "WHERE_THE_YESTERDAY_PROMPT_APPEARS",
-      "dispatch": "lib/engagement-traits.js:whereTheYesterdayPromptAppears",
-      "default": "toast-over-the-screen",
-      "options": [
-        {
-          "value": "toast-over-the-screen",
-          "path": "lib/engagement-traits.js:toastOverTheScreen"
-        },
-        {
-          "value": "strip-on-the-control-panel",
-          "path": "lib/engagement-traits.js:stripOnTheControlPanel"
-        }
-      ]
-    },
-    {
-      "kind": "trait",
-      "name": "streak-for-signed-out-players",
-      "description": "Whether players who never sign in get a browser-only streak and yesterday prompt.",
-      "env": "STREAK_FOR_SIGNED_OUT_PLAYERS",
-      "dispatch": "lib/engagement-traits.js:streakForSignedOutPlayers",
-      "default": "off",
-      "options": [
-        {
-          "value": "off",
-          "path": "lib/engagement-traits.js:signedOutStreakOff"
-        }
-      ]
     }
   ]
 }

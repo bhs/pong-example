@@ -129,48 +129,6 @@ describe('yesterday prompt toast', () => {
   });
 });
 
-describe('yesterday prompt strip', () => {
-  const STRIP = { prompt: { placement: 'strip-on-the-control-panel' }, signedOut: CONFIG.signedOut };
-  const strip = (document) => document.getElementById('pong-yesterday-strip');
-
-  test('control panel has the strip, hidden while empty', () => {
-    const { document } = setup([]);
-    expect(document.getElementById('pong-control-panel').contains(strip(document))).toBe(true);
-    expect(strip(document).textContent).toBe('');
-    expect(html).toMatch(/#pong-yesterday-strip:empty \{ display: none; \}/);
-  });
-
-  test('reads "Beat your yesterday: N" on the panel, with no toast', async () => {
-    const { document, ui, timers } = setup([{ streak: 3, playedToday: false, yesterdayBest: 7, todayBest: null }]);
-    await ui.load(STRIP);
-    expect(strip(document).textContent).toBe('Beat your yesterday: 7');
-    expect(toast(document)).toBeNull();
-    expect(timers.length).toBe(0);
-  });
-
-  test('stays after a key press and follows the latest data after a score', async () => {
-    const { document, window, ui } = setup([
-      { streak: 1, playedToday: false, yesterdayBest: 7 },
-      { streak: 2, playedToday: true, yesterdayBest: 7, todayBest: 9 },
-    ]);
-    await ui.load(STRIP);
-    window.dispatchEvent(new window.KeyboardEvent('keydown', { code: 'KeyW' }));
-    expect(strip(document).textContent).toBe('Beat your yesterday: 7');
-    await ui.refresh();
-    expect(strip(document).textContent).toBe('Beat your yesterday: 7');
-    expect(document.getElementById('pong-streak').textContent).toBe('🔥 2-day streak');
-  });
-
-  test('is emptied when signed out or when the request is rejected', async () => {
-    const { document, ui } = setup([{ streak: 1, yesterdayBest: 7 }, { status: 401 }]);
-    await ui.load(STRIP);
-    await ui.refresh();
-    expect(strip(document).textContent).toBe('');
-    ui.showSignedOut(STRIP);
-    expect(strip(document).textContent).toBe('');
-  });
-});
-
 describe('signed-out players', () => {
   test('see a "Sign in to build a streak" line and no badge or toast', () => {
     const { document, ui, calls } = setup([]);
