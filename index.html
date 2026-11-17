@@ -373,6 +373,49 @@
           letter-spacing: 0.06em;
           margin-top: -6px;
         }
+        #pong-overlay .overlay-lb {
+          width: 70%;
+          max-width: calc(260 * var(--u));
+          font-size: calc(10 * var(--u));
+          color: rgba(255,255,255,0.8);
+          letter-spacing: 0.04em;
+        }
+        #pong-overlay .overlay-lb-title {
+          margin: 0 0 calc(2 * var(--u));
+          text-align: center;
+          font-size: calc(10 * var(--u));
+          color: rgba(255,255,255,0.55);
+        }
+        #pong-overlay .overlay-lb-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        #pong-overlay .overlay-lb-table td {
+          padding: calc(1 * var(--u)) calc(4 * var(--u));
+          text-align: right;
+          border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        #pong-overlay .overlay-lb-table td.overlay-lb-rank {
+          width: 2em;
+          text-align: left;
+          color: rgba(255,255,255,0.6);
+        }
+        #pong-overlay .overlay-lb-table td.overlay-lb-player {
+          text-align: left;
+          max-width: calc(120 * var(--u));
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        #pong-overlay .overlay-lb-table tr.overlay-lb-me td {
+          background: rgba(255, 224, 102, 0.18);
+          color: #ffe066;
+          font-weight: bold;
+        }
+        #pong-overlay .overlay-lb-status {
+          text-align: center;
+          color: rgba(255,255,255,0.5);
+        }
         #pong-overlay .last-played {
           font-size: calc(12 * var(--u));
           color: rgba(255,255,255,0.5);
@@ -1042,6 +1085,7 @@
 
       if (!user) {
         appendSignInLink(overlay);
+        refreshOverlayLeaderboard(overlay, null);
         return;
       }
 
@@ -1068,18 +1112,20 @@
           // No HighScore row could be read back (shouldn't normally happen
           // right after a successful POST) — fall back to this round's score.
           appendPersonalBestLine(overlay, finalScore);
-          return;
+        } else {
+          const data  = await res.json();
+          const best  = data && data.entry && typeof data.entry.score === 'number'
+            ? data.entry.score
+            : finalScore;
+          appendPersonalBestLine(overlay, best);
+          appendLastPlayedLine(overlay, data && data.entry && data.entry.lastPlayedAt);
         }
-
-        const data  = await res.json();
-        const best  = data && data.entry && typeof data.entry.score === 'number'
-          ? data.entry.score
-          : finalScore;
-        appendPersonalBestLine(overlay, best);
-        appendLastPlayedLine(overlay, data && data.entry && data.entry.lastPlayedAt);
       } catch (err) {
         // Network error — fail silently, no badge shown for this round.
       }
+
+      // Only does anything for the game-over-overlay-section placement.
+      refreshOverlayLeaderboard(overlay, user.id);
     }
 
     /**
@@ -1134,6 +1180,79 @@
       a.href = '/auth/google';
       a.textContent = 'Sign in with Google to save your score';
       overlay.appendChild(a);
+    }
+
+    // ── Game-over overlay leaderboard section ───────────────────────────────
+    //
+    // The 'game-over-overlay-section' placement of the
+    // where-the-leaderboard-appears Trait: a compact top-5 list (rank,
+    // player, score) under the personal best line of the game-over overlay.
+    // It is fetched from the public GET /api/scores only after the score
+    // POST has resolved, so the player's fresh score is on the board, and the
+    // signed-in player's row (matched by userId) is highlighted. Does nothing
+    // under any other placement.
+
+    /**
+     * Pure: the HTML for the compact overlay list.
+     *
+     * @param {{status:'loading'|'error'|'ready', scores?:Array}} state
+     * @param {?string} myUserId  the signed-in user's id, or null when signed out
+     */
+    function renderOverlayLeaderboard(state, myUserId) {
+      let html = '<p class="overlay-lb-title">🏆 Top scores</p>';
+      if (state.status === 'loading') {
+        return html + '<div class="overlay-lb-status">Loading…</div>';
+      }
+      if (state.status === 'error') {
+        return html + '<div class="overlay-lb-status">Leaderboard unavailable</div>';
+      }
+      const scores = state.scores || [];
+      if (scores.length === 0) {
+        return html + '<div class="overlay-lb-status">No scores yet</div>';
+      }
+      html += '<table class="overlay-lb-table"><tbody>';
+      scores.forEach((entry, i) => {
+        const rank = entry.rank || i + 1;
+        const isMe = Boolean(myUserId) && entry.userId === myUserId;
+        html += `<tr${isMe ? ' class="overlay-lb-me"' : ''}>`
+          + `<td class="overlay-lb-rank">${escapeHtml(rank)}</td>`
+          + `<td class="overlay-lb-player">${escapeHtml(entry.player)}${isMe ? ' (you)' : ''}</td>`
+          + `<td>${escapeHtml(entry.score)}</td>`
+          + '</tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+
+    /**
+     * Add (once) the compact top-5 section to the game-over overlay and fill
+     * it from GET /api/scores. Called after the score POST resolves.
+     *
+     * @param {HTMLElement} overlay   - the game-over overlay div
+     * @param {?string}     myUserId  - signed-in user's id, or null
+     */
+    async function refreshOverlayLeaderboard(overlay, myUserId) {
+      if (leaderboardConfig.placement !== 'game-over-overlay-section') return;
+      if (!document.body.contains(overlay)) return; // overlay dismissed already
+
+      let section = overlay.querySelector('#pong-overlay-leaderboard');
+      if (!section) {
+        section = document.createElement('div');
+        section.id = 'pong-overlay-leaderboard';
+        section.className = 'overlay-lb';
+        overlay.appendChild(section);
+      }
+      section.innerHTML = renderOverlayLeaderboard({ status: 'loading' }, myUserId);
+      try {
+        const res = await fetch(`/api/scores?limit=${encodeURIComponent(leaderboardConfig.limit)}`, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (!document.body.contains(overlay)) return;
+        section.innerHTML = renderOverlayLeaderboard({ status: 'ready', scores: data.scores || [] }, myUserId);
+      } catch (err) {
+        if (!document.body.contains(overlay)) return;
+        section.innerHTML = renderOverlayLeaderboard({ status: 'error' }, myUserId);
+      }
     }
 
     // ── Best-rally readout ────────────────────────────────────────────────

@@ -22,6 +22,10 @@
         {
           "value": "modal-from-a-button",
           "path": "lib/leaderboard-placements/modal-from-a-button.js"
+        },
+        {
+          "value": "game-over-overlay-section",
+          "path": "lib/leaderboard-placements/game-over-overlay-section.js"
         }
       ]
     },
