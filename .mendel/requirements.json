@@ -114,6 +114,24 @@
           "path": "lib/ghost-balls/off.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "big-paddle-burst",
+      "description": "Whether the Big Paddle pickup (enlarges the player paddle by about 50% for a few seconds, then returns it to normal size) is among the pickups in the Power-Ups fun mode.",
+      "env": "BIG_PADDLE_BURST",
+      "dispatch": "lib/big-paddle-burst.js:bigPaddleBurst",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/big-paddle-bursts/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/big-paddle-bursts/off.js"
+        }
+      ]
     }
   ]
 }

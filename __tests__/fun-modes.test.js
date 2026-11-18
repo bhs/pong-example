@@ -40,6 +40,9 @@ const { slowMo } = require('../lib/slow-mo');
 const ghostBallOn = require('../lib/ghost-balls/on');
 const ghostBallOff = require('../lib/ghost-balls/off');
 const { ghostBall } = require('../lib/ghost-ball');
+const bigPaddleBurstOn = require('../lib/big-paddle-bursts/on');
+const bigPaddleBurstOff = require('../lib/big-paddle-bursts/off');
+const { bigPaddleBurst } = require('../lib/big-paddle-burst');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -703,6 +706,42 @@ describe('ghost-ball options', () => {
   });
 });
 
+describe('big-paddle-burst options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on keeps Big Paddle in the set', () => {
+    const set = bigPaddleBurstOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    const game = { pickups: [] };
+    expect(spawnPickup(game, () => 0.6, undefined, set).kind).toBe('bigPaddle');
+  });
+
+  test('on enlarges the player paddle while the effect runs, then returns it to normal size', () => {
+    const state = newState();
+    const normal = state.playerPaddle.h;
+    applyEffect(state, 'bigPaddle');
+    expect(state.playerPaddle.h).toBeGreaterThan(normal * 1.4);
+    expect(state.playerPaddle.h).toBeLessThan(normal * 1.7);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.bigPaddle + 0.1);
+    expect(state.playerPaddle.h).toBe(normal);
+  });
+
+  test('off leaves Big Paddle out and the other pickups in', () => {
+    const set = bigPaddleBurstOff.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('bigPaddle');
+    }
+    expect(full().kinds).toContain('bigPaddle');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(bigPaddleBurst(full(), {})).toEqual(bigPaddleBurstOn.applyTo(full()));
+    expect(bigPaddleBurst(full(), {}).kinds).toContain('bigPaddle');
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -716,7 +755,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: ghostBall(slowMo(originalFourSet.clientConfig())) });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))) });
   });
 });
 
