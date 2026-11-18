@@ -346,8 +346,10 @@
        default; the element is hidden while no effect is active. */
     #pong-effect-badge {
       position: absolute;
-      right: calc(10 * var(--u));
-      bottom: calc(10 * var(--u));
+      /* Sits over the screen's bottom-right corner (the screen spans x 70-630,
+         y 118-538 of the 700x790 cabinet), 10 units in from each edge. */
+      right: calc(80 * var(--u));
+      bottom: calc(262 * var(--u));
       z-index: 5;
       pointer-events: none;
       display: flex;
@@ -376,8 +378,8 @@
     <div id="pong-bezel"></div>
     <div id="pong-screen">
       <canvas id="gameCanvas"></canvas>
-      <div id="pong-effect-badge" data-placement="bottom-right-corner" hidden></div>
     </div>
+    <div id="pong-effect-badge" data-placement="bottom-right-corner" hidden></div>
     <div id="pong-control-panel">
       <div id="pong-panel-button" role="button" tabindex="0" aria-label="Fun mode: start a new game in a random mode" title="Fun mode: start a new game in a random mode"></div>
       <div id="pong-panel-readout">
