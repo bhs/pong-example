@@ -5,6 +5,7 @@ const originalFourSet = require('./lib/power-up-sets/original-four');
 const ghostBallOn = require('./lib/ghost-balls/on');
 const multiBallOn = require('./lib/multi-balls/on');
 const shrinkOpponentPaddleOn = require('./lib/shrink-opponent-paddles/on');
+const obstructionsOn = require('./lib/add-random-obstructions-to-the-game-areas/on');
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const CANVAS_W          = 800;
@@ -149,6 +150,8 @@ function makeGame() {
     pickups:    [],         // pickups on the field ('powerUps')
     effects:    [],         // active timed effects ('powerUps')
     pickupTimer: 0,         // seconds until the next pickup spawns ('powerUps')
+    obstructions: [],       // angled bars the ball bounces off ('powerUps' with random obstructions on)
+    obstructionsPlaced: false,   // true once this point's obstructions have been placed
   };
 }
 
@@ -333,6 +336,8 @@ function clearPowerUps(state, pacing = DEFAULT_PACING) {
   for (const effect of game.effects || []) endEffect(state, effect);
   game.effects = [];
   game.pickups = [];
+  game.obstructions = [];
+  game.obstructionsPlaced = false;
   game.pickupTimer = pacing.spawnIntervalS;
 }
 
@@ -343,6 +348,13 @@ function clearPowerUps(state, pacing = DEFAULT_PACING) {
  */
 function updatePowerUps(state, balls, dt, rng = Math.random, pacing = DEFAULT_PACING, set = DEFAULT_POWER_UP_SET) {
   const game = state.game;
+
+  // Random obstructions (when that option is on): placed once at the start of each point.
+  if (set.obstructions && !game.obstructionsPlaced) {
+    game.obstructions = obstructionsOn.makeObstructions(rng);
+    game.obstructionsPlaced = true;
+  }
+
   tickEffects(state, dt, rng);
 
   game.pickups = (game.pickups || []).filter((p) => { p.ttl -= dt; return p.ttl > 0; });
@@ -646,6 +658,9 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
 
   // ── Ball vs barriers (empty outside 'bouncyBarriers' mode) ────────────────
   bounceOffBarriers(ball, game.barriers);
+
+  // ── Ball vs random obstructions (empty unless 'powerUps' places them) ─────
+  obstructionsOn.bounceOffObstructions(ball, game.obstructions);
 
   // ── Ball vs player paddle ─────────────────────────────────────────────────
   if (

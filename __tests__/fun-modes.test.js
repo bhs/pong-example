@@ -52,6 +52,9 @@ const { multiBall } = require('../lib/multi-ball');
 const shrinkOpponentPaddleOn = require('../lib/shrink-opponent-paddles/on');
 const shrinkOpponentPaddleOff = require('../lib/shrink-opponent-paddles/off');
 const { shrinkOpponentPaddle } = require('../lib/shrink-opponent-paddle');
+const obstructionsOn = require('../lib/add-random-obstructions-to-the-game-areas/on');
+const obstructionsOff = require('../lib/add-random-obstructions-to-the-game-areas/off');
+const { addRandomObstructionsToTheGameArea } = require('../lib/add-random-obstructions-to-the-game-area');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -940,6 +943,123 @@ describe('shrink-opponent-paddle options', () => {
   });
 });
 
+describe('add-random-obstructions-to-the-game-area options', () => {
+  const full = () => originalFourSet.clientConfig();
+  // A deterministic rng cycling through fixed values.
+  const seq = (...vals) => { let i = 0; return () => vals[i++ % vals.length]; };
+
+  test('on switches obstructions on without touching the pickups or the input', () => {
+    const set = obstructionsOn.applyTo(full());
+    expect(set.obstructions).toBe(true);
+    expect(set.kinds).toEqual(full().kinds);
+    expect(full().obstructions).toBeUndefined();
+  });
+
+  test('on: makes paddle-sized obstructions at assorted angles, clear of the serve point', () => {
+    const list = obstructionsOn.makeObstructions(seq(0.1, 0.9, 0.3, 0.8, 0.2, 0.6, 0.5, 0.15, 0.7, 0.95, 0.4, 0.25));
+    expect(list.length).toBe(obstructionsOn.OBSTRUCTION_COUNT);
+    for (const o of list) {
+      expect(o.w).toBe(obstructionsOn.OBSTRUCTION_LENGTH);
+      expect(o.h).toBe(obstructionsOn.OBSTRUCTION_THICKNESS);
+      expect(Math.hypot(o.cx - CANVAS_W / 2, o.cy - CANVAS_H / 2)).toBeGreaterThanOrEqual(90);
+    }
+    const angles = new Set(list.map((o) => o.angle.toFixed(3)));
+    expect(angles.size).toBeGreaterThan(1);
+    expect(list.some((o) => o.angle % (Math.PI / 2) > 0.01)).toBe(true);   // not all axis-aligned
+  });
+
+  test('on: the ball bounces off a flat face with equal angle in and out, speed unchanged', () => {
+    const bar = { cx: 400, cy: 300, w: 80, h: 12, angle: 0 };
+    const ball = ballAt(395, 300 - 6 - BALL_SIZE + 3, 120, 200);   // moving down into the top face
+    expect(obstructionsOn.bounceOffObstructions(ball, [bar])).toBe(true);
+    expect(ball.vx).toBeCloseTo(120);
+    expect(ball.vy).toBeCloseTo(-200);
+    expect(Math.hypot(ball.vx, ball.vy)).toBeCloseTo(Math.hypot(120, 200));
+    expect(ball.angle).toBeCloseTo(Math.atan2(-200, 120));
+  });
+
+  test('on: the ball bounces off a tilted obstruction by mirroring about its normal', () => {
+    const angle = Math.PI / 4;
+    const bar = { cx: 400, cy: 300, w: 80, h: 12, angle };
+    // Heading straight down onto a bar tilted 45°: the normal is (sin45, -cos45)-ish, so it leaves sideways.
+    const nx = Math.sin(angle);
+    const ny = -Math.cos(angle);
+    const ball = ballAt(400 + nx * 10 - 6, 300 + ny * 10 - 6, 0, 300);
+    const speedBefore = Math.hypot(ball.vx, ball.vy);
+    expect(obstructionsOn.bounceOffObstructions(ball, [bar])).toBe(true);
+    expect(ball.vx).toBeCloseTo(-2 * (300 * ny) * nx);
+    expect(ball.vy).toBeCloseTo(300 - 2 * (300 * ny) * ny);
+    expect(Math.hypot(ball.vx, ball.vy)).toBeCloseTo(speedBefore);
+    expect(Math.abs(ball.vx)).toBeGreaterThan(100);   // no longer vertical
+  });
+
+  test('on: a ball moving away from an obstruction, or missing it, is left alone', () => {
+    const bar = { cx: 400, cy: 300, w: 80, h: 12, angle: 0 };
+    const away = ballAt(395, 289, 0, -200);
+    expect(obstructionsOn.bounceOffObstructions(away, [bar])).toBe(false);
+    expect(away.vy).toBe(-200);
+    const miss = ballAt(100, 100, 200, 0);
+    expect(obstructionsOn.bounceOffObstructions(miss, [bar])).toBe(false);
+    expect(obstructionsOn.bounceOffObstructions(miss, [])).toBe(false);
+  });
+
+  test('on: updateBall bounces off the point\'s obstructions', () => {
+    const state = newState();
+    state.game.phase = 'playing';
+    state.game.obstructions = [{ cx: 400, cy: 300, w: 80, h: 12, angle: 0 }];
+    const ball = ballAt(395, 288, 0, 200);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(ball.vy).toBeLessThan(0);
+  });
+
+  test('on: updatePowerUps places them once per point and clearing removes them', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    const set = obstructionsOn.applyTo(full());
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions.length).toBe(obstructionsOn.OBSTRUCTION_COUNT);
+    const first = state.game.obstructions;
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions).toBe(first);   // not re-rolled mid-point
+    clearPowerUps(state);
+    expect(state.game.obstructions).toEqual([]);
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions.length).toBe(obstructionsOn.OBSTRUCTION_COUNT);
+    applyMode(state, 'normal');
+    expect(state.game.obstructions).toEqual([]);
+  });
+
+  test('on: a point ending clears the obstructions', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, obstructionsOn.applyTo(full()));
+    state.game.phase = 'playing';
+    const ball = ballAt(CANVAS_W + 5, 20, 300, 0);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('scored');
+    expect(state.game.obstructions).toEqual([]);
+  });
+
+  test('off leaves obstructions out, and the default set places none', () => {
+    const withIt = obstructionsOn.applyTo(full());
+    const set = obstructionsOff.applyTo(withIt);
+    expect(set.obstructions).toBe(false);
+    expect(set.kinds).toEqual(full().kinds);
+    expect(withIt.obstructions).toBe(true);   // the input is not mutated
+    const state = newState();
+    applyMode(state, 'powerUps');
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions).toEqual([]);
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING);
+    expect(state.game.obstructions).toEqual([]);
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(addRandomObstructionsToTheGameArea(full(), {})).toEqual(obstructionsOn.applyTo(full()));
+    expect(addRandomObstructionsToTheGameArea(full(), {}).obstructions).toBe(true);
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -953,7 +1073,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: shrinkOpponentPaddle(multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig())))))) });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: addRandomObstructionsToTheGameArea(shrinkOpponentPaddle(multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))))))) });
   });
 });
 
@@ -1004,6 +1124,14 @@ describe('index.html wiring', () => {
     expect(html).toMatch(/powerUps: \{\s*name: 'Power-Ups'/);
     expect((html.match(/clearPowerUps\(\);/g) || []).length).toBeGreaterThanOrEqual(4);
     for (const key of POWER_UP_KEYS) expect(html).toContain(`${key}:`);
+  });
+
+  test('random obstructions are mirrored in the page: script, placement, bounce, drawing, clearing', () => {
+    expect(html).toContain('/lib/add-random-obstructions-to-the-game-areas/on.js');
+    expect(html).toMatch(/PongAddRandomObstructionsOn\.makeObstructions\(\)/);
+    expect(html).toMatch(/PongAddRandomObstructionsOn\.bounceOffObstructions\(b, game\.obstructions\)/);
+    expect(html).toMatch(/game\.obstructions = \[\];\s*game\.obstructionsPlaced = false;/);
+    expect(html).toMatch(/game\.obstructions\.forEach/);
   });
 
   test('announces the mode and reports fun_mode_started with the mode name', () => {

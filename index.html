@@ -415,6 +415,7 @@
   <script src="/lib/ghost-balls/on.js"></script>
   <script src="/lib/multi-balls/on.js"></script>
   <script src="/lib/shrink-opponent-paddles/on.js"></script>
+  <script src="/lib/add-random-obstructions-to-the-game-areas/on.js"></script>
   <script>
     'use strict';
 
@@ -941,6 +942,8 @@
       pickups:    [],         // pickups on the field ('powerUps' mode)
       effects:    [],         // active timed effects ('powerUps' mode)
       pickupTimer: 0,         // seconds until the next pickup spawns ('powerUps' mode)
+      obstructions: [],       // angled bars the ball bounces off ('powerUps' mode with random obstructions on)
+      obstructionsPlaced: false,   // true once this point's obstructions have been placed
     };
 
     // Rally state — tracks consecutive paddle hits for difficulty escalation
@@ -1270,12 +1273,19 @@
       game.effects.forEach(endEffect);
       game.effects = [];
       game.pickups = [];
+      game.obstructions = [];
+      game.obstructionsPlaced = false;
       game.pickupTimer = powerUpPacing.spawnIntervalS;
       updateEffectBadge();
     }
 
     /** One tick of the Power-Ups mode while a point is being played. */
     function updatePowerUps(dt) {
+      // Random obstructions (when that option is on): placed once at the start of each point.
+      if (powerUpSet.obstructions && window.PongAddRandomObstructionsOn && !game.obstructionsPlaced) {
+        game.obstructions = window.PongAddRandomObstructionsOn.makeObstructions();
+        game.obstructionsPlaced = true;
+      }
       tickEffects(dt);
       game.pickups = game.pickups.filter((p) => { p.ttl -= dt; return p.ttl > 0; });
       game.pickupTimer -= dt;
@@ -2491,6 +2501,11 @@
       // ── Ball vs barriers (none outside 'bouncyBarriers' mode) ─────────────
       bounceOffBarriers(b);
 
+      // ── Ball vs random obstructions (none unless 'powerUps' places them) ──
+      if (window.PongAddRandomObstructionsOn) {
+        window.PongAddRandomObstructionsOn.bounceOffObstructions(b, game.obstructions);
+      }
+
       // ── Ball vs player paddle ─────────────────────────────────────────────
       if (
         b.vx < 0 &&
@@ -2611,6 +2626,17 @@
       // Barriers ('bouncyBarriers' mode; the list is empty otherwise)
       ctx.fillStyle = '#ffb000';
       game.barriers.forEach((bar) => ctx.fillRect(bar.x, bar.y, bar.w, bar.h));
+      ctx.fillStyle = '#fff';
+
+      // Random obstructions ('powerUps' mode; the list is empty otherwise)
+      game.obstructions.forEach((o) => {
+        ctx.save();
+        ctx.translate(o.cx, o.cy);
+        ctx.rotate(o.angle);
+        ctx.fillStyle = '#90a4ae';
+        ctx.fillRect(-o.w / 2, -o.h / 2, o.w, o.h);
+        ctx.restore();
+      });
       ctx.fillStyle = '#fff';
 
       // Power-Ups pickups (the list is empty outside 'powerUps' mode)

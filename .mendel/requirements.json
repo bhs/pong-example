@@ -186,6 +186,24 @@
           "path": "lib/shrink-opponent-paddles/on.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "add-random-obstructions-to-the-game-area",
+      "description": "Whether random obstructions (roughly paddle-sized bars, not necessarily parallel or perpendicular, that the ball bounces off with equal angle in and out) are added to the game area of the Power-Ups fun mode; one of the switches of which pickups are in the game.",
+      "env": "ADD_RANDOM_OBSTRUCTIONS_TO_THE_GAME_AREA",
+      "dispatch": "lib/add-random-obstructions-to-the-game-area.js:addRandomObstructionsToTheGameArea",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/add-random-obstructions-to-the-game-areas/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/add-random-obstructions-to-the-game-areas/off.js"
+        }
+      ]
     }
   ]
 }

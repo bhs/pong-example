@@ -137,6 +137,7 @@ const { bigPaddleBurst } = require('./lib/big-paddle-burst');
 const { freezeAi } = require('./lib/freeze-ai');
 const { multiBall } = require('./lib/multi-ball');
 const { shrinkOpponentPaddle } = require('./lib/shrink-opponent-paddle');
+const { addRandomObstructionsToTheGameArea } = require('./lib/add-random-obstructions-to-the-game-area');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -541,8 +542,8 @@ function createApp(prisma = defaultPrisma, options = {}) {
       funMode: Object.assign({}, controlPanelButton.clientConfig(), splashThenBadgeOption.clientConfig()),
       // Power-Ups fun mode: pickup pacing and where the effect badge sits
       // and which pickups are offered (lib/pickup-pacing.js,
-      // lib/effect-badge-placement.js, lib/power-up-sets/original-four.js, lib/slow-mo.js, lib/ghost-ball.js, lib/big-paddle-burst.js, lib/freeze-ai.js, lib/multi-ball.js, lib/shrink-opponent-paddle.js).
-      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement(), set: shrinkOpponentPaddle(multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig())))))) },
+      // lib/effect-badge-placement.js, lib/power-up-sets/original-four.js, lib/slow-mo.js, lib/ghost-ball.js, lib/big-paddle-burst.js, lib/freeze-ai.js, lib/multi-ball.js, lib/shrink-opponent-paddle.js, lib/add-random-obstructions-to-the-game-area.js).
+      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement(), set: addRandomObstructionsToTheGameArea(shrinkOpponentPaddle(multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))))))) },
     });
   });
 
