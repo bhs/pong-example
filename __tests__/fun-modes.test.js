@@ -10,6 +10,7 @@
 
 const fs   = require('fs');
 const path = require('path');
+const http = require('http');
 
 const {
   CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT,
@@ -17,10 +18,19 @@ const {
   pickFunMode, applyMode, serveBalls, splashThenBadge,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
   moveAiPaddle, updateBall, updateBalls, bounceOffBarriers, pickAiTarget,
+  POWER_UP_KEYS, PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, DEFAULT_PACING,
+  spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps, updatePowerUps,
+  ballTimeScale, isAiFrozen,
 } = require('../game-logic');
 
+const { createApp } = require('../server');
+const { createFakePrisma } = require('./helpers/fakePrisma');
 const controlPanelButton = require('../lib/fun-button-placements/control-panel-button');
 const splashThenBadgeOption = require('../lib/mode-announcements/splash-then-badge');
+const steadyPacing = require('../lib/pickup-pacings/steady');
+const bottomRightCorner = require('../lib/effect-badge-placements/bottom-right-corner');
+const { pickupPacing } = require('../lib/pickup-pacing');
+const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
   return { game: makeGame(), playerPaddle: makePlayerPaddle(), aiPaddle: makeAiPaddle() };
@@ -32,14 +42,21 @@ function ballAt(x, y, vx, vy) {
 }
 
 describe('pickFunMode', () => {
-  test('only picks one of the three fun modes, never normal', () => {
-    expect(FUN_MODE_KEYS).toEqual(['bigPaddle', 'multiBall', 'bouncyBarriers']);
+  test('only picks one of the four fun modes, never normal', () => {
+    expect(FUN_MODE_KEYS).toEqual(['bigPaddle', 'multiBall', 'bouncyBarriers', 'powerUps']);
   });
 
   test('uses the injected random source', () => {
     expect(pickFunMode(() => 0)).toBe('bigPaddle');
-    expect(pickFunMode(() => 0.5)).toBe('multiBall');
-    expect(pickFunMode(() => 0.99)).toBe('bouncyBarriers');
+    expect(pickFunMode(() => 0.3)).toBe('multiBall');
+    expect(pickFunMode(() => 0.6)).toBe('bouncyBarriers');
+    expect(pickFunMode(() => 0.99)).toBe('powerUps');
+  });
+
+  test('every fun mode is reachable across the [0, 1) range', () => {
+    const seen = new Set();
+    for (let i = 0; i < 100; i++) seen.add(pickFunMode(() => i / 100));
+    expect([...seen].sort()).toEqual([...FUN_MODE_KEYS].sort());
   });
 
   test('a random source returning 1 still picks a valid mode', () => {
@@ -57,6 +74,8 @@ describe('modes', () => {
     expect(game.mode).toBe('normal');
     expect(game.extraBalls).toEqual([]);
     expect(game.barriers).toEqual([]);
+    expect(game.pickups).toEqual([]);
+    expect(game.effects).toEqual([]);
     expect(playerPaddle.h).toBe(PADDLE_H);
   });
 
@@ -85,7 +104,10 @@ describe('modes', () => {
       expect(state.game.mode).toBe('normal');
       expect(state.game.extraBalls).toEqual([]);
       expect(state.game.barriers).toEqual([]);
+      expect(state.game.pickups).toEqual([]);
+      expect(state.game.effects).toEqual([]);
       expect(state.playerPaddle.h).toBe(PADDLE_H);
+      expect(state.aiPaddle.h).toBe(PADDLE_H);
     }
   });
 
@@ -235,6 +257,264 @@ describe('bouncy barriers', () => {
   });
 });
 
+describe('power-ups mode', () => {
+  // rng that walks through a fixed list of values, then repeats the last.
+  const seq = (...vals) => { let i = 0; return () => vals[Math.min(i++, vals.length - 1)]; };
+
+  function powerUpState() {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    return state;
+  }
+
+  test('is registered as a named fun mode with the four pickups', () => {
+    expect(MODES.powerUps.name).toBe('Power-Ups');
+    expect(MODES.powerUps.fun).toBe(true);
+    expect(POWER_UP_KEYS).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    expect(splashThenBadge('powerUps')).toEqual({
+      splashText: 'Power-Ups', splashMs: 1500, badgeText: 'Power-Ups',
+    });
+  });
+
+  test('setup creates an empty field and arms the spawn timer', () => {
+    const { game } = powerUpState();
+    expect(game.mode).toBe('powerUps');
+    expect(game.pickups).toEqual([]);
+    expect(game.effects).toEqual([]);
+    expect(game.pickupTimer).toBe(DEFAULT_PACING.spawnIntervalS);
+  });
+
+  test('spawnPickup picks each kind from the rng and keeps at most one on the field', () => {
+    POWER_UP_KEYS.forEach((kind, i) => {
+      const { game } = powerUpState();
+      const p = spawnPickup(game, () => (i + 0.5) / POWER_UP_KEYS.length);
+      expect(p.kind).toBe(kind);
+      expect(p.ttl).toBe(DEFAULT_PACING.pickupLifetimeS);
+      expect(p.x).toBeGreaterThanOrEqual(200);
+      expect(p.x + PICKUP_SIZE).toBeLessThanOrEqual(CANVAS_W - 200);
+      expect(p.y).toBeGreaterThanOrEqual(0);
+      expect(p.y + PICKUP_SIZE).toBeLessThanOrEqual(CANVAS_H);
+      expect(spawnPickup(game, () => 0)).toBeNull();
+      expect(game.pickups).toHaveLength(1);
+    });
+  });
+
+  test('collectPickup removes a pickup the ball overlaps and ignores a miss', () => {
+    const { game } = powerUpState();
+    const p = spawnPickup(game, () => 0.1);
+    expect(collectPickup(game, ballAt(p.x + 30, p.y + 30, 0, 0))).toBeNull();
+    expect(game.pickups).toHaveLength(1);
+    expect(collectPickup(game, ballAt(p.x + 2, p.y + 2, 0, 0))).toBe(p);
+    expect(game.pickups).toEqual([]);
+  });
+
+  test('Slow-Mo scales ball speed, then expires after its duration', () => {
+    const state = powerUpState();
+    applyEffect(state, 'slowMo');
+    expect(ballTimeScale(state.game)).toBe(SLOW_MO_FACTOR);
+
+    state.game.phase = 'playing';
+    const ball = ballAt(300, 300, 200, 0);
+    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1, makeRally());
+    expect(ball.x).toBeCloseTo(300 + 200 * SLOW_MO_FACTOR);
+
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.slowMo - 0.1);
+    expect(state.game.effects).toHaveLength(1);
+    tickEffects(state, 0.2);
+    expect(state.game.effects).toEqual([]);
+    expect(ballTimeScale(state.game)).toBe(1);
+  });
+
+  test('Ghost Ball gives the AI a noisy, stale target that re-rolls over time', () => {
+    const state = powerUpState();
+    const ball = ballAt(400, 300, 100, 0);
+    expect(pickAiTarget(ball, [], state.game)).toBe(ball);
+
+    applyEffect(state, 'ghostBall', () => 1);        // offset = +GHOST_NOISE
+    const ghost = pickAiTarget(ball, [], state.game);
+    expect(ghost.y).toBeCloseTo(300 + GHOST_NOISE);
+    expect(ball.y).toBe(300);                          // the real ball is untouched
+
+    tickEffects(state, 0.1, () => 0);                  // still stale
+    expect(pickAiTarget(ball, [], state.game).y).toBeCloseTo(300 + GHOST_NOISE);
+    tickEffects(state, 1, () => 0);                    // re-rolled to -GHOST_NOISE
+    expect(pickAiTarget(ball, [], state.game).y).toBeCloseTo(300 - GHOST_NOISE);
+
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.ghostBall);
+    expect(pickAiTarget(ball, [], state.game)).toBe(ball);
+  });
+
+  test('Big Paddle raises only the player paddle, then restores it on expiry', () => {
+    const state = powerUpState();
+    applyEffect(state, 'bigPaddle');
+    expect(state.playerPaddle.h).toBe(Math.round(PADDLE_H * BIG_PADDLE_FACTOR));
+    expect(state.aiPaddle.h).toBe(PADDLE_H);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.bigPaddle + 0.1);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('Big Paddle at the screen edge stays on the field when it ends', () => {
+    const state = powerUpState();
+    state.playerPaddle.y = CANVAS_H - PADDLE_H;
+    applyEffect(state, 'bigPaddle');
+    expect(state.playerPaddle.y + state.playerPaddle.h).toBeLessThanOrEqual(CANVAS_H);
+    tickEffects(state, 10);
+    expect(state.playerPaddle.y + PADDLE_H).toBeLessThanOrEqual(CANVAS_H);
+  });
+
+  test('Freeze AI stops the AI paddle for about 2 seconds', () => {
+    const state = powerUpState();
+    const target = ballAt(600, 500, 100, 0);
+    applyEffect(state, 'freezeAi');
+    expect(isAiFrozen(state.game)).toBe(true);
+    const y0 = state.aiPaddle.y;
+    moveAiPaddle(state.aiPaddle, target, 0.1, 0, state.game);
+    expect(state.aiPaddle.y).toBe(y0);
+
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.freezeAi + 0.1);
+    expect(isAiFrozen(state.game)).toBe(false);
+    moveAiPaddle(state.aiPaddle, target, 0.1, 0, state.game);
+    expect(state.aiPaddle.y).toBeGreaterThan(y0);
+  });
+
+  test('every effect uses its steady-pacing duration and re-collecting refreshes it', () => {
+    expect(DEFAULT_PACING).toEqual(steadyPacing.clientConfig());
+    const state = powerUpState();
+    POWER_UP_KEYS.forEach((kind) => {
+      expect(applyEffect(state, kind).remaining).toBe(steadyPacing.EFFECT_DURATIONS_S[kind]);
+    });
+    tickEffects(state, 1);
+    applyEffect(state, 'slowMo');
+    expect(state.game.effects.filter((e) => e.kind === 'slowMo')).toHaveLength(1);
+    expect(state.game.effects.find((e) => e.kind === 'slowMo').remaining).toBe(5);
+    expect(applyEffect(state, 'nope')).toBeNull();
+  });
+
+  test('updatePowerUps spawns a pickup every ~6s, expires it after ~8s, and applies a hit', () => {
+    const state = powerUpState();
+    const far = ballAt(10, 10, 0, 0);
+    updatePowerUps(state, [far], 5.9, () => 0.1);
+    expect(state.game.pickups).toHaveLength(0);
+    updatePowerUps(state, [far], 0.2, () => 0.1);
+    expect(state.game.pickups).toHaveLength(1);
+    // A long spawn interval keeps the next pickup away while the first expires.
+    const slowSpawn = Object.assign({}, DEFAULT_PACING, { spawnIntervalS: 100 });
+    state.game.pickupTimer = 100;
+    updatePowerUps(state, [far], 7.7, () => 0.1, slowSpawn);
+    expect(state.game.pickups).toHaveLength(1);
+    updatePowerUps(state, [far], 0.4, () => 0.1, slowSpawn);
+    expect(state.game.pickups).toHaveLength(0);
+
+    const p = spawnPickup(state.game, () => 0.6);       // bigPaddle (index 2)
+    updatePowerUps(state, [ballAt(p.x, p.y, 0, 0)], 0.01, () => 0.1);
+    expect(state.game.pickups).toEqual([]);
+    expect(state.game.effects.map((e) => e.kind)).toEqual(['bigPaddle']);
+  });
+
+  function stateWithEverythingActive() {
+    const state = powerUpState();
+    POWER_UP_KEYS.forEach((kind) => applyEffect(state, kind));
+    spawnPickup(state.game, () => 0);
+    return state;
+  }
+
+  test('a scored point clears every pickup and effect and restores the paddle', () => {
+    const state = stateWithEverythingActive();
+    state.game.phase = 'playing';
+    const ball = ballAt(CANVAS_W + 5, 300, 100, 0);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('scored');
+    expect(state.game.pickups).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+    expect(state.game.pickupTimer).toBe(DEFAULT_PACING.spawnIntervalS);
+  });
+
+  test('the winning point clears them too (game over)', () => {
+    const state = stateWithEverythingActive();
+    state.game.phase = 'playing';
+    state.aiPaddle.score = 6;
+    const ball = ballAt(-BALL_SIZE - 5, 300, -100, 0);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('won');
+    expect(state.game.pickups).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+  });
+
+  test('leaving the mode (any applyMode) tears everything down', () => {
+    for (const next of ['normal', 'bigPaddle', 'multiBall', 'bouncyBarriers']) {
+      const state = stateWithEverythingActive();
+      applyMode(state, next);
+      expect(state.game.pickups).toEqual([]);
+      expect(state.game.effects).toEqual([]);
+      expect(ballTimeScale(state.game)).toBe(1);
+      expect(isAiFrozen(state.game)).toBe(false);
+      expect(state.aiPaddle.h).toBe(PADDLE_H);
+      expect(state.playerPaddle.h).toBe(next === 'bigPaddle' ? Math.round(PADDLE_H * BIG_PADDLE_FACTOR) : PADDLE_H);
+    }
+  });
+
+  test('clearPowerUps is harmless in other modes', () => {
+    const state = newState();
+    applyMode(state, 'bigPaddle');
+    clearPowerUps(state);
+    expect(state.playerPaddle.h).toBe(Math.round(PADDLE_H * BIG_PADDLE_FACTOR));
+  });
+
+  test('Normal play ignores power-ups: full speed, AI moves, no pickups', () => {
+    const state = newState();
+    state.game.phase = 'playing';
+    expect(ballTimeScale(state.game)).toBe(1);
+    expect(isAiFrozen(state.game)).toBe(false);
+    const ball = ballAt(300, 300, 200, 0);
+    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1, makeRally());
+    expect(ball.x).toBeCloseTo(500);
+    const y0 = state.aiPaddle.y;
+    moveAiPaddle(state.aiPaddle, ballAt(600, 500, 100, 0), 0.1, 0, state.game);
+    expect(state.aiPaddle.y).toBeGreaterThan(y0);
+  });
+});
+
+describe('pickup-pacing and where-the-effect-badge-sits options', () => {
+  test('steady pacing: one pickup per 6s, 8s on the field, 5/5/5/2s effects', () => {
+    expect(steadyPacing.clientConfig()).toEqual({
+      pacing: 'steady',
+      spawnIntervalS: 6,
+      pickupLifetimeS: 8,
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2 },
+    });
+  });
+
+  test('bottom-right-corner placement', () => {
+    expect(bottomRightCorner.clientConfig()).toEqual({ placement: 'bottom-right-corner' });
+  });
+
+  test('the dispatchers return a well-formed option config', () => {
+    expect(pickupPacing().spawnIntervalS).toBeGreaterThan(0);
+    expect(Object.keys(pickupPacing().effectDurationsS).sort()).toEqual([...POWER_UP_KEYS].sort());
+    expect(typeof effectBadgePlacement().placement).toBe('string');
+  });
+});
+
+describe('GET /api/config for Power-Ups', () => {
+  test('serves the pickup pacing and the effect badge placement', async () => {
+    const app = createApp(createFakePrisma(), { logWrite: () => {} });
+    const body = await new Promise((resolve, reject) => {
+      const server = http.createServer(app);
+      server.listen(0, '127.0.0.1', () => {
+        http.get({ host: '127.0.0.1', port: server.address().port, path: '/api/config' }, (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => { server.close(); resolve(JSON.parse(Buffer.concat(chunks).toString())); });
+        }).on('error', (err) => { server.close(); reject(err); });
+      });
+    });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement() });
+  });
+});
+
 describe('splash-then-badge option', () => {
   test('its own code shows the name for 1.5 seconds then keeps a badge', () => {
     expect(SPLASH_MS).toBe(1500);
@@ -271,6 +551,14 @@ describe('index.html wiring', () => {
     for (const key of Object.keys(MODES)) {
       expect(html).toMatch(new RegExp(`\\b${key}: \\{\\s*name: '${MODES[key].name}'`));
     }
+  });
+
+  test('Power-Ups is mirrored in the page: mode, effect badge, clearing at point end', () => {
+    expect(html).toMatch(/<div id="pong-effect-badge"[^>]*\bhidden\b/);
+    expect(html).toMatch(/#pong-effect-badge \{[^}]*right:[^}]*bottom:/);
+    expect(html).toMatch(/powerUps: \{\s*name: 'Power-Ups'/);
+    expect((html.match(/clearPowerUps\(\);/g) || []).length).toBeGreaterThanOrEqual(4);
+    for (const key of POWER_UP_KEYS) expect(html).toContain(`${key}:`);
   });
 
   test('announces the mode and reports fun_mode_started with the mode name', () => {

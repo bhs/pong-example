@@ -68,7 +68,10 @@
  *                                 appears — see lib/leaderboard-placements/modal-from-a-button.js —
  *                                 and the fun-mode button / announcement — see
  *                                 lib/fun-button-placements/control-panel-button.js and
- *                                 lib/mode-announcements/splash-then-badge.js).
+ *                                 lib/mode-announcements/splash-then-badge.js — and the Power-Ups
+ *                                 pickup pacing and effect badge placement —
+ *                                 see lib/pickup-pacing.js and
+ *                                 lib/effect-badge-placement.js).
  *   POST   /api/scores           Create or update the logged-in user's high
  *                                 score. Requires an authenticated Google
  *                                 session — every HighScore row is tied to a
@@ -125,6 +128,8 @@ const engagement     = require('./lib/engagement');
 const engagementConfig = require('./lib/engagement-config');
 const controlPanelButton = require('./lib/fun-button-placements/control-panel-button');
 const splashThenBadgeOption = require('./lib/mode-announcements/splash-then-badge');
+const { pickupPacing } = require('./lib/pickup-pacing');
+const { effectBadgePlacement } = require('./lib/effect-badge-placement');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -527,6 +532,9 @@ function createApp(prisma = defaultPrisma, options = {}) {
     return res.status(200).json({
       leaderboard: modalFromAButton.clientConfig(),
       funMode: Object.assign({}, controlPanelButton.clientConfig(), splashThenBadgeOption.clientConfig()),
+      // Power-Ups fun mode: pickup pacing and where the effect badge sits
+      // (lib/pickup-pacing.js, lib/effect-badge-placement.js).
+      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement() },
     });
   });
 

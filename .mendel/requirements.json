@@ -38,6 +38,34 @@
       "instructions": "Add {{deploy_url}}/auth/google/callback to Authorized redirect URIs for the OAuth client.",
       "console_url": "https://console.cloud.google.com/apis/credentials",
       "unread_with_stub": "google-sign-in"
+    },
+    {
+      "kind": "trait",
+      "name": "pickup-pacing",
+      "description": "How fast Power-Ups pickups spawn and how long their effects last: chaotic, fair or dull is only judged by playing it.",
+      "env": "PICKUP_PACING",
+      "dispatch": "lib/pickup-pacing.js:pickupPacing",
+      "default": "steady",
+      "options": [
+        {
+          "value": "steady",
+          "path": "lib/pickup-pacings/steady.js"
+        }
+      ]
+    },
+    {
+      "kind": "trait",
+      "name": "where-the-effect-badge-sits",
+      "description": "Where the active Power-Ups effects and their countdowns are shown without covering the ball or the mode badge at bottom-left.",
+      "env": "WHERE_THE_EFFECT_BADGE_SITS",
+      "dispatch": "lib/effect-badge-placement.js:effectBadgePlacement",
+      "default": "bottom-right-corner",
+      "options": [
+        {
+          "value": "bottom-right-corner",
+          "path": "lib/effect-badge-placements/bottom-right-corner.js"
+        }
+      ]
     }
   ]
 }

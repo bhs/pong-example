@@ -1,5 +1,7 @@
 'use strict';
 
+const steadyPacing = require('./lib/pickup-pacings/steady');
+
 // ── Constants ──────────────────────────────────────────────────────────────
 const CANVAS_W          = 800;
 const CANVAS_H          = 600;
@@ -18,6 +20,23 @@ const FLASH_FRAMES      = 3;      // number of frames for score-flash effect
 const BIG_PADDLE_FACTOR = 1.6;    // player paddle height multiplier in 'bigPaddle' mode
 const EXTRA_BALL_COUNT  = 2;      // balls added to the primary one in 'multiBall' mode
 const EXTRA_BALL_SPREAD = 40;     // px between stacked balls at serve in 'multiBall' mode
+const PICKUP_SIZE       = 24;     // px, side of a 'powerUps' pickup square
+const SLOW_MO_FACTOR    = 0.5;    // ball time scale while Slow-Mo is active
+const GHOST_NOISE       = 140;    // px, max offset of the AI's ghost target
+const GHOST_REROLL_S    = 0.6;    // seconds the AI's ghost target stays stale before re-rolling
+
+// The 'powerUps' mode's four timed pickups. `colour` is the pickup and chip colour.
+const POWER_UP_KINDS = {
+  slowMo:    { name: 'Slow-Mo',     colour: '#4fc3f7' },
+  ghostBall: { name: 'Ghost Ball',  colour: '#ce93d8' },
+  bigPaddle: { name: 'Big Paddle',  colour: '#81c784' },
+  freezeAi:  { name: 'Freeze AI',   colour: '#ffffff' },
+};
+const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
+
+// Pickup spawn rate and effect lengths: the default (steady) pacing. A pacing
+// config of the same shape can be passed to any function below.
+const DEFAULT_PACING = steadyPacing.clientConfig();
 
 // Fixed rectangles in the middle of the field for 'bouncyBarriers' mode. They
 // leave the centre spawn point clear.
@@ -117,6 +136,9 @@ function makeGame() {
     mode:       'normal',   // key of MODES
     extraBalls: [],         // balls besides the primary one ('multiBall')
     barriers:   [],         // rectangles the ball bounces off ('bouncyBarriers')
+    pickups:    [],         // pickups on the field ('powerUps')
+    effects:    [],         // active timed effects ('powerUps')
+    pickupTimer: 0,         // seconds until the next pickup spawns ('powerUps')
   };
 }
 
@@ -129,6 +151,157 @@ function makeGame() {
 
 function centrePaddle(paddle) {
   paddle.y = clamp(CANVAS_H / 2 - paddle.h / 2, 0, CANVAS_H - paddle.h);
+}
+
+// ── Power-Ups: pickups and timed effects ───────────────────────────────────
+//
+// Pure functions on a state object { game, playerPaddle, aiPaddle }. `rng`
+// returns a float in [0, 1) and is injectable so tests can fix the outcome.
+// game.pickups holds at most one pickup { kind, x, y, w, h, ttl }; game.effects
+// holds at most one entry per kind { kind, remaining, ... }.
+
+function findEffect(game, kind) {
+  return ((game && game.effects) || []).find((e) => e.kind === kind) || null;
+}
+
+/** Time scale applied to every ball's movement: Slow-Mo halves it. */
+function ballTimeScale(game) {
+  return findEffect(game, 'slowMo') ? SLOW_MO_FACTOR : 1;
+}
+
+/** True while Freeze AI is active: the AI paddle does not move. */
+function isAiFrozen(game) {
+  return findEffect(game, 'freezeAi') !== null;
+}
+
+/**
+ * Spawn one pickup at a random spot in the middle of the field. Does nothing
+ * (returns null) when one is already on the field.
+ */
+function spawnPickup(game, rng = Math.random, pacing = DEFAULT_PACING) {
+  if (!game.pickups) game.pickups = [];
+  if (game.pickups.length > 0) return null;
+  const pick = clamp(Math.floor(rng() * POWER_UP_KEYS.length), 0, POWER_UP_KEYS.length - 1);
+  const pickup = {
+    kind: POWER_UP_KEYS[pick],
+    x:    Math.round(200 + rng() * (CANVAS_W - 400 - PICKUP_SIZE)),
+    y:    Math.round(60 + rng() * (CANVAS_H - 120 - PICKUP_SIZE)),
+    w:    PICKUP_SIZE,
+    h:    PICKUP_SIZE,
+    ttl:  pacing.pickupLifetimeS,
+  };
+  game.pickups.push(pickup);
+  return pickup;
+}
+
+/**
+ * Collect the first pickup the ball overlaps: removes it from the field and
+ * returns it, or returns null when the ball touches none.
+ */
+function collectPickup(game, ball) {
+  const pickups = game.pickups || [];
+  const i = pickups.findIndex((p) => aabbOverlap(ball.x, ball.y, ball.w, ball.h, p.x, p.y, p.w, p.h));
+  return i === -1 ? null : pickups.splice(i, 1)[0];
+}
+
+/** Undo one effect's side effect on the paddles (only Big Paddle has one). */
+function endEffect(state, effect) {
+  if (effect.kind === 'bigPaddle') {
+    const paddle = state.playerPaddle;
+    const centre = paddle.y + paddle.h / 2;
+    paddle.h = PADDLE_H;
+    paddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
+  }
+}
+
+/**
+ * Start (or refresh) the effect of a collected pickup of `kind`. Returns the
+ * effect entry, or null for an unknown kind.
+ */
+function applyEffect(state, kind, rng = Math.random, pacing = DEFAULT_PACING) {
+  if (!POWER_UP_KINDS[kind]) return null;
+  const game = state.game;
+  if (!game.effects) game.effects = [];
+  const duration = pacing.effectDurationsS[kind];
+
+  const existing = findEffect(game, kind);
+  if (existing) {
+    existing.remaining = duration;
+    return existing;
+  }
+
+  const effect = { kind, remaining: duration };
+  if (kind === 'bigPaddle') {
+    const paddle = state.playerPaddle;
+    const centre = paddle.y + paddle.h / 2;
+    paddle.h = Math.round(PADDLE_H * BIG_PADDLE_FACTOR);
+    paddle.y = clamp(centre - paddle.h / 2, 0, CANVAS_H - paddle.h);
+  } else if (kind === 'ghostBall') {
+    effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
+    effect.rerollIn = GHOST_REROLL_S;
+  }
+  game.effects.push(effect);
+  return effect;
+}
+
+/**
+ * Advance every effect by dt seconds; expired effects are removed and undone.
+ * Ghost Ball's target offset is re-rolled every GHOST_REROLL_S, so the AI's
+ * target is stale between rolls.
+ */
+function tickEffects(state, dt, rng = Math.random) {
+  const game = state.game;
+  const active = [];
+  for (const effect of game.effects || []) {
+    effect.remaining -= dt;
+    if (effect.remaining <= 0) {
+      endEffect(state, effect);
+      continue;
+    }
+    if (effect.kind === 'ghostBall') {
+      effect.rerollIn -= dt;
+      if (effect.rerollIn <= 0) {
+        effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
+        effect.rerollIn = GHOST_REROLL_S;
+      }
+    }
+    active.push(effect);
+  }
+  game.effects = active;
+}
+
+/**
+ * Remove every pickup and effect, restoring paddle heights, and restart the
+ * spawn timer. Used at point end, game end and on every mode change.
+ */
+function clearPowerUps(state, pacing = DEFAULT_PACING) {
+  const game = state.game;
+  for (const effect of game.effects || []) endEffect(state, effect);
+  game.effects = [];
+  game.pickups = [];
+  game.pickupTimer = pacing.spawnIntervalS;
+}
+
+/**
+ * One tick of the Power-Ups mode while a point is being played: advance the
+ * effects, age and expire the pickup, spawn the next one when due, and apply
+ * the effect of any pickup a ball hits. `balls` is every ball in play.
+ */
+function updatePowerUps(state, balls, dt, rng = Math.random, pacing = DEFAULT_PACING) {
+  const game = state.game;
+  tickEffects(state, dt, rng);
+
+  game.pickups = (game.pickups || []).filter((p) => { p.ttl -= dt; return p.ttl > 0; });
+
+  game.pickupTimer -= dt;
+  if (game.pickupTimer <= 0 && spawnPickup(game, rng, pacing)) {
+    game.pickupTimer = pacing.spawnIntervalS;
+  }
+
+  for (const ball of balls) {
+    const pickup = collectPickup(game, ball);
+    if (pickup) applyEffect(state, pickup.kind, rng, pacing);
+  }
 }
 
 const MODES = {
@@ -155,6 +328,17 @@ const MODES = {
     fun:  true,
     setup(state)    { state.game.barriers = BARRIER_LAYOUT.map((b) => Object.assign({}, b)); },
     teardown(state) { state.game.barriers = []; },
+  },
+  powerUps: {
+    name: 'Power-Ups',
+    fun:  true,
+    setup(state)    { clearPowerUps(state); },
+    teardown(state) {
+      clearPowerUps(state);
+      // Belt and braces: both paddles are back to full-size defaults.
+      state.playerPaddle.h = PADDLE_H;
+      state.aiPaddle.h = PADDLE_H;
+    },
   },
 };
 
@@ -280,8 +464,10 @@ function movePlayerPaddle(paddle, keys, dt) {
  * @param {object} ball
  * @param {number} dt
  * @param {number} [rallyCount=0] - current rally hit count for difficulty scaling
+ * @param {object} [game] - when Freeze AI is active in it, the paddle stays put
  */
-function moveAiPaddle(paddle, ball, dt, rallyCount = 0) {
+function moveAiPaddle(paddle, ball, dt, rallyCount = 0, game = null) {
+  if (game && isAiFrozen(game)) return paddle;   // Freeze AI power-up
   const ballCentreY  = ball.y + BALL_SIZE / 2;
   const aiCentreY    = paddle.y + paddleHeight(paddle) / 2;
   const diff         = ballCentreY - aiCentreY;
@@ -388,6 +574,7 @@ function bounceOffBarriers(ball, barriers) {
  */
 function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
   if (!rally) rally = makeRally();
+  const state = { game, playerPaddle, aiPaddle };
 
   ball.x += ball.vx * dt;
   ball.y += ball.vy * dt;
@@ -455,6 +642,7 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
       game.phase      = 'scored';
       game.pauseTimer = 1.2;
     }
+    clearPowerUps(state);
   }
 
   // ── Ball exits right → player scores ─────────────────────────────────────
@@ -469,6 +657,7 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
       game.phase      = 'scored';
       game.pauseTimer = 1.2;
     }
+    clearPowerUps(state);
   }
 }
 
@@ -479,9 +668,10 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
  */
 function updateBalls(ball, playerPaddle, aiPaddle, game, dt, rally) {
   const balls = [ball].concat(game.extraBalls || []);
+  const ballDt = dt * ballTimeScale(game);   // Slow-Mo slows the balls only
   for (const b of balls) {
     if (game.phase !== 'playing') break;
-    updateBall(b, playerPaddle, aiPaddle, game, dt, rally);
+    updateBall(b, playerPaddle, aiPaddle, game, ballDt, rally);
   }
 }
 
@@ -489,10 +679,15 @@ function updateBalls(ball, playerPaddle, aiPaddle, game, dt, rally) {
  * The ball the AI should chase: the incoming ball closest to its paddle, or
  * the primary ball when none is heading its way.
  */
-function pickAiTarget(ball, extraBalls) {
+function pickAiTarget(ball, extraBalls, game = null) {
   const incoming = [ball].concat(extraBalls || []).filter((b) => b.vx > 0);
-  if (incoming.length === 0) return ball;
-  return incoming.reduce((best, b) => (b.x > best.x ? b : best));
+  const target = incoming.length === 0
+    ? ball
+    : incoming.reduce((best, b) => (b.x > best.x ? b : best));
+  // Ghost Ball: the AI chases a stale, offset copy of the ball's position.
+  const ghost = findEffect(game, 'ghostBall');
+  if (!ghost) return target;
+  return Object.assign({}, target, { y: target.y + ghost.offset });
 }
 
 /**
@@ -516,6 +711,8 @@ module.exports = {
   SCORE_WIN,
   FLASH_FRAMES,
   BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT, BARRIER_LAYOUT,
+  PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, GHOST_REROLL_S,
+  POWER_UP_KINDS, POWER_UP_KEYS, DEFAULT_PACING,
 
   // Game modes
   MODES, FUN_MODE_KEYS, SPLASH_MS,
@@ -524,6 +721,10 @@ module.exports = {
   applyMode,
   makeExtraBalls,
   serveBalls,
+
+  // Power-Ups
+  spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps,
+  updatePowerUps, ballTimeScale, isAiFrozen,
 
   // Factory functions
   makeBall,

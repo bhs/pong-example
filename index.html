@@ -341,6 +341,30 @@
       background: #ffd84a;
       opacity: 0.9;
     }
+    /* Power-Ups effect badge: stacked chips with a countdown, mirroring the
+       mode badge at bottom-left. The 'bottom-right-corner' placement is the
+       default; the element is hidden while no effect is active. */
+    #pong-effect-badge {
+      position: absolute;
+      right: calc(10 * var(--u));
+      bottom: calc(10 * var(--u));
+      z-index: 5;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column-reverse;
+      align-items: flex-end;
+      gap: calc(4 * var(--u));
+      font-family: monospace;
+      font-size: calc(13 * var(--u));
+      letter-spacing: 0.06em;
+    }
+    #pong-effect-badge[hidden] { display: none; }
+    .pong-effect-chip {
+      padding: calc(3 * var(--u)) calc(10 * var(--u));
+      border-radius: calc(10 * var(--u));
+      color: #1a1a1a;
+      opacity: 0.92;
+    }
   </style>
 </head>
 <body>
@@ -352,6 +376,7 @@
     <div id="pong-bezel"></div>
     <div id="pong-screen">
       <canvas id="gameCanvas"></canvas>
+      <div id="pong-effect-badge" data-placement="bottom-right-corner" hidden></div>
     </div>
     <div id="pong-control-panel">
       <div id="pong-panel-button" role="button" tabindex="0" aria-label="Fun mode: start a new game in a random mode" title="Fun mode: start a new game in a random mode"></div>
@@ -390,8 +415,31 @@
     const BIG_PADDLE_FACTOR = 1.6;   // player paddle height multiplier in 'bigPaddle' mode
     const EXTRA_BALL_COUNT  = 2;     // balls added to the primary one in 'multiBall' mode
     const EXTRA_BALL_SPREAD = 40;    // px between stacked balls at serve in 'multiBall' mode
+    const PICKUP_SIZE       = 24;    // px, side of a 'powerUps' pickup square
+    const SLOW_MO_FACTOR    = 0.5;   // ball time scale while Slow-Mo is active
+    const GHOST_NOISE       = 140;   // px, max offset of the AI's ghost target
+    const GHOST_REROLL_S    = 0.6;   // seconds the AI's ghost target stays stale
     const SPLASH_MS         = 1500;  // how long the mode name is shown large at game start
     const FUN_BUTTON_DEBOUNCE_MS = 400;  // ignore a second fun-button trigger inside this window
+
+    // The 'powerUps' mode's four timed pickups (mirrors game-logic.js).
+    const POWER_UP_KINDS = {
+      slowMo:    { name: 'Slow-Mo',    colour: '#4fc3f7' },
+      ghostBall: { name: 'Ghost Ball', colour: '#ce93d8' },
+      bigPaddle: { name: 'Big Paddle', colour: '#81c784' },
+      freezeAi:  { name: 'Freeze AI',  colour: '#ffffff' },
+    };
+    const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
+
+    // Pickup spawn rate and effect lengths: the 'steady' pacing, replaced by the
+    // server's setting from GET /api/config (see loadPowerUpConfig).
+    const DEFAULT_PACING = {
+      pacing: 'steady',
+      spawnIntervalS: 6,
+      pickupLifetimeS: 8,
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2 },
+    };
+    let powerUpPacing = DEFAULT_PACING;
 
     // Fixed rectangles in the middle of the field for 'bouncyBarriers' mode.
     // They leave the centre spawn point clear.
@@ -857,6 +905,9 @@
       mode:       'normal',   // key of MODES
       extraBalls: [],         // balls besides `ball` ('multiBall' mode)
       barriers:   [],         // rectangles the ball bounces off ('bouncyBarriers' mode)
+      pickups:    [],         // pickups on the field ('powerUps' mode)
+      effects:    [],         // active timed effects ('powerUps' mode)
+      pickupTimer: 0,         // seconds until the next pickup spawns ('powerUps' mode)
     };
 
     // Rally state — tracks consecutive paddle hits for difficulty escalation
@@ -1050,6 +1101,144 @@
       paddle.y = clamp(CANVAS_H / 2 - paddle.h / 2, 0, CANVAS_H - paddle.h);
     }
 
+    // ── Power-Ups: pickups and timed effects ──────────────────────────────────
+    //
+    // Mirrors the pure functions in game-logic.js. game.pickups holds at most
+    // one pickup; game.effects holds at most one entry per kind.
+
+    function findEffect(kind) {
+      return game.effects.find((e) => e.kind === kind) || null;
+    }
+
+    /** Time scale applied to every ball's movement: Slow-Mo halves it. */
+    function ballTimeScale() {
+      return findEffect('slowMo') ? SLOW_MO_FACTOR : 1;
+    }
+
+    /** True while Freeze AI is active: the AI paddle does not move. */
+    function isAiFrozen() {
+      return findEffect('freezeAi') !== null;
+    }
+
+    function spawnPickup(rng = Math.random) {
+      if (game.pickups.length > 0) return null;
+      const pick = clamp(Math.floor(rng() * POWER_UP_KEYS.length), 0, POWER_UP_KEYS.length - 1);
+      const pickup = {
+        kind: POWER_UP_KEYS[pick],
+        x:    Math.round(200 + rng() * (CANVAS_W - 400 - PICKUP_SIZE)),
+        y:    Math.round(60 + rng() * (CANVAS_H - 120 - PICKUP_SIZE)),
+        w:    PICKUP_SIZE,
+        h:    PICKUP_SIZE,
+        ttl:  powerUpPacing.pickupLifetimeS,
+      };
+      game.pickups.push(pickup);
+      return pickup;
+    }
+
+    function collectPickup(b) {
+      const i = game.pickups.findIndex((p) => aabbOverlap(b.x, b.y, b.w, b.h, p.x, p.y, p.w, p.h));
+      return i === -1 ? null : game.pickups.splice(i, 1)[0];
+    }
+
+    function endEffect(effect) {
+      if (effect.kind === 'bigPaddle') {
+        const centre = playerPaddle.y + playerPaddle.h / 2;
+        playerPaddle.h = PADDLE_H;
+        playerPaddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
+      }
+    }
+
+    function applyEffect(kind, rng = Math.random) {
+      if (!POWER_UP_KINDS[kind]) return null;
+      const duration = powerUpPacing.effectDurationsS[kind];
+      const existing = findEffect(kind);
+      if (existing) {
+        existing.remaining = duration;
+        return existing;
+      }
+      const effect = { kind, remaining: duration };
+      if (kind === 'bigPaddle') {
+        const centre = playerPaddle.y + playerPaddle.h / 2;
+        playerPaddle.h = Math.round(PADDLE_H * BIG_PADDLE_FACTOR);
+        playerPaddle.y = clamp(centre - playerPaddle.h / 2, 0, CANVAS_H - playerPaddle.h);
+      } else if (kind === 'ghostBall') {
+        effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
+        effect.rerollIn = GHOST_REROLL_S;
+      }
+      game.effects.push(effect);
+      return effect;
+    }
+
+    /** Advance every effect; expired ones are removed and undone. */
+    function tickEffects(dt, rng = Math.random) {
+      const active = [];
+      for (const effect of game.effects) {
+        effect.remaining -= dt;
+        if (effect.remaining <= 0) {
+          endEffect(effect);
+          continue;
+        }
+        if (effect.kind === 'ghostBall') {
+          effect.rerollIn -= dt;
+          if (effect.rerollIn <= 0) {
+            effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
+            effect.rerollIn = GHOST_REROLL_S;
+          }
+        }
+        active.push(effect);
+      }
+      game.effects = active;
+    }
+
+    /**
+     * Remove every pickup and effect, restoring paddle heights, and restart
+     * the spawn timer. Used at point end, game end and on every mode change.
+     */
+    function clearPowerUps() {
+      game.effects.forEach(endEffect);
+      game.effects = [];
+      game.pickups = [];
+      game.pickupTimer = powerUpPacing.spawnIntervalS;
+      updateEffectBadge();
+    }
+
+    /** One tick of the Power-Ups mode while a point is being played. */
+    function updatePowerUps(dt) {
+      tickEffects(dt);
+      game.pickups = game.pickups.filter((p) => { p.ttl -= dt; return p.ttl > 0; });
+      game.pickupTimer -= dt;
+      if (game.pickupTimer <= 0 && spawnPickup()) game.pickupTimer = powerUpPacing.spawnIntervalS;
+      for (const b of [ball].concat(game.extraBalls)) {
+        const pickup = collectPickup(b);
+        if (pickup) applyEffect(pickup.kind);
+      }
+    }
+
+    // ── Effect badge: 'bottom-right-corner' ───────────────────────────────────
+    //
+    // Active effects as stacked chips with the seconds left, in the corner
+    // opposite the mode badge. Hidden when no effect is active; the chips are
+    // only rewritten when what they say changes.
+
+    let effectBadgeSignature = '';
+
+    function updateEffectBadge() {
+      const el = document.getElementById('pong-effect-badge');
+      if (!el) return;
+      const signature = game.effects.map((e) => e.kind + ':' + Math.ceil(e.remaining)).join('|');
+      if (signature === effectBadgeSignature) return;
+      effectBadgeSignature = signature;
+      el.textContent = '';
+      game.effects.forEach((e) => {
+        const chip = document.createElement('div');
+        chip.className = 'pong-effect-chip';
+        chip.style.background = POWER_UP_KINDS[e.kind].colour;
+        chip.textContent = POWER_UP_KINDS[e.kind].name + ' ' + Math.ceil(e.remaining) + 's';
+        el.appendChild(chip);
+      });
+      el.hidden = game.effects.length === 0;
+    }
+
     const MODES = {
       normal: {
         name: 'Normal',
@@ -1074,6 +1263,16 @@
         fun:  true,
         setup()    { game.barriers = BARRIER_LAYOUT.map((b) => Object.assign({}, b)); },
         teardown() { game.barriers = []; },
+      },
+      powerUps: {
+        name: 'Power-Ups',
+        fun:  true,
+        setup()    { clearPowerUps(); },
+        teardown() {
+          clearPowerUps();
+          playerPaddle.h = PADDLE_H;
+          aiPaddle.h     = PADDLE_H;
+        },
       },
     };
 
@@ -1735,6 +1934,28 @@
     }
 
     /**
+     * Ask the server for the Power-Ups pickup pacing and where the effect
+     * badge sits. Any failure keeps the defaults.
+     */
+    async function loadPowerUpConfig() {
+      try {
+        const res = await fetch('/api/config', { credentials: 'same-origin' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const cfg = data && data.powerUps;
+        if (cfg && cfg.pacing && cfg.pacing.effectDurationsS) {
+          powerUpPacing = Object.assign({}, DEFAULT_PACING, cfg.pacing);
+        }
+        if (cfg && cfg.badge && cfg.badge.placement) {
+          const el = document.getElementById('pong-effect-badge');
+          if (el) el.dataset.placement = cfg.badge.placement;
+        }
+      } catch (err) {
+        // keep the defaults
+      }
+    }
+
+    /**
      * Add the trophy button to the auth bar.
      */
     function appendLeaderboardButton(bar) {
@@ -2100,20 +2321,28 @@
       // AI paddle movement — lerp toward the ball centre (in multi-ball mode,
       // the incoming ball nearest the AI); lerp speed increases slightly each
       // rally hit (difficulty escalation).
-      const target        = pickAiTarget();
-      const ballCentreY   = target.y + BALL_SIZE / 2;
-      const aiCentreY     = aiPaddle.y + aiPaddle.h / 2;
-      const aiDiff        = ballCentreY - aiCentreY;
-      const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
-      const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
-      aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - aiPaddle.h);
+      // Freeze AI (Power-Ups) leaves the paddle where it is.
+      if (!isAiFrozen()) {
+        const target        = pickAiTarget();
+        const ballCentreY   = target.y + BALL_SIZE / 2;
+        const aiCentreY     = aiPaddle.y + aiPaddle.h / 2;
+        const aiDiff        = ballCentreY - aiCentreY;
+        const effectiveLerp = AI_LERP + rally.rallyCount * AI_LERP_RALLY_INC;
+        const aiMove = clamp(aiDiff * effectiveLerp * dt, -PADDLE_SPEED * dt, PADDLE_SPEED * dt);
+        aiPaddle.y = clamp(aiPaddle.y + aiMove, 0, CANVAS_H - aiPaddle.h);
+      }
 
-      // Move every ball. The first to leave the field scores the point and
-      // ends the play phase, so the rest are not advanced this frame.
+      // Move every ball (Slow-Mo scales their time). The first to leave the
+      // field scores the point and ends the play phase, so the rest are not
+      // advanced this frame.
+      const ballDt = dt * ballTimeScale();
       for (const b of [ball].concat(game.extraBalls)) {
         if (game.phase !== 'playing') break;
-        updateBall(b, dt);
+        updateBall(b, ballDt);
       }
+
+      // Power-Ups: pickups and timed effects (only while a point is still live).
+      if (game.mode === 'powerUps' && game.phase === 'playing') updatePowerUps(dt);
     }
 
     /**
@@ -2122,8 +2351,13 @@
      */
     function pickAiTarget() {
       const incoming = [ball].concat(game.extraBalls).filter((b) => b.vx > 0);
-      if (incoming.length === 0) return ball;
-      return incoming.reduce((best, b) => (b.x > best.x ? b : best));
+      const target = incoming.length === 0
+        ? ball
+        : incoming.reduce((best, b) => (b.x > best.x ? b : best));
+      // Ghost Ball: the AI chases a stale, offset copy of the ball's position.
+      const ghost = findEffect('ghostBall');
+      if (!ghost) return target;
+      return { x: target.x, y: target.y + ghost.offset };
     }
 
     /**
@@ -2227,6 +2461,7 @@
           game.phase      = 'scored';
           game.pauseTimer = 1.2;
         }
+        clearPowerUps();
       }
 
       // ── Ball exits right → player scores ─────────────────────────────────
@@ -2241,6 +2476,7 @@
           game.phase      = 'scored';
           game.pauseTimer = 1.2;
         }
+        clearPowerUps();
       }
     }
 
@@ -2296,6 +2532,17 @@
       game.barriers.forEach((bar) => ctx.fillRect(bar.x, bar.y, bar.w, bar.h));
       ctx.fillStyle = '#fff';
 
+      // Power-Ups pickups (the list is empty outside 'powerUps' mode)
+      game.pickups.forEach((p) => {
+        ctx.fillStyle = POWER_UP_KINDS[p.kind].colour;
+        ctx.fillRect(p.x, p.y, p.w, p.h);
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(p.x, p.y, p.w, p.h);
+      });
+      ctx.fillStyle = '#fff';
+      updateEffectBadge();
+
       // Balls (only when playing; extra balls only in 'multiBall' mode)
       if (game.phase === 'playing') {
         [ball].concat(game.extraBalls).forEach((b) => ctx.fillRect(b.x, b.y, b.w, b.h));
@@ -2349,6 +2596,7 @@
 
     // Kick off the animation loop
     wireControlPanelButton();
+    loadPowerUpConfig();
     sendMendelEvent('game_started');
     rafId = requestAnimationFrame(loop);
   </script>
