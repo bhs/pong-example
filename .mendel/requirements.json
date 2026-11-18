@@ -78,6 +78,24 @@
           "path": "lib/effect-badge-placements/beside-player-paddle.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "slow-mo",
+      "description": "Whether the Slow-Mo pickup (slows the ball to about half speed for a few seconds) is among the pickups in the Power-Ups fun mode.",
+      "env": "SLOW_MO",
+      "dispatch": "lib/slow-mo.js:slowMo",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/slow-mos/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/slow-mos/off.js"
+        }
+      ]
     }
   ]
 }

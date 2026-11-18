@@ -34,6 +34,9 @@ const topCentre = require('../lib/effect-badge-placements/top-centre');
 const besidePlayerPaddle = require('../lib/effect-badge-placements/beside-player-paddle');
 const { pickupPacing } = require('../lib/pickup-pacing');
 const originalFourSet = require('../lib/power-up-sets/original-four');
+const slowMoOn = require('../lib/slow-mos/on');
+const slowMoOff = require('../lib/slow-mos/off');
+const { slowMo } = require('../lib/slow-mo');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -614,6 +617,39 @@ describe('original-four power-up set option', () => {
   });
 });
 
+describe('slow-mo options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on keeps Slow-Mo in the set and its effect slows the ball, then restores it', () => {
+    const set = slowMoOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    const game = { pickups: [] };
+    expect(spawnPickup(game, () => 0, undefined, set).kind).toBe('slowMo');
+    const state = newState();
+    applyEffect(state, 'slowMo');
+    expect(ballTimeScale(state.game)).toBe(SLOW_MO_FACTOR);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.slowMo + 0.1);
+    expect(ballTimeScale(state.game)).toBe(1);
+  });
+
+  test('off leaves Slow-Mo out and the other pickups in', () => {
+    const set = slowMoOff.applyTo(full());
+    expect(set.kinds).toEqual(['ghostBall', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('slowMo');
+    }
+    expect(full().kinds).toContain('slowMo');   // the input is not mutated
+  });
+
+  test('the dispatch picks the option from SLOW_MO, defaulting to on', () => {
+    expect(slowMo(full(), {})).toEqual(slowMoOn.applyTo(full()));
+    expect(slowMo(full(), { SLOW_MO: 'on' })).toEqual(slowMoOn.applyTo(full()));
+    expect(slowMo(full(), { SLOW_MO: 'off' })).toEqual(slowMoOff.applyTo(full()));
+    expect(slowMo(full(), { SLOW_MO: 'bogus' })).toEqual(slowMoOn.applyTo(full()));
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -627,7 +663,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: originalFourSet.clientConfig() });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: slowMo(originalFourSet.clientConfig()) });
   });
 });
 
