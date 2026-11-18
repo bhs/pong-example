@@ -72,6 +72,10 @@
         {
           "value": "top-centre",
           "path": "lib/effect-badge-placements/top-centre.js"
+        },
+        {
+          "value": "beside-player-paddle",
+          "path": "lib/effect-badge-placements/beside-player-paddle.js"
         }
       ]
     }

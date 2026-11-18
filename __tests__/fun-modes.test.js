@@ -31,6 +31,7 @@ const steadyPacing = require('../lib/pickup-pacings/steady');
 const rareAndLongPacing = require('../lib/pickup-pacings/rare-and-long');
 const bottomRightCorner = require('../lib/effect-badge-placements/bottom-right-corner');
 const topCentre = require('../lib/effect-badge-placements/top-centre');
+const besidePlayerPaddle = require('../lib/effect-badge-placements/beside-player-paddle');
 const { pickupPacing } = require('../lib/pickup-pacing');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
@@ -519,6 +520,63 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
     expect(topCentre.clientConfig()).toEqual({ placement: 'top-centre' });
   });
 
+  describe('beside-player-paddle placement', () => {
+    const kinds = { slowMo: { name: 'Slow-Mo', colour: '#4fc3f7' }, freezeAi: { name: 'Freeze AI', colour: '#fff' } };
+    const durations = { slowMo: 5, freezeAi: 2 };
+    const paddle = { x: 30, y: 100, w: 12, h: 80 };
+
+    test('its config names the placement', () => {
+      expect(besidePlayerPaddle.clientConfig()).toEqual({ placement: 'beside-player-paddle' });
+    });
+
+    test('chips sit to the right of the paddle, stacked from its top, with the seconds left', () => {
+      const chips = besidePlayerPaddle.layoutChips(
+        [{ kind: 'slowMo', remaining: 2.5 }, { kind: 'freezeAi', remaining: 2 }], paddle, kinds, durations, 600);
+      expect(chips).toHaveLength(2);
+      expect(chips[0].x).toBeGreaterThan(paddle.x + paddle.w);
+      expect(chips[0].y).toBe(100);
+      expect(chips[1].y).toBe(100 + besidePlayerPaddle.CHIP_H + besidePlayerPaddle.CHIP_GAP);
+      expect(chips[0].label).toBe('Slow-Mo 3s');
+      expect(chips[0].colour).toBe('#4fc3f7');
+    });
+
+    test('the chips follow the paddle and stay on the canvas', () => {
+      const effects = [{ kind: 'slowMo', remaining: 1 }, { kind: 'freezeAi', remaining: 1 }];
+      const moved = besidePlayerPaddle.layoutChips(effects, { ...paddle, y: 300 }, kinds, durations, 600);
+      expect(moved[0].y).toBe(300);
+      const low = besidePlayerPaddle.layoutChips(effects, { ...paddle, y: 590 }, kinds, durations, 600);
+      const last = low[low.length - 1];
+      expect(last.y + last.h).toBeLessThanOrEqual(600);
+    });
+
+    test('the countdown bar shrinks with the time left and is clamped to 0..1', () => {
+      const frac = (remaining) =>
+        besidePlayerPaddle.layoutChips([{ kind: 'slowMo', remaining }], paddle, kinds, durations, 600)[0].fraction;
+      expect(frac(5)).toBe(1);
+      expect(frac(2.5)).toBeCloseTo(0.5);
+      expect(frac(0)).toBe(0);
+      expect(frac(9)).toBe(1);
+    });
+
+    test('no effects means no chips and nothing drawn', () => {
+      const ctx = { save: jest.fn(), restore: jest.fn() };
+      expect(besidePlayerPaddle.layoutChips([], paddle, kinds, durations, 600)).toEqual([]);
+      expect(besidePlayerPaddle.drawChips(ctx, [], paddle, kinds, durations, 600)).toEqual([]);
+      expect(ctx.save).not.toHaveBeenCalled();
+    });
+
+    test('drawChips paints a chip and a bar per effect and restores the context', () => {
+      const ctx = {
+        save: jest.fn(), restore: jest.fn(), setLineDash: jest.fn(),
+        fillRect: jest.fn(), fillText: jest.fn(),
+      };
+      besidePlayerPaddle.drawChips(ctx, [{ kind: 'slowMo', remaining: 2 }], paddle, kinds, durations, 600);
+      expect(ctx.fillRect).toHaveBeenCalledTimes(3);
+      expect(ctx.fillText).toHaveBeenCalledWith('Slow-Mo 2s', expect.any(Number), expect.any(Number));
+      expect(ctx.restore).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test('the dispatchers return a well-formed option config', () => {
     expect(pickupPacing().spawnIntervalS).toBeGreaterThan(0);
     expect(Object.keys(pickupPacing().effectDurationsS).sort()).toEqual([...POWER_UP_KEYS].sort());
@@ -585,6 +643,8 @@ describe('index.html wiring', () => {
     expect(html).toMatch(/<div id="pong-effect-badge"[^>]*\bhidden\b/);
     expect(html).toMatch(/#pong-effect-badge \{[^}]*right:[^}]*bottom:/);
     expect(html).toMatch(/#pong-effect-badge\[data-placement="top-centre"\] \{[^}]*top:[^}]*flex-direction: row/);
+    expect(html).toMatch(/#pong-effect-badge\[data-placement="beside-player-paddle"\] \{ display: none; \}/);
+    expect(html).toContain('/lib/effect-badge-placements/beside-player-paddle.js');
     expect(html).toMatch(/powerUps: \{\s*name: 'Power-Ups'/);
     expect((html.match(/clearPowerUps\(\);/g) || []).length).toBeGreaterThanOrEqual(4);
     for (const key of POWER_UP_KEYS) expect(html).toContain(`${key}:`);

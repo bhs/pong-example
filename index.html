@@ -374,6 +374,10 @@
       justify-content: center;
       white-space: nowrap;
     }
+    /* 'beside-player-paddle' placement: the chips are drawn on the canvas next
+       to the player's paddle (lib/effect-badge-placements/beside-player-paddle.js),
+       so the DOM badge stays out of the way. */
+    #pong-effect-badge[data-placement="beside-player-paddle"] { display: none; }
     .pong-effect-chip {
       padding: calc(3 * var(--u)) calc(10 * var(--u));
       border-radius: calc(10 * var(--u));
@@ -407,6 +411,7 @@
   </div>
 
   <script src="/engagement-client.js"></script>
+  <script src="/lib/effect-badge-placements/beside-player-paddle.js"></script>
   <script>
     'use strict';
 
@@ -2557,6 +2562,14 @@
       });
       ctx.fillStyle = '#fff';
       updateEffectBadge();
+
+      // 'beside-player-paddle' badge placement: chips drawn next to the paddle
+      const badgeEl = document.getElementById('pong-effect-badge');
+      if (badgeEl && badgeEl.dataset.placement === 'beside-player-paddle' && window.PongBesidePaddleBadge) {
+        window.PongBesidePaddleBadge.drawChips(
+          ctx, game.effects, playerPaddle, POWER_UP_KINDS, powerUpPacing.effectDurationsS, CANVAS_H);
+        ctx.fillStyle = '#fff';
+      }
 
       // Balls (only when playing; extra balls only in 'multiBall' mode)
       if (game.phase === 'playing') {
