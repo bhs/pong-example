@@ -3,6 +3,7 @@
 const steadyPacing = require('./lib/pickup-pacings/steady');
 const originalFourSet = require('./lib/power-up-sets/original-four');
 const ghostBallOn = require('./lib/ghost-balls/on');
+const multiBallOn = require('./lib/multi-balls/on');
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const CANVAS_W          = 800;
@@ -27,12 +28,13 @@ const SLOW_MO_FACTOR    = 0.5;    // ball time scale while Slow-Mo is active
 const GHOST_NOISE       = 140;    // px, max offset of the AI's ghost target
 const GHOST_REROLL_S    = 0.6;    // seconds the AI's ghost target stays stale before re-rolling
 
-// The 'powerUps' mode's four timed pickups. `colour` is the pickup and chip colour.
+// The 'powerUps' mode's timed pickups (multiBall only spawns when the multi-ball Trait is on). `colour` is the pickup and chip colour.
 const POWER_UP_KINDS = {
   slowMo:    { name: 'Slow-Mo',     colour: '#4fc3f7' },
   ghostBall: { name: 'Ghost Ball',  colour: '#ce93d8' },
   bigPaddle: { name: 'Big Paddle',  colour: '#81c784' },
   freezeAi:  { name: 'Freeze AI',   colour: '#ffffff' },
+  multiBall: { name: 'Multi-ball',  colour: '#ffb74d' },
 };
 const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
 
@@ -221,8 +223,14 @@ function collectPickup(game, ball) {
   return i === -1 ? null : pickups.splice(i, 1)[0];
 }
 
-/** Undo one effect's side effect on the paddles (only Big Paddle has one). */
+/**
+ * Undo one effect's side effect: Big Paddle restores the paddle height,
+ * Multi-ball removes the extra ball it added (if still in play).
+ */
 function endEffect(state, effect) {
+  if (effect.kind === 'multiBall') {
+    state.game.extraBalls = (state.game.extraBalls || []).filter((b) => b !== effect.ball);
+  }
   if (effect.kind === 'bigPaddle') {
     const paddle = state.playerPaddle;
     const centre = paddle.y + paddle.h / 2;
@@ -233,9 +241,11 @@ function endEffect(state, effect) {
 
 /**
  * Start (or refresh) the effect of a collected pickup of `kind`. Returns the
- * effect entry, or null for an unknown kind.
+ * effect entry, or null for an unknown kind. `ball` is the ball that hit the
+ * pickup; Multi-ball spawns its extra ball from it (from a fresh serve ball
+ * when none is given).
  */
-function applyEffect(state, kind, rng = Math.random, pacing = DEFAULT_PACING) {
+function applyEffect(state, kind, rng = Math.random, pacing = DEFAULT_PACING, ball = null) {
   if (!POWER_UP_KINDS[kind]) return null;
   const game = state.game;
   if (!game.effects) game.effects = [];
@@ -256,9 +266,23 @@ function applyEffect(state, kind, rng = Math.random, pacing = DEFAULT_PACING) {
   } else if (kind === 'ghostBall') {
     effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
     effect.rerollIn = GHOST_REROLL_S;
+  } else if (kind === 'multiBall') {
+    // The extra ball joins game.extraBalls for the effect's few seconds.
+    effect.ball = multiBallOn.makeBonusBall(ball || makeBall(1));
+    if (!game.extraBalls) game.extraBalls = [];
+    game.extraBalls.push(effect.ball);
   }
   game.effects.push(effect);
   return effect;
+}
+
+/**
+ * An extra ball from a Multi-ball pickup left the field: remove it and end its
+ * effect without scoring, so the point goes on with the remaining balls.
+ */
+function resolveBonusBall(game, ball) {
+  game.extraBalls = (game.extraBalls || []).filter((b) => b !== ball);
+  game.effects = (game.effects || []).filter((e) => e.ball !== ball);
 }
 
 /**
@@ -317,7 +341,7 @@ function updatePowerUps(state, balls, dt, rng = Math.random, pacing = DEFAULT_PA
 
   for (const ball of balls) {
     const pickup = collectPickup(game, ball);
-    if (pickup) applyEffect(state, pickup.kind, rng, pacing);
+    if (pickup) applyEffect(state, pickup.kind, rng, pacing, ball);
   }
 }
 
@@ -647,6 +671,12 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     }
   }
 
+  // ── Extra ball from a Multi-ball pickup leaves: resolved, no score ────────
+  if (ball.bonus && (ball.x + BALL_SIZE < 0 || ball.x > CANVAS_W)) {
+    resolveBonusBall(game, ball);
+    return;
+  }
+
   // ── Ball exits left → AI scores ───────────────────────────────────────────
   if (ball.x + BALL_SIZE < 0) {
     aiPaddle.score += 1;
@@ -740,7 +770,7 @@ module.exports = {
   serveBalls,
 
   // Power-Ups
-  spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps,
+  spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps, resolveBonusBall,
   updatePowerUps, ballTimeScale, ballAlpha, isAiFrozen,
 
   // Factory functions

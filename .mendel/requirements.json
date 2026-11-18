@@ -150,6 +150,24 @@
           "path": "lib/freeze-ais/off.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "multi-ball",
+      "description": "Whether the Multi-ball pickup (spawns an extra ball for a few seconds; the point continues until all balls are resolved) is among the pickups in the Power-Ups fun mode.",
+      "env": "MULTI_BALL",
+      "dispatch": "lib/multi-ball.js:multiBall",
+      "default": "off",
+      "options": [
+        {
+          "value": "off",
+          "path": "lib/multi-balls/off.js"
+        },
+        {
+          "value": "on",
+          "path": "lib/multi-balls/on.js"
+        }
+      ]
     }
   ]
 }

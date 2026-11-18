@@ -413,6 +413,7 @@
   <script src="/engagement-client.js"></script>
   <script src="/lib/effect-badge-placements/beside-player-paddle.js"></script>
   <script src="/lib/ghost-balls/on.js"></script>
+  <script src="/lib/multi-balls/on.js"></script>
   <script>
     'use strict';
 
@@ -449,6 +450,7 @@
       ghostBall: { name: 'Ghost Ball', colour: '#ce93d8' },
       bigPaddle: { name: 'Big Paddle', colour: '#81c784' },
       freezeAi:  { name: 'Freeze AI',  colour: '#ffffff' },
+      multiBall: { name: 'Multi-ball', colour: '#ffb74d' },
     };
     const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
 
@@ -458,7 +460,7 @@
       pacing: 'steady',
       spawnIntervalS: 6,
       pickupLifetimeS: 8,
-      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2 },
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5 },
     };
     let powerUpPacing = DEFAULT_PACING;
 
@@ -1182,6 +1184,9 @@
     }
 
     function endEffect(effect) {
+      if (effect.kind === 'multiBall') {
+        game.extraBalls = game.extraBalls.filter((b) => b !== effect.ball);
+      }
       if (effect.kind === 'bigPaddle') {
         const centre = playerPaddle.y + playerPaddle.h / 2;
         playerPaddle.h = PADDLE_H;
@@ -1189,8 +1194,9 @@
       }
     }
 
-    function applyEffect(kind, rng = Math.random) {
+    function applyEffect(kind, rng = Math.random, hitBall = null) {
       if (!POWER_UP_KINDS[kind]) return null;
+      if (kind === 'multiBall' && !window.PongMultiBallOn) return null;
       const duration = powerUpPacing.effectDurationsS[kind];
       const existing = findEffect(kind);
       if (existing) {
@@ -1205,9 +1211,22 @@
       } else if (kind === 'ghostBall') {
         effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
         effect.rerollIn = GHOST_REROLL_S;
+      } else if (kind === 'multiBall') {
+        // The extra ball joins game.extraBalls for the effect's few seconds.
+        effect.ball = window.PongMultiBallOn.makeBonusBall(hitBall || ball);
+        game.extraBalls.push(effect.ball);
       }
       game.effects.push(effect);
       return effect;
+    }
+
+    /**
+     * An extra ball from a Multi-ball pickup left the field: remove it and end
+     * its effect without scoring, so the point goes on with the other balls.
+     */
+    function resolveBonusBall(b) {
+      game.extraBalls = game.extraBalls.filter((x) => x !== b);
+      game.effects = game.effects.filter((e) => e.ball !== b);
     }
 
     /** Advance every effect; expired ones are removed and undone. */
@@ -1251,7 +1270,7 @@
       if (game.pickupTimer <= 0 && spawnPickup()) game.pickupTimer = powerUpPacing.spawnIntervalS;
       for (const b of [ball].concat(game.extraBalls)) {
         const pickup = collectPickup(b);
-        if (pickup) applyEffect(pickup.kind);
+        if (pickup) applyEffect(pickup.kind, Math.random, b);
       }
     }
 
@@ -2491,6 +2510,12 @@
         syncBallVelocity(b);
         rally.rallyCount += 1;
         if (rally.rallyCount > rally.maxRally) rally.maxRally = rally.rallyCount;
+      }
+
+      // ── Extra ball from a Multi-ball pickup leaves: resolved, no score ────
+      if (b.bonus && (b.x + BALL_SIZE < 0 || b.x > CANVAS_W)) {
+        resolveBonusBall(b);
+        return;
       }
 
       // ── Ball exits left → AI scores ───────────────────────────────────────

@@ -46,6 +46,9 @@ const { bigPaddleBurst } = require('../lib/big-paddle-burst');
 const freezeAiOn = require('../lib/freeze-ais/on');
 const freezeAiOff = require('../lib/freeze-ais/off');
 const { freezeAi } = require('../lib/freeze-ai');
+const multiBallOn = require('../lib/multi-balls/on');
+const multiBallOff = require('../lib/multi-balls/off');
+const { multiBall } = require('../lib/multi-ball');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -286,7 +289,7 @@ describe('power-ups mode', () => {
   test('is registered as a named fun mode with the four pickups', () => {
     expect(MODES.powerUps.name).toBe('Power-Ups');
     expect(MODES.powerUps.fun).toBe(true);
-    expect(POWER_UP_KEYS).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    expect(POWER_UP_KEYS).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi', 'multiBall']);
     expect(splashThenBadge('powerUps')).toEqual({
       splashText: 'Power-Ups', splashMs: 1500, badgeText: 'Power-Ups',
     });
@@ -301,9 +304,9 @@ describe('power-ups mode', () => {
   });
 
   test('spawnPickup picks each kind from the rng and keeps at most one on the field', () => {
-    POWER_UP_KEYS.forEach((kind, i) => {
+    DEFAULT_POWER_UP_SET.kinds.forEach((kind, i) => {
       const { game } = powerUpState();
-      const p = spawnPickup(game, () => (i + 0.5) / POWER_UP_KEYS.length);
+      const p = spawnPickup(game, () => (i + 0.5) / DEFAULT_POWER_UP_SET.kinds.length);
       expect(p.kind).toBe(kind);
       expect(p.ttl).toBe(DEFAULT_PACING.pickupLifetimeS);
       expect(p.x).toBeGreaterThanOrEqual(200);
@@ -499,7 +502,7 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
       pacing: 'steady',
       spawnIntervalS: 6,
       pickupLifetimeS: 8,
-      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2 },
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5 },
     });
   });
 
@@ -509,7 +512,7 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
       pacing: 'rare-and-long',
       spawnIntervalS: 10,
       pickupLifetimeS: 8,
-      effectDurationsS: { slowMo: 7.5, ghostBall: 7.5, bigPaddle: 7.5, freezeAi: 3 },
+      effectDurationsS: { slowMo: 7.5, ghostBall: 7.5, bigPaddle: 7.5, freezeAi: 3, multiBall: 7.5 },
     });
     for (const kind of POWER_UP_KEYS) {
       expect(cfg.effectDurationsS[kind]).toBeCloseTo(steadyPacing.EFFECT_DURATIONS_S[kind] * 1.5);
@@ -612,7 +615,7 @@ describe('original-four power-up set option', () => {
       const game = { pickups: [] };
       seen.add(spawnPickup(game, () => r).kind);
     }
-    expect([...seen].sort()).toEqual([...POWER_UP_KEYS].sort());
+    expect([...seen].sort()).toEqual([...DEFAULT_POWER_UP_SET.kinds].sort());
   });
 
   test('a set of one kind only spawns that kind', () => {
@@ -779,6 +782,92 @@ describe('freeze-ai options', () => {
   });
 });
 
+describe('multi-ball options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on adds Multi-ball to the set once, without mutating the input', () => {
+    const set = multiBallOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi', 'multiBall']);
+    expect(multiBallOn.applyTo(set).kinds).toEqual(set.kinds);
+    expect(full().kinds).not.toContain('multiBall');
+    expect(spawnPickup({ pickups: [] }, () => 0.99, undefined, set).kind).toBe('multiBall');
+  });
+
+  test('on: hitting it spawns an extra ball for a few seconds, then removes it', () => {
+    const state = newState();
+    state.game.mode = 'powerUps';
+    const primary = ballAt(400, 300, 300, 0);
+    const effect = applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, primary);
+    expect(effect.remaining).toBe(DEFAULT_PACING.effectDurationsS.multiBall);
+    expect(state.game.extraBalls).toHaveLength(1);
+    const extra = state.game.extraBalls[0];
+    expect(extra.bonus).toBe(true);
+    expect(extra.x).toBe(primary.x);
+    expect(extra.angle).toBeCloseTo(primary.angle + multiBallOn.BONUS_ANGLE);
+    expect(extra.vy).not.toBe(0);
+    // re-collecting refreshes the timer without adding another ball
+    tickEffects(state, 1);
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, primary);
+    expect(state.game.extraBalls).toHaveLength(1);
+    expect(state.game.effects[0].remaining).toBe(DEFAULT_PACING.effectDurationsS.multiBall);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.multiBall + 0.1);
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('on: the extra ball leaving the field scores nothing and the point continues', () => {
+    const state = newState();
+    state.game.phase = 'playing';
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, ballAt(400, 300, 300, 0));
+    const extra = state.game.extraBalls[0];
+    extra.x = CANVAS_W + 5; extra.vx = 100; extra.vy = 0;
+    const primary = ballAt(400, 300, 100, 0);
+    updateBalls(primary, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('playing');
+    expect(state.playerPaddle.score).toBe(0);
+    expect(state.aiPaddle.score).toBe(0);
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('on: the point ends when the primary ball leaves, clearing the extra ball', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    state.game.phase = 'playing';
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, ballAt(400, 300, 300, 0));
+    const primary = ballAt(CANVAS_W + 5, 300, 100, 0);
+    updateBalls(primary, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('scored');
+    expect(state.playerPaddle.score).toBe(1);
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('on: a mode change removes the extra ball', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, ballAt(400, 300, 300, 0));
+    applyMode(state, 'normal');
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('off leaves Multi-ball out and the other pickups in', () => {
+    const withIt = multiBallOn.applyTo(full());
+    const set = multiBallOff.applyTo(withIt);
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      expect(spawnPickup({ pickups: [] }, () => r, undefined, set).kind).not.toBe('multiBall');
+    }
+    expect(withIt.kinds).toContain('multiBall');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (off) when nothing chooses one', () => {
+    expect(multiBall(full(), {})).toEqual(multiBallOff.applyTo(full()));
+    expect(multiBall(full(), {}).kinds).not.toContain('multiBall');
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -792,7 +881,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig())))) });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))))) });
   });
 });
 
