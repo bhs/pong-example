@@ -90,6 +90,10 @@
         {
           "value": "original-four",
           "path": "lib/power-up-sets/original-four.js"
+        },
+        {
+          "value": "just-two",
+          "path": "lib/power-up-sets/just-two.js"
         }
       ]
     }
