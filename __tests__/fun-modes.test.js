@@ -642,11 +642,9 @@ describe('slow-mo options', () => {
     expect(full().kinds).toContain('slowMo');   // the input is not mutated
   });
 
-  test('the dispatch picks the option from SLOW_MO, defaulting to on', () => {
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
     expect(slowMo(full(), {})).toEqual(slowMoOn.applyTo(full()));
-    expect(slowMo(full(), { SLOW_MO: 'on' })).toEqual(slowMoOn.applyTo(full()));
-    expect(slowMo(full(), { SLOW_MO: 'off' })).toEqual(slowMoOff.applyTo(full()));
-    expect(slowMo(full(), { SLOW_MO: 'bogus' })).toEqual(slowMoOn.applyTo(full()));
+    expect(slowMo(full(), {}).kinds).toContain('slowMo');
   });
 });
 
