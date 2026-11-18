@@ -50,6 +50,10 @@
         {
           "value": "steady",
           "path": "lib/pickup-pacings/steady.js"
+        },
+        {
+          "value": "rare-and-long",
+          "path": "lib/pickup-pacings/rare-and-long.js"
         }
       ]
     },

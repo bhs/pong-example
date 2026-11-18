@@ -28,6 +28,7 @@ const { createFakePrisma } = require('./helpers/fakePrisma');
 const controlPanelButton = require('../lib/fun-button-placements/control-panel-button');
 const splashThenBadgeOption = require('../lib/mode-announcements/splash-then-badge');
 const steadyPacing = require('../lib/pickup-pacings/steady');
+const rareAndLongPacing = require('../lib/pickup-pacings/rare-and-long');
 const bottomRightCorner = require('../lib/effect-badge-placements/bottom-right-corner');
 const { pickupPacing } = require('../lib/pickup-pacing');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
@@ -485,6 +486,28 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
       pickupLifetimeS: 8,
       effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2 },
     });
+  });
+
+  test('rare-and-long pacing: one pickup per 10s, effects 1.5x as long as steady', () => {
+    const cfg = rareAndLongPacing.clientConfig();
+    expect(cfg).toEqual({
+      pacing: 'rare-and-long',
+      spawnIntervalS: 10,
+      pickupLifetimeS: 8,
+      effectDurationsS: { slowMo: 7.5, ghostBall: 7.5, bigPaddle: 7.5, freezeAi: 3 },
+    });
+    for (const kind of POWER_UP_KEYS) {
+      expect(cfg.effectDurationsS[kind]).toBeCloseTo(steadyPacing.EFFECT_DURATIONS_S[kind] * 1.5);
+    }
+  });
+
+  test('rare-and-long pacing drives spawn timing and effect length in game-logic', () => {
+    const state = newState();
+    const pacing = rareAndLongPacing.clientConfig();
+    applyEffect(state, 'slowMo', Math.random, pacing);
+    expect(state.game.effects[0].remaining).toBe(7.5);
+    clearPowerUps(state, pacing);
+    expect(state.game.pickupTimer).toBe(10);
   });
 
   test('bottom-right-corner placement', () => {
