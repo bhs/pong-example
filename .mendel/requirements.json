@@ -168,6 +168,24 @@
           "path": "lib/multi-balls/on.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "shrink-opponent-paddle",
+      "description": "Whether the Shrink opponent paddle pickup (shrinks the AI paddle by about a third for a few seconds) is among the pickups in the Power-Ups fun mode.",
+      "env": "SHRINK_OPPONENT_PADDLE",
+      "dispatch": "lib/shrink-opponent-paddle.js:shrinkOpponentPaddle",
+      "default": "off",
+      "options": [
+        {
+          "value": "off",
+          "path": "lib/shrink-opponent-paddles/off.js"
+        },
+        {
+          "value": "on",
+          "path": "lib/shrink-opponent-paddles/on.js"
+        }
+      ]
     }
   ]
 }

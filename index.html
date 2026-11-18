@@ -414,6 +414,7 @@
   <script src="/lib/effect-badge-placements/beside-player-paddle.js"></script>
   <script src="/lib/ghost-balls/on.js"></script>
   <script src="/lib/multi-balls/on.js"></script>
+  <script src="/lib/shrink-opponent-paddles/on.js"></script>
   <script>
     'use strict';
 
@@ -451,6 +452,7 @@
       bigPaddle: { name: 'Big Paddle', colour: '#81c784' },
       freezeAi:  { name: 'Freeze AI',  colour: '#ffffff' },
       multiBall: { name: 'Multi-ball', colour: '#ffb74d' },
+      shrinkOpponent: { name: 'Shrink Opponent', colour: '#ef5350' },
     };
     const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
 
@@ -460,7 +462,7 @@
       pacing: 'steady',
       spawnIntervalS: 6,
       pickupLifetimeS: 8,
-      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5 },
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5, shrinkOpponent: 5 },
     };
     let powerUpPacing = DEFAULT_PACING;
 
@@ -1192,11 +1194,17 @@
         playerPaddle.h = PADDLE_H;
         playerPaddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
       }
+      if (effect.kind === 'shrinkOpponent') {
+        const centre = aiPaddle.y + aiPaddle.h / 2;
+        aiPaddle.h = PADDLE_H;
+        aiPaddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
+      }
     }
 
     function applyEffect(kind, rng = Math.random, hitBall = null) {
       if (!POWER_UP_KINDS[kind]) return null;
       if (kind === 'multiBall' && !window.PongMultiBallOn) return null;
+      if (kind === 'shrinkOpponent' && !window.PongShrinkOpponentPaddleOn) return null;
       const duration = powerUpPacing.effectDurationsS[kind];
       const existing = findEffect(kind);
       if (existing) {
@@ -1208,6 +1216,10 @@
         const centre = playerPaddle.y + playerPaddle.h / 2;
         playerPaddle.h = Math.round(PADDLE_H * BIG_PADDLE_FACTOR);
         playerPaddle.y = clamp(centre - playerPaddle.h / 2, 0, CANVAS_H - playerPaddle.h);
+      } else if (kind === 'shrinkOpponent') {
+        const centre = aiPaddle.y + aiPaddle.h / 2;
+        aiPaddle.h = window.PongShrinkOpponentPaddleOn.shrunkHeight(PADDLE_H);
+        aiPaddle.y = clamp(centre - aiPaddle.h / 2, 0, CANVAS_H - aiPaddle.h);
       } else if (kind === 'ghostBall') {
         effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
         effect.rerollIn = GHOST_REROLL_S;

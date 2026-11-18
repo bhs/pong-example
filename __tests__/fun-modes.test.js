@@ -49,6 +49,9 @@ const { freezeAi } = require('../lib/freeze-ai');
 const multiBallOn = require('../lib/multi-balls/on');
 const multiBallOff = require('../lib/multi-balls/off');
 const { multiBall } = require('../lib/multi-ball');
+const shrinkOpponentPaddleOn = require('../lib/shrink-opponent-paddles/on');
+const shrinkOpponentPaddleOff = require('../lib/shrink-opponent-paddles/off');
+const { shrinkOpponentPaddle } = require('../lib/shrink-opponent-paddle');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -289,7 +292,7 @@ describe('power-ups mode', () => {
   test('is registered as a named fun mode with the four pickups', () => {
     expect(MODES.powerUps.name).toBe('Power-Ups');
     expect(MODES.powerUps.fun).toBe(true);
-    expect(POWER_UP_KEYS).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi', 'multiBall']);
+    expect(POWER_UP_KEYS).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi', 'multiBall', 'shrinkOpponent']);
     expect(splashThenBadge('powerUps')).toEqual({
       splashText: 'Power-Ups', splashMs: 1500, badgeText: 'Power-Ups',
     });
@@ -502,7 +505,7 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
       pacing: 'steady',
       spawnIntervalS: 6,
       pickupLifetimeS: 8,
-      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5 },
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5, shrinkOpponent: 5 },
     });
   });
 
@@ -512,7 +515,7 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
       pacing: 'rare-and-long',
       spawnIntervalS: 10,
       pickupLifetimeS: 8,
-      effectDurationsS: { slowMo: 7.5, ghostBall: 7.5, bigPaddle: 7.5, freezeAi: 3, multiBall: 7.5 },
+      effectDurationsS: { slowMo: 7.5, ghostBall: 7.5, bigPaddle: 7.5, freezeAi: 3, multiBall: 7.5, shrinkOpponent: 7.5 },
     });
     for (const kind of POWER_UP_KEYS) {
       expect(cfg.effectDurationsS[kind]).toBeCloseTo(steadyPacing.EFFECT_DURATIONS_S[kind] * 1.5);
@@ -868,6 +871,75 @@ describe('multi-ball options', () => {
   });
 });
 
+describe('shrink-opponent-paddle options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on adds Shrink Opponent to the set once, without mutating the input', () => {
+    const set = shrinkOpponentPaddleOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi', 'shrinkOpponent']);
+    expect(shrinkOpponentPaddleOn.applyTo(set).kinds).toEqual(set.kinds);
+    expect(full().kinds).not.toContain('shrinkOpponent');
+    expect(spawnPickup({ pickups: [] }, () => 0.99, undefined, set).kind).toBe('shrinkOpponent');
+  });
+
+  test('on: hitting it shrinks the AI paddle by about a third around its centre, then restores it', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    state.aiPaddle.y = 200;
+    const centre = state.aiPaddle.y + PADDLE_H / 2;
+    const effect = applyEffect(state, 'shrinkOpponent', Math.random, DEFAULT_PACING);
+    expect(effect.remaining).toBe(DEFAULT_PACING.effectDurationsS.shrinkOpponent);
+    expect(state.aiPaddle.h).toBe(shrinkOpponentPaddleOn.shrunkHeight(PADDLE_H));
+    expect(state.aiPaddle.h / PADDLE_H).toBeCloseTo(2 / 3, 1);
+    expect(state.aiPaddle.y + state.aiPaddle.h / 2).toBeCloseTo(centre);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+    // re-collecting refreshes the timer without shrinking further
+    tickEffects(state, 1);
+    applyEffect(state, 'shrinkOpponent', Math.random, DEFAULT_PACING);
+    expect(state.aiPaddle.h).toBe(shrinkOpponentPaddleOn.shrunkHeight(PADDLE_H));
+    expect(state.game.effects[0].remaining).toBe(DEFAULT_PACING.effectDurationsS.shrinkOpponent);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.shrinkOpponent + 0.1);
+    expect(state.aiPaddle.h).toBe(PADDLE_H);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('on: a shrunk AI paddle is a smaller target for the ball', () => {
+    const state = newState();
+    applyEffect(state, 'shrinkOpponent', Math.random, DEFAULT_PACING);
+    const ai = state.aiPaddle;
+    const ball = ballAt(ai.x - BALL_SIZE, ai.y + ai.h + 4, 300, 0);
+    updateBalls(ball, state.playerPaddle, ai, state.game, 1 / 60, makeRally());
+    expect(ball.vx).toBeGreaterThan(0);   // sails past the shrunk paddle instead of bouncing
+  });
+
+  test('on: point end and a mode change restore the AI paddle', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    applyEffect(state, 'shrinkOpponent', Math.random, DEFAULT_PACING);
+    clearPowerUps(state);
+    expect(state.aiPaddle.h).toBe(PADDLE_H);
+    applyEffect(state, 'shrinkOpponent', Math.random, DEFAULT_PACING);
+    applyMode(state, 'normal');
+    expect(state.aiPaddle.h).toBe(PADDLE_H);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('off leaves Shrink Opponent out and the other pickups in', () => {
+    const withIt = shrinkOpponentPaddleOn.applyTo(full());
+    const set = shrinkOpponentPaddleOff.applyTo(withIt);
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      expect(spawnPickup({ pickups: [] }, () => r, undefined, set).kind).not.toBe('shrinkOpponent');
+    }
+    expect(withIt.kinds).toContain('shrinkOpponent');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (off) when nothing chooses one', () => {
+    expect(shrinkOpponentPaddle(full(), {})).toEqual(shrinkOpponentPaddleOff.applyTo(full()));
+    expect(shrinkOpponentPaddle(full(), {}).kinds).not.toContain('shrinkOpponent');
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -881,7 +953,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))))) });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: shrinkOpponentPaddle(multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig())))))) });
   });
 });
 
