@@ -132,6 +132,24 @@
           "path": "lib/big-paddle-bursts/off.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "freeze-ai",
+      "description": "Whether the Freeze AI pickup (stops the AI paddle from moving for a short time) is among the pickups in the Power-Ups fun mode.",
+      "env": "FREEZE_AI",
+      "dispatch": "lib/freeze-ai.js:freezeAi",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/freeze-ais/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/freeze-ais/off.js"
+        }
+      ]
     }
   ]
 }

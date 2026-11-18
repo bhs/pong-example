@@ -43,6 +43,9 @@ const { ghostBall } = require('../lib/ghost-ball');
 const bigPaddleBurstOn = require('../lib/big-paddle-bursts/on');
 const bigPaddleBurstOff = require('../lib/big-paddle-bursts/off');
 const { bigPaddleBurst } = require('../lib/big-paddle-burst');
+const freezeAiOn = require('../lib/freeze-ais/on');
+const freezeAiOff = require('../lib/freeze-ais/off');
+const { freezeAi } = require('../lib/freeze-ai');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -742,6 +745,40 @@ describe('big-paddle-burst options', () => {
   });
 });
 
+describe('freeze-ai options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on keeps Freeze AI in the set', () => {
+    const set = freezeAiOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    const game = { pickups: [] };
+    expect(spawnPickup(game, () => 0.99, undefined, set).kind).toBe('freezeAi');
+  });
+
+  test('on stops the AI paddle while the effect runs, then lets it move again', () => {
+    const state = newState();
+    applyEffect(state, 'freezeAi');
+    expect(isAiFrozen(state.game)).toBe(true);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.freezeAi + 0.1);
+    expect(isAiFrozen(state.game)).toBe(false);
+  });
+
+  test('off leaves Freeze AI out and the other pickups in', () => {
+    const set = freezeAiOff.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('freezeAi');
+    }
+    expect(full().kinds).toContain('freezeAi');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(freezeAi(full(), {})).toEqual(freezeAiOn.applyTo(full()));
+    expect(freezeAi(full(), {}).kinds).toContain('freezeAi');
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -755,7 +792,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))) });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig())))) });
   });
 });
 

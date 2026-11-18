@@ -134,6 +134,7 @@ const originalFourSet = require('./lib/power-up-sets/original-four');
 const { slowMo } = require('./lib/slow-mo');
 const { ghostBall } = require('./lib/ghost-ball');
 const { bigPaddleBurst } = require('./lib/big-paddle-burst');
+const { freezeAi } = require('./lib/freeze-ai');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -538,8 +539,8 @@ function createApp(prisma = defaultPrisma, options = {}) {
       funMode: Object.assign({}, controlPanelButton.clientConfig(), splashThenBadgeOption.clientConfig()),
       // Power-Ups fun mode: pickup pacing and where the effect badge sits
       // and which pickups are offered (lib/pickup-pacing.js,
-      // lib/effect-badge-placement.js, lib/power-up-sets/original-four.js, lib/slow-mo.js, lib/ghost-ball.js, lib/big-paddle-burst.js).
-      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement(), set: bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))) },
+      // lib/effect-badge-placement.js, lib/power-up-sets/original-four.js, lib/slow-mo.js, lib/ghost-ball.js, lib/big-paddle-burst.js, lib/freeze-ai.js).
+      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement(), set: freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig())))) },
     });
   });
 
