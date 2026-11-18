@@ -20,7 +20,7 @@ const {
   moveAiPaddle, updateBall, updateBalls, bounceOffBarriers, pickAiTarget,
   POWER_UP_KEYS, PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, DEFAULT_PACING, DEFAULT_POWER_UP_SET,
   spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps, updatePowerUps,
-  ballTimeScale, isAiFrozen,
+  ballTimeScale, ballAlpha, isAiFrozen,
 } = require('../game-logic');
 
 const { createApp } = require('../server');
@@ -37,6 +37,9 @@ const originalFourSet = require('../lib/power-up-sets/original-four');
 const slowMoOn = require('../lib/slow-mos/on');
 const slowMoOff = require('../lib/slow-mos/off');
 const { slowMo } = require('../lib/slow-mo');
+const ghostBallOn = require('../lib/ghost-balls/on');
+const ghostBallOff = require('../lib/ghost-balls/off');
+const { ghostBall } = require('../lib/ghost-ball');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -648,6 +651,58 @@ describe('slow-mo options', () => {
   });
 });
 
+describe('ghost-ball options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on keeps Ghost Ball in the set', () => {
+    const set = ghostBallOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    const game = { pickups: [] };
+    expect(spawnPickup(game, () => 0.3, undefined, set).kind).toBe('ghostBall');
+  });
+
+  test('on makes the ball semi-transparent and flickering while the effect runs, then opaque', () => {
+    const state = newState();
+    expect(ballAlpha(state.game)).toBe(1);
+    applyEffect(state, 'ghostBall');
+    const seen = new Set();
+    for (let t = 0; t < 1; t += 0.01) {
+      state.game.effects.find((e) => e.kind === 'ghostBall').remaining = 5 - t;
+      seen.add(ballAlpha(state.game));
+    }
+    expect([...seen].sort()).toEqual([ghostBallOn.ALPHA_LOW, ghostBallOn.ALPHA_HIGH].sort());
+    expect(ghostBallOn.ALPHA_HIGH).toBeLessThan(1);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.ghostBall + 0.1);
+    expect(ballAlpha(state.game)).toBe(1);
+  });
+
+  test('on still collides normally: a ghosted ball bounces off the paddle like any other', () => {
+    const state = newState();
+    state.game.phase = 'playing';
+    applyEffect(state, 'ghostBall');
+    state.playerPaddle.y = 0;
+    const ball = ballAt(40, 40, -100, 0);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(ball.vx).toBeGreaterThan(0);
+    expect(ball.w).toBe(BALL_SIZE);
+  });
+
+  test('off leaves Ghost Ball out and the other pickups in', () => {
+    const set = ghostBallOff.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('ghostBall');
+    }
+    expect(full().kinds).toContain('ghostBall');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(ghostBall(full(), {})).toEqual(ghostBallOn.applyTo(full()));
+    expect(ghostBall(full(), {}).kinds).toContain('ghostBall');
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -661,7 +716,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: slowMo(originalFourSet.clientConfig()) });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: ghostBall(slowMo(originalFourSet.clientConfig())) });
   });
 });
 

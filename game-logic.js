@@ -2,6 +2,7 @@
 
 const steadyPacing = require('./lib/pickup-pacings/steady');
 const originalFourSet = require('./lib/power-up-sets/original-four');
+const ghostBallOn = require('./lib/ghost-balls/on');
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const CANVAS_W          = 800;
@@ -172,6 +173,15 @@ function findEffect(game, kind) {
 /** Time scale applied to every ball's movement: Slow-Mo halves it. */
 function ballTimeScale(game) {
   return findEffect(game, 'slowMo') ? SLOW_MO_FACTOR : 1;
+}
+
+/**
+ * Opacity the balls are drawn at: Ghost Ball makes them semi-transparent and
+ * flickering (lib/ghost-balls/on.js). Drawing only; collisions are untouched.
+ */
+function ballAlpha(game) {
+  const ghost = findEffect(game, 'ghostBall');
+  return ghost ? ghostBallOn.ballAlpha(ghost.remaining) : 1;
 }
 
 /** True while Freeze AI is active: the AI paddle does not move. */
@@ -731,7 +741,7 @@ module.exports = {
 
   // Power-Ups
   spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps,
-  updatePowerUps, ballTimeScale, isAiFrozen,
+  updatePowerUps, ballTimeScale, ballAlpha, isAiFrozen,
 
   // Factory functions
   makeBall,

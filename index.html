@@ -412,6 +412,7 @@
 
   <script src="/engagement-client.js"></script>
   <script src="/lib/effect-badge-placements/beside-player-paddle.js"></script>
+  <script src="/lib/ghost-balls/on.js"></script>
   <script>
     'use strict';
 
@@ -1136,6 +1137,16 @@
 
     function findEffect(kind) {
       return game.effects.find((e) => e.kind === kind) || null;
+    }
+
+    /**
+     * Opacity the balls are drawn at: Ghost Ball makes them semi-transparent
+     * and flickering (lib/ghost-balls/on.js). Drawing only; collisions are
+     * untouched.
+     */
+    function ballAlpha() {
+      const ghost = findEffect('ghostBall');
+      return ghost && window.PongGhostBallOn ? window.PongGhostBallOn.ballAlpha(ghost.remaining) : 1;
     }
 
     /** Time scale applied to every ball's movement: Slow-Mo halves it. */
@@ -2586,7 +2597,9 @@
 
       // Balls (only when playing; extra balls only in 'multiBall' mode)
       if (game.phase === 'playing') {
+        ctx.globalAlpha = ballAlpha();
         [ball].concat(game.extraBalls).forEach((b) => ctx.fillRect(b.x, b.y, b.w, b.h));
+        ctx.globalAlpha = 1;
       }
 
       // 'Get ready…' hint during the inter-point pause

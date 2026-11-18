@@ -96,6 +96,24 @@
           "path": "lib/slow-mos/off.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "ghost-ball",
+      "description": "Whether the Ghost Ball pickup (makes the ball semi-transparent and flicker for a few seconds while still colliding normally) is among the pickups in the Power-Ups fun mode.",
+      "env": "GHOST_BALL",
+      "dispatch": "lib/ghost-ball.js:ghostBall",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/ghost-balls/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/ghost-balls/off.js"
+        }
+      ]
     }
   ]
 }
