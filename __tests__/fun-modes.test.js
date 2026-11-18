@@ -34,8 +34,6 @@ const topCentre = require('../lib/effect-badge-placements/top-centre');
 const besidePlayerPaddle = require('../lib/effect-badge-placements/beside-player-paddle');
 const { pickupPacing } = require('../lib/pickup-pacing');
 const originalFourSet = require('../lib/power-up-sets/original-four');
-const justTwoSet = require('../lib/power-up-sets/just-two');
-const { powerUpSet } = require('../lib/power-up-set');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -611,29 +609,8 @@ describe('original-four power-up set option', () => {
     expect(p.kind).toBe('freezeAi');
   });
 
-  test('the dispatcher returns a set of known kinds', () => {
-    const cfg = powerUpSet();
-    expect(cfg.kinds.length).toBeGreaterThan(0);
-    for (const k of cfg.kinds) expect(POWER_UP_KEYS).toContain(k);
-  });
-});
-
-describe('just-two power-up set option', () => {
-  test('offers only Slow-Mo and Big Paddle burst', () => {
-    expect(justTwoSet.clientConfig()).toEqual({ set: 'just-two', kinds: ['slowMo', 'bigPaddle'] });
-  });
-
-  test('only those two kinds ever spawn', () => {
-    const seen = new Set();
-    for (const r of [0, 0.3, 0.5, 0.6, 0.99]) {
-      const game = { pickups: [] };
-      seen.add(spawnPickup(game, () => r, undefined, justTwoSet.clientConfig()).kind);
-    }
-    expect([...seen].sort()).toEqual(['bigPaddle', 'slowMo']);
-  });
-
   test('every kind it offers is a known power-up', () => {
-    for (const k of justTwoSet.KINDS) expect(POWER_UP_KEYS).toContain(k);
+    for (const k of originalFourSet.KINDS) expect(POWER_UP_KEYS).toContain(k);
   });
 });
 
@@ -650,7 +627,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: powerUpSet() });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: originalFourSet.clientConfig() });
   });
 });
 
