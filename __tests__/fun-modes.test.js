@@ -18,7 +18,7 @@ const {
   pickFunMode, applyMode, serveBalls, splashThenBadge,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
   moveAiPaddle, updateBall, updateBalls, bounceOffBarriers, pickAiTarget,
-  POWER_UP_KEYS, PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, DEFAULT_PACING,
+  POWER_UP_KEYS, PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, DEFAULT_PACING, DEFAULT_POWER_UP_SET,
   spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps, updatePowerUps,
   ballTimeScale, isAiFrozen,
 } = require('../game-logic');
@@ -33,6 +33,8 @@ const bottomRightCorner = require('../lib/effect-badge-placements/bottom-right-c
 const topCentre = require('../lib/effect-badge-placements/top-centre');
 const besidePlayerPaddle = require('../lib/effect-badge-placements/beside-player-paddle');
 const { pickupPacing } = require('../lib/pickup-pacing');
+const originalFourSet = require('../lib/power-up-sets/original-four');
+const { powerUpSet } = require('../lib/power-up-set');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
@@ -584,6 +586,37 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
   });
 });
 
+describe('original-four power-up set option', () => {
+  test('offers Slow-Mo, Ghost Ball, Big Paddle and Freeze AI', () => {
+    expect(originalFourSet.clientConfig()).toEqual({
+      set: 'original-four',
+      kinds: ['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi'],
+    });
+  });
+
+  test('is the set game-logic uses by default and every kind can spawn', () => {
+    expect(DEFAULT_POWER_UP_SET).toEqual(originalFourSet.clientConfig());
+    const seen = new Set();
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      seen.add(spawnPickup(game, () => r).kind);
+    }
+    expect([...seen].sort()).toEqual([...POWER_UP_KEYS].sort());
+  });
+
+  test('a set of one kind only spawns that kind', () => {
+    const game = { pickups: [] };
+    const p = spawnPickup(game, Math.random, undefined, { set: 'x', kinds: ['freezeAi'] });
+    expect(p.kind).toBe('freezeAi');
+  });
+
+  test('the dispatcher returns a set of known kinds', () => {
+    const cfg = powerUpSet();
+    expect(cfg.kinds.length).toBeGreaterThan(0);
+    for (const k of cfg.kinds) expect(POWER_UP_KEYS).toContain(k);
+  });
+});
+
 describe('GET /api/config for Power-Ups', () => {
   test('serves the pickup pacing and the effect badge placement', async () => {
     const app = createApp(createFakePrisma(), { logWrite: () => {} });
@@ -597,7 +630,7 @@ describe('GET /api/config for Power-Ups', () => {
         }).on('error', (err) => { server.close(); reject(err); });
       });
     });
-    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement() });
+    expect(body.powerUps).toEqual({ pacing: pickupPacing(), badge: effectBadgePlacement(), set: powerUpSet() });
   });
 });
 

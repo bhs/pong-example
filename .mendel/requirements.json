@@ -78,6 +78,20 @@
           "path": "lib/effect-badge-placements/beside-player-paddle.js"
         }
       ]
+    },
+    {
+      "kind": "trait",
+      "name": "which-power-ups-are-available",
+      "description": "Which pickups the Power-Ups fun mode can offer: how much its feel depends on which effects exist, such as helpful-only versus chaotic ones.",
+      "env": "WHICH_POWER_UPS_ARE_AVAILABLE",
+      "dispatch": "lib/power-up-set.js:powerUpSet",
+      "default": "original-four",
+      "options": [
+        {
+          "value": "original-four",
+          "path": "lib/power-up-sets/original-four.js"
+        }
+      ]
     }
   ]
 }

@@ -1,6 +1,7 @@
 'use strict';
 
 const steadyPacing = require('./lib/pickup-pacings/steady');
+const originalFourSet = require('./lib/power-up-sets/original-four');
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const CANVAS_W          = 800;
@@ -37,6 +38,10 @@ const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
 // Pickup spawn rate and effect lengths: the default (steady) pacing. A pacing
 // config of the same shape can be passed to any function below.
 const DEFAULT_PACING = steadyPacing.clientConfig();
+
+// Which pickups can spawn: the default (original-four) set. A set config of the
+// same shape can be passed to spawnPickup and updatePowerUps.
+const DEFAULT_POWER_UP_SET = originalFourSet.clientConfig();
 
 // Fixed rectangles in the middle of the field for 'bouncyBarriers' mode. They
 // leave the centre spawn point clear.
@@ -178,12 +183,14 @@ function isAiFrozen(game) {
  * Spawn one pickup at a random spot in the middle of the field. Does nothing
  * (returns null) when one is already on the field.
  */
-function spawnPickup(game, rng = Math.random, pacing = DEFAULT_PACING) {
+function spawnPickup(game, rng = Math.random, pacing = DEFAULT_PACING, set = DEFAULT_POWER_UP_SET) {
   if (!game.pickups) game.pickups = [];
   if (game.pickups.length > 0) return null;
-  const pick = clamp(Math.floor(rng() * POWER_UP_KEYS.length), 0, POWER_UP_KEYS.length - 1);
+  const kinds = set.kinds.filter((k) => POWER_UP_KINDS[k]);
+  if (kinds.length === 0) return null;
+  const pick = clamp(Math.floor(rng() * kinds.length), 0, kinds.length - 1);
   const pickup = {
-    kind: POWER_UP_KEYS[pick],
+    kind: kinds[pick],
     x:    Math.round(200 + rng() * (CANVAS_W - 400 - PICKUP_SIZE)),
     y:    Math.round(60 + rng() * (CANVAS_H - 120 - PICKUP_SIZE)),
     w:    PICKUP_SIZE,
@@ -287,14 +294,14 @@ function clearPowerUps(state, pacing = DEFAULT_PACING) {
  * effects, age and expire the pickup, spawn the next one when due, and apply
  * the effect of any pickup a ball hits. `balls` is every ball in play.
  */
-function updatePowerUps(state, balls, dt, rng = Math.random, pacing = DEFAULT_PACING) {
+function updatePowerUps(state, balls, dt, rng = Math.random, pacing = DEFAULT_PACING, set = DEFAULT_POWER_UP_SET) {
   const game = state.game;
   tickEffects(state, dt, rng);
 
   game.pickups = (game.pickups || []).filter((p) => { p.ttl -= dt; return p.ttl > 0; });
 
   game.pickupTimer -= dt;
-  if (game.pickupTimer <= 0 && spawnPickup(game, rng, pacing)) {
+  if (game.pickupTimer <= 0 && spawnPickup(game, rng, pacing, set)) {
     game.pickupTimer = pacing.spawnIntervalS;
   }
 
@@ -712,7 +719,7 @@ module.exports = {
   FLASH_FRAMES,
   BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT, BARRIER_LAYOUT,
   PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, GHOST_REROLL_S,
-  POWER_UP_KINDS, POWER_UP_KEYS, DEFAULT_PACING,
+  POWER_UP_KINDS, POWER_UP_KEYS, DEFAULT_PACING, DEFAULT_POWER_UP_SET,
 
   // Game modes
   MODES, FUN_MODE_KEYS, SPLASH_MS,

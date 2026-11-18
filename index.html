@@ -461,6 +461,14 @@
     };
     let powerUpPacing = DEFAULT_PACING;
 
+    // Which pickups can spawn: the 'original-four' set, replaced by the server's
+    // setting from GET /api/config (see loadPowerUpConfig).
+    const DEFAULT_POWER_UP_SET = {
+      set: 'original-four',
+      kinds: ['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi'],
+    };
+    let powerUpSet = DEFAULT_POWER_UP_SET;
+
     // Fixed rectangles in the middle of the field for 'bouncyBarriers' mode.
     // They leave the centre spawn point clear.
     const BARRIER_LAYOUT = [
@@ -1142,9 +1150,11 @@
 
     function spawnPickup(rng = Math.random) {
       if (game.pickups.length > 0) return null;
-      const pick = clamp(Math.floor(rng() * POWER_UP_KEYS.length), 0, POWER_UP_KEYS.length - 1);
+      const kinds = powerUpSet.kinds.filter((k) => POWER_UP_KINDS[k]);
+      if (kinds.length === 0) return null;
+      const pick = clamp(Math.floor(rng() * kinds.length), 0, kinds.length - 1);
       const pickup = {
-        kind: POWER_UP_KEYS[pick],
+        kind: kinds[pick],
         x:    Math.round(200 + rng() * (CANVAS_W - 400 - PICKUP_SIZE)),
         y:    Math.round(60 + rng() * (CANVAS_H - 120 - PICKUP_SIZE)),
         w:    PICKUP_SIZE,
@@ -1965,6 +1975,9 @@
         const cfg = data && data.powerUps;
         if (cfg && cfg.pacing && cfg.pacing.effectDurationsS) {
           powerUpPacing = Object.assign({}, DEFAULT_PACING, cfg.pacing);
+        }
+        if (cfg && cfg.set && Array.isArray(cfg.set.kinds)) {
+          powerUpSet = Object.assign({}, DEFAULT_POWER_UP_SET, cfg.set);
         }
         if (cfg && cfg.badge && cfg.badge.placement) {
           const el = document.getElementById('pong-effect-badge');

@@ -130,6 +130,7 @@ const controlPanelButton = require('./lib/fun-button-placements/control-panel-bu
 const splashThenBadgeOption = require('./lib/mode-announcements/splash-then-badge');
 const { pickupPacing } = require('./lib/pickup-pacing');
 const { effectBadgePlacement } = require('./lib/effect-badge-placement');
+const { powerUpSet } = require('./lib/power-up-set');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
 // and the live character-count validation in index.html — both enforce the
@@ -533,8 +534,9 @@ function createApp(prisma = defaultPrisma, options = {}) {
       leaderboard: modalFromAButton.clientConfig(),
       funMode: Object.assign({}, controlPanelButton.clientConfig(), splashThenBadgeOption.clientConfig()),
       // Power-Ups fun mode: pickup pacing and where the effect badge sits
-      // (lib/pickup-pacing.js, lib/effect-badge-placement.js).
-      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement() },
+      // and which pickups are offered (lib/pickup-pacing.js,
+      // lib/effect-badge-placement.js, lib/power-up-set.js).
+      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement(), set: powerUpSet() },
     });
   });
 
