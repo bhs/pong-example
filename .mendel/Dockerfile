@@ -5,8 +5,11 @@
 # The files that, when changed, mean this file should be written again:
 # depends-on: lib/prisma.js package.json
 #
-# Pong now stores users, preferences and high scores in MySQL through Prisma
-# (see prisma/schema.prisma and lib/prisma.js). The application applies
+# Pong keeps users, preferences, high scores and game history in one MySQL
+# database, reached through Prisma (see prisma/schema.prisma and
+# lib/prisma.js). That is its only persistent store: sessions and telemetry
+# live in memory, and the streak numbers are derived from game history on
+# every request. The application applies
 # prisma/migrations/ against DATABASE_URL at startup with
 # `prisma migrate deploy` (see the repository root Dockerfile's CMD) — this
 # stage runs exactly that same tool against exactly those same migrations.
