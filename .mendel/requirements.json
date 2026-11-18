@@ -68,6 +68,10 @@
         {
           "value": "bottom-right-corner",
           "path": "lib/effect-badge-placements/bottom-right-corner.js"
+        },
+        {
+          "value": "top-centre",
+          "path": "lib/effect-badge-placements/top-centre.js"
         }
       ]
     }

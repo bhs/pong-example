@@ -361,6 +361,19 @@
       letter-spacing: 0.06em;
     }
     #pong-effect-badge[hidden] { display: none; }
+    /* 'top-centre' placement: a row of chips along the top centre of the
+       screen (x 70-630, y 118-538 of the cabinet), 10 units below its top edge. */
+    #pong-effect-badge[data-placement="top-centre"] {
+      left: calc(350 * var(--u));
+      right: auto;
+      top: calc(128 * var(--u));
+      bottom: auto;
+      transform: translateX(-50%);
+      flex-direction: row;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+    }
     .pong-effect-chip {
       padding: calc(3 * var(--u)) calc(10 * var(--u));
       border-radius: calc(10 * var(--u));

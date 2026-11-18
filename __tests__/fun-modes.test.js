@@ -30,6 +30,7 @@ const splashThenBadgeOption = require('../lib/mode-announcements/splash-then-bad
 const steadyPacing = require('../lib/pickup-pacings/steady');
 const rareAndLongPacing = require('../lib/pickup-pacings/rare-and-long');
 const bottomRightCorner = require('../lib/effect-badge-placements/bottom-right-corner');
+const topCentre = require('../lib/effect-badge-placements/top-centre');
 const { pickupPacing } = require('../lib/pickup-pacing');
 const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
@@ -514,6 +515,10 @@ describe('pickup-pacing and where-the-effect-badge-sits options', () => {
     expect(bottomRightCorner.clientConfig()).toEqual({ placement: 'bottom-right-corner' });
   });
 
+  test('top-centre placement', () => {
+    expect(topCentre.clientConfig()).toEqual({ placement: 'top-centre' });
+  });
+
   test('the dispatchers return a well-formed option config', () => {
     expect(pickupPacing().spawnIntervalS).toBeGreaterThan(0);
     expect(Object.keys(pickupPacing().effectDurationsS).sort()).toEqual([...POWER_UP_KEYS].sort());
@@ -579,6 +584,7 @@ describe('index.html wiring', () => {
   test('Power-Ups is mirrored in the page: mode, effect badge, clearing at point end', () => {
     expect(html).toMatch(/<div id="pong-effect-badge"[^>]*\bhidden\b/);
     expect(html).toMatch(/#pong-effect-badge \{[^}]*right:[^}]*bottom:/);
+    expect(html).toMatch(/#pong-effect-badge\[data-placement="top-centre"\] \{[^}]*top:[^}]*flex-direction: row/);
     expect(html).toMatch(/powerUps: \{\s*name: 'Power-Ups'/);
     expect((html.match(/clearPowerUps\(\);/g) || []).length).toBeGreaterThanOrEqual(4);
     for (const key of POWER_UP_KEYS) expect(html).toContain(`${key}:`);
