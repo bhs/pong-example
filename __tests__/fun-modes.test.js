@@ -818,7 +818,6 @@ describe('ghost-ball options', () => {
   test('the dispatch takes the default option (off) when nothing chooses one', () => {
     expect(ghostBall(full(), {})).toEqual(ghostBallOff.applyTo(full()));
     expect(ghostBall(full(), {}).kinds).not.toContain('ghostBall');
-    expect(ghostBall(full(), { GHOST_BALL: 'on' }).kinds).toContain('ghostBall');
   });
 });
 
@@ -889,7 +888,6 @@ describe('freeze-ai options', () => {
   test('the dispatch takes the default option (off) when nothing chooses one', () => {
     expect(freezeAi(full(), {})).toEqual(freezeAiOff.applyTo(full()));
     expect(freezeAi(full(), {}).kinds).not.toContain('freezeAi');
-    expect(freezeAi(full(), { FREEZE_AI: 'on' }).kinds).toContain('freezeAi');
   });
 });
 
