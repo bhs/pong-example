@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 
 const {
-  CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT,
+  CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT, SCORE_WIN,
   BARRIER_LAYOUT, MODES, FUN_MODE_KEYS, SPLASH_MS,
   pickFunMode, applyMode, serveBalls, splashThenBadge,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
@@ -188,28 +188,131 @@ describe('big paddle', () => {
 });
 
 describe('multi-ball', () => {
-  test('a ball leaving the field scores once and ends the play phase', () => {
-    const state = newState();
-    applyMode(state, 'multiBall');
-    state.game.phase = 'playing';
-    const ball = ballAt(CANVAS_W + 5, 300, 100, 0);
-    state.game.extraBalls = [ballAt(CANVAS_W + 5, 200, 100, 0), ballAt(CANVAS_W + 5, 400, 100, 0)];
-
-    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
-    expect(state.playerPaddle.score).toBe(1);
-    expect(state.aiPaddle.score).toBe(0);
-    expect(state.game.phase).toBe('scored');
-  });
-
-  test('an extra ball leaving the field scores too', () => {
+  // Three balls in play: primary at the centre, extras parked mid-field.
+  function threeBalls() {
     const state = newState();
     applyMode(state, 'multiBall');
     state.game.phase = 'playing';
     const ball = ballAt(400, 300, 0, 0);
-    state.game.extraBalls = [ballAt(-BALL_SIZE - 5, 200, -100, 0), ballAt(400, 400, 0, 0)];
+    state.game.extraBalls = [ballAt(400, 200, 0, 0), ballAt(400, 400, 0, 0)];
+    return { state, ball, balls: [ball].concat(state.game.extraBalls) };
+  }
+  const step = (t) => updateBalls(t.ball, t.state.playerPaddle, t.state.aiPaddle, t.state.game, 1 / 60, t.rally || (t.rally = makeRally()));
+  const exitLeft = (b) => { b.x = -BALL_SIZE - 5; b.vx = -100; };
+  const exitRight = (b) => { b.x = CANVAS_W + 5; b.vx = 100; };
 
-    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
-    expect(state.aiPaddle.score).toBe(1);
+  test('the first miss removes that ball without a point or ending the play phase', () => {
+    const t = threeBalls();
+    exitRight(t.balls[1]);
+    step(t);
+    expect(t.balls[1].out).toBeTruthy();
+    expect(t.state.playerPaddle.score).toBe(0);
+    expect(t.state.aiPaddle.score).toBe(0);
+    expect(t.state.game.phase).toBe('playing');
+    expect(t.rally.flashFrames).toBe(0);
+  });
+
+  test('a removed ball stays gone while the rest keep playing', () => {
+    const t = threeBalls();
+    exitLeft(t.balls[2]);
+    step(t);
+    const gone = t.balls[2];
+    gone.vx = 100;
+    const x = gone.x;
+    step(t);
+    expect(gone.x).toBe(x);
+    expect(t.state.game.phase).toBe('playing');
+  });
+
+  test('the last ball leaving ends the point; missing it on the left scores for the AI', () => {
+    const t = threeBalls();
+    exitLeft(t.balls[1]); step(t);
+    exitLeft(t.balls[2]); step(t);
+    expect(t.state.game.phase).toBe('playing');
+    exitLeft(t.ball); step(t);
+    expect(t.state.aiPaddle.score).toBe(1);
+    expect(t.state.playerPaddle.score).toBe(0);
+    expect(t.state.game.phase).toBe('scored');
+    expect(t.state.game.pauseTimer).toBe(1.2);
+    expect(t.rally.flashFrames).toBeGreaterThan(0);
+  });
+
+  test('the last ball leaving on the right scores for the player', () => {
+    const t = threeBalls();
+    exitRight(t.balls[2]); step(t);
+    exitRight(t.balls[1]); step(t);
+    exitRight(t.ball); step(t);
+    expect(t.state.playerPaddle.score).toBe(1);
+    expect(t.state.aiPaddle.score).toBe(0);
+    expect(t.state.game.phase).toBe('scored');
+  });
+
+  test('an extra ball may be the last one to leave', () => {
+    const t = threeBalls();
+    exitLeft(t.ball); step(t);
+    exitLeft(t.balls[1]); step(t);
+    exitRight(t.balls[2]); step(t);
+    expect(t.state.playerPaddle.score).toBe(1);
+    expect(t.state.aiPaddle.score).toBe(0);
+  });
+
+  test('mixed-side misses: only the last ball decides the scorer', () => {
+    const t = threeBalls();
+    exitRight(t.balls[1]); step(t);     // AI missed: no point for the player
+    exitRight(t.ball); step(t);         // AI missed again: still no point
+    expect(t.state.playerPaddle.score).toBe(0);
+    exitLeft(t.balls[2]); step(t);      // player misses the last ball
+    expect(t.state.aiPaddle.score).toBe(1);
+    expect(t.state.playerPaddle.score).toBe(0);
+
+    const u = threeBalls();
+    exitLeft(u.balls[1]); step(u);
+    exitLeft(u.ball); step(u);
+    exitRight(u.balls[2]); step(u);     // AI misses the last ball
+    expect(u.state.playerPaddle.score).toBe(1);
+    expect(u.state.aiPaddle.score).toBe(0);
+  });
+
+  test('the last miss can win the game and clears power-ups', () => {
+    const t = threeBalls();
+    t.state.playerPaddle.score = SCORE_WIN - 1;
+    t.state.game.pickups = [{ kind: 'slowMo', x: 0, y: 0, w: 10, h: 10, ttl: 5 }];
+    exitRight(t.balls[1]); step(t);
+    exitRight(t.balls[2]); step(t);
+    expect(t.state.game.phase).toBe('playing');
+    exitRight(t.ball); step(t);
+    expect(t.state.playerPaddle.score).toBe(SCORE_WIN);
+    expect(t.state.game.phase).toBe('won');
+    expect(t.state.game.winner).toBe('player');
+    expect(t.state.game.pickups).toEqual([]);
+    expect(t.state.game.effects).toEqual([]);
+  });
+
+  test('the next serve brings every removed ball back to the centre', () => {
+    const t = threeBalls();
+    exitLeft(t.ball); exitRight(t.balls[1]); exitLeft(t.balls[2]);
+    step(t); step(t);
+    expect(t.ball.out).toBeTruthy();
+    serveBalls(t.ball, t.state.game, 1);
+    expect(t.state.game.extraBalls).toHaveLength(EXTRA_BALL_COUNT);
+    [t.ball].concat(t.state.game.extraBalls).forEach((b) => {
+      expect(b.out).toBeFalsy();
+      expect(b.x).toBe(CANVAS_W / 2 - BALL_SIZE / 2);
+      expect(b.vx).toBeGreaterThan(0);
+    });
+  });
+
+  test('the AI ignores removed balls and chases the ones that remain', () => {
+    const gone = ballAt(700, 100, 100, 0);
+    gone.out = 'right';
+    const left = ballAt(300, 500, 100, 0);
+    const other = ballAt(200, 50, -100, 0);
+    expect(pickAiTarget(gone, [left, other])).toBe(left);
+    expect(pickAiTarget(gone, [other])).toBe(other);
+    const primary = ballAt(300, 200, -100, 0);
+    const out = ballAt(700, 100, 100, 0);
+    out.out = 'right';
+    expect(pickAiTarget(primary, [out])).toBe(primary);
   });
 
   test('serving resets every ball to the centre', () => {
@@ -1122,8 +1225,16 @@ describe('index.html wiring', () => {
     expect(html).toMatch(/#pong-effect-badge\[data-placement="beside-player-paddle"\] \{ display: none; \}/);
     expect(html).toContain('/lib/effect-badge-placements/beside-player-paddle.js');
     expect(html).toMatch(/powerUps: \{\s*name: 'Power-Ups'/);
-    expect((html.match(/clearPowerUps\(\);/g) || []).length).toBeGreaterThanOrEqual(4);
+    expect((html.match(/clearPowerUps\(\);/g) || []).length).toBeGreaterThanOrEqual(3);
     for (const key of POWER_UP_KEYS) expect(html).toContain(`${key}:`);
+  });
+
+  test('Multi-Ball is mirrored in the page: only the last ball ends the point', () => {
+    expect(html).toContain("b.out = exited;");
+    expect(html).toContain('function scorePoint(side)');
+    expect(html).toContain('if (b.out && allBalls.every((x) => x.out)) scorePoint(b.out);');
+    expect(html).toContain('delete b.out;');
+    expect(html).toContain('.filter((b) => !b.out)');
   });
 
   test('random obstructions are mirrored in the page: script, placement, bounce, drawing, clearing', () => {

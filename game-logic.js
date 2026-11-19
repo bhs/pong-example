@@ -463,6 +463,7 @@ function makeExtraBalls(count, dirSign = 1) {
  */
 function serveBalls(ball, game, dirSign) {
   Object.assign(ball, makeBall(dirSign));
+  delete ball.out;   // a ball removed in Multi-Ball mode comes back
   game.extraBalls = makeExtraBalls((game.extraBalls || []).length, dirSign);
 }
 
@@ -640,7 +641,6 @@ function bounceOffBarriers(ball, barriers) {
  */
 function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
   if (!rally) rally = makeRally();
-  const state = { game, playerPaddle, aiPaddle };
 
   ball.x += ball.vx * dt;
   ball.y += ball.vy * dt;
@@ -705,60 +705,71 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     return;
   }
 
-  // ── Ball exits left → AI scores ───────────────────────────────────────────
-  if (ball.x + BALL_SIZE < 0) {
-    aiPaddle.score += 1;
-    rally.rallyCount  = 0;
-    rally.flashFrames = FLASH_FRAMES;
-    if (aiPaddle.score >= SCORE_WIN) {
-      game.phase  = 'won';
-      game.winner = 'ai';
-    } else {
-      game.phase      = 'scored';
-      game.pauseTimer = 1.2;
-    }
-    clearPowerUps(state);
-  }
+  // ── Ball exits ────────────────────────────────────────────────────────────
+  const exited = ball.x + BALL_SIZE < 0 ? 'left' : (ball.x > CANVAS_W ? 'right' : null);
+  if (!exited) return;
 
-  // ── Ball exits right → player scores ─────────────────────────────────────
-  if (ball.x > CANVAS_W) {
-    playerPaddle.score += 1;
-    rally.rallyCount  = 0;
-    rally.flashFrames = FLASH_FRAMES;
-    if (playerPaddle.score >= SCORE_WIN) {
-      game.phase  = 'won';
-      game.winner = 'player';
-    } else {
-      game.phase      = 'scored';
-      game.pauseTimer = 1.2;
-    }
-    clearPowerUps(state);
+  // Multi-Ball mode: the ball is only removed (flagged with the side it left
+  // by); updateBalls() ends the point once the last ball is gone.
+  if (game.mode === 'multiBall') {
+    ball.out = exited;
+    return;
   }
+  scorePoint(exited, playerPaddle, aiPaddle, game, rally);
 }
 
 /**
- * Advance the primary ball and every extra ball one tick. The first ball to
- * leave the field scores the point and ends the play phase, so the remaining
- * balls are not advanced; serveBalls() then resets all of them together.
+ * A ball left the field on `side`: the other side scores. Runs the score
+ * flash, win check, serve pause and clearing of power-ups and effects.
+ * Exiting left means the player missed, so the AI scores; right the reverse.
+ */
+function scorePoint(side, playerPaddle, aiPaddle, game, rally) {
+  const state = { game, playerPaddle, aiPaddle };
+  const scorer = side === 'left' ? aiPaddle : playerPaddle;
+  scorer.score += 1;
+  rally.rallyCount  = 0;
+  rally.flashFrames = FLASH_FRAMES;
+  if (scorer.score >= SCORE_WIN) {
+    game.phase  = 'won';
+    game.winner = side === 'left' ? 'ai' : 'player';
+  } else {
+    game.phase      = 'scored';
+    game.pauseTimer = 1.2;
+  }
+  clearPowerUps(state);
+}
+
+/**
+ * Advance the primary ball and every extra ball one tick. In Multi-Ball mode a
+ * ball that leaves the field is removed (flagged `out`) without a point; the
+ * point ends only when the last ball is gone, and whoever missed that last
+ * ball loses it. Removed balls stay out until serveBalls() resets them all.
  */
 function updateBalls(ball, playerPaddle, aiPaddle, game, dt, rally) {
+  if (!rally) rally = makeRally();
   const balls = [ball].concat(game.extraBalls || []);
   const ballDt = dt * ballTimeScale(game);   // Slow-Mo slows the balls only
   for (const b of balls) {
     if (game.phase !== 'playing') break;
+    if (b.out) continue;
     updateBall(b, playerPaddle, aiPaddle, game, ballDt, rally);
+    if (b.out && balls.every((x) => x.out)) {
+      scorePoint(b.out, playerPaddle, aiPaddle, game, rally);
+    }
   }
 }
 
 /**
  * The ball the AI should chase: the incoming ball closest to its paddle, or
- * the primary ball when none is heading its way.
+ * the primary ball when none is heading its way. Removed (`out`) balls are
+ * ignored: the AI chases whichever balls remain.
  */
 function pickAiTarget(ball, extraBalls, game = null) {
-  const incoming = [ball].concat(extraBalls || []).filter((b) => b.vx > 0);
-  const target = incoming.length === 0
-    ? ball
-    : incoming.reduce((best, b) => (b.x > best.x ? b : best));
+  const live = [ball].concat(extraBalls || []).filter((b) => !b.out);   // removed balls are ignored
+  const incoming = live.filter((b) => b.vx > 0);
+  const target = incoming.length > 0
+    ? incoming.reduce((best, b) => (b.x > best.x ? b : best))
+    : (ball.out ? (live[0] || ball) : ball);
   // Ghost Ball: the AI chases a stale, offset copy of the ball's position.
   const ghost = findEffect(game, 'ghostBall');
   if (!ghost) return target;
