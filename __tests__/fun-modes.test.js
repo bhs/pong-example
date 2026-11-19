@@ -815,9 +815,10 @@ describe('ghost-ball options', () => {
     expect(full().kinds).toContain('ghostBall');   // the input is not mutated
   });
 
-  test('the dispatch takes the default option (on) when nothing chooses one', () => {
-    expect(ghostBall(full(), {})).toEqual(ghostBallOn.applyTo(full()));
-    expect(ghostBall(full(), {}).kinds).toContain('ghostBall');
+  test('the dispatch takes the default option (off) when nothing chooses one', () => {
+    expect(ghostBall(full(), {})).toEqual(ghostBallOff.applyTo(full()));
+    expect(ghostBall(full(), {}).kinds).not.toContain('ghostBall');
+    expect(ghostBall(full(), { GHOST_BALL: 'on' }).kinds).toContain('ghostBall');
   });
 });
 
@@ -885,9 +886,10 @@ describe('freeze-ai options', () => {
     expect(full().kinds).toContain('freezeAi');   // the input is not mutated
   });
 
-  test('the dispatch takes the default option (on) when nothing chooses one', () => {
-    expect(freezeAi(full(), {})).toEqual(freezeAiOn.applyTo(full()));
-    expect(freezeAi(full(), {}).kinds).toContain('freezeAi');
+  test('the dispatch takes the default option (off) when nothing chooses one', () => {
+    expect(freezeAi(full(), {})).toEqual(freezeAiOff.applyTo(full()));
+    expect(freezeAi(full(), {}).kinds).not.toContain('freezeAi');
+    expect(freezeAi(full(), { FREEZE_AI: 'on' }).kinds).toContain('freezeAi');
   });
 });
 

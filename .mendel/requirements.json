@@ -103,7 +103,7 @@
       "description": "Whether the Ghost Ball pickup (makes the ball semi-transparent and flicker for a few seconds while still colliding normally) is among the pickups in the Power-Ups fun mode.",
       "env": "GHOST_BALL",
       "dispatch": "lib/ghost-ball.js:ghostBall",
-      "default": "on",
+      "default": "off",
       "options": [
         {
           "value": "on",
@@ -139,7 +139,7 @@
       "description": "Whether the Freeze AI pickup (stops the AI paddle from moving for a short time) is among the pickups in the Power-Ups fun mode.",
       "env": "FREEZE_AI",
       "dispatch": "lib/freeze-ai.js:freezeAi",
-      "default": "on",
+      "default": "off",
       "options": [
         {
           "value": "on",
