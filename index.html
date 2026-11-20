@@ -361,19 +361,6 @@
       letter-spacing: 0.06em;
     }
     #pong-effect-badge[hidden] { display: none; }
-    /* 'top-centre' placement: a row of chips along the top centre of the
-       screen (x 70-630, y 118-538 of the cabinet), 10 units below its top edge. */
-    #pong-effect-badge[data-placement="top-centre"] {
-      left: calc(350 * var(--u));
-      right: auto;
-      top: calc(128 * var(--u));
-      bottom: auto;
-      transform: translateX(-50%);
-      flex-direction: row;
-      align-items: center;
-      justify-content: center;
-      white-space: nowrap;
-    }
     /* 'beside-player-paddle' placement: the chips are drawn on the canvas next
        to the player's paddle (lib/effect-badge-placements/beside-player-paddle.js),
        so the DOM badge stays out of the way. */
@@ -412,9 +399,7 @@
 
   <script src="/engagement-client.js"></script>
   <script src="/lib/effect-badge-placements/beside-player-paddle.js"></script>
-  <script src="/lib/ghost-balls/on.js"></script>
   <script src="/lib/multi-balls/on.js"></script>
-  <script src="/lib/shrink-opponent-paddles/on.js"></script>
   <script src="/lib/add-random-obstructions-to-the-game-areas/on.js"></script>
   <script>
     'use strict';
@@ -453,7 +438,6 @@
       bigPaddle: { name: 'Big Paddle', colour: '#81c784' },
       freezeAi:  { name: 'Freeze AI',  colour: '#ffffff' },
       multiBall: { name: 'Multi-ball', colour: '#ffb74d' },
-      shrinkOpponent: { name: 'Shrink Opponent', colour: '#ef5350' },
     };
     const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
 
@@ -463,7 +447,7 @@
       pacing: 'steady',
       spawnIntervalS: 6,
       pickupLifetimeS: 8,
-      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5, shrinkOpponent: 5 },
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5 },
     };
     let powerUpPacing = DEFAULT_PACING;
 
@@ -1148,16 +1132,6 @@
       return game.effects.find((e) => e.kind === kind) || null;
     }
 
-    /**
-     * Opacity the balls are drawn at: Ghost Ball makes them semi-transparent
-     * and flickering (lib/ghost-balls/on.js). Drawing only; collisions are
-     * untouched.
-     */
-    function ballAlpha() {
-      const ghost = findEffect('ghostBall');
-      return ghost && window.PongGhostBallOn ? window.PongGhostBallOn.ballAlpha(ghost.remaining) : 1;
-    }
-
     /** Time scale applied to every ball's movement: Slow-Mo halves it. */
     function ballTimeScale() {
       return findEffect('slowMo') ? SLOW_MO_FACTOR : 1;
@@ -1199,17 +1173,11 @@
         playerPaddle.h = PADDLE_H;
         playerPaddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
       }
-      if (effect.kind === 'shrinkOpponent') {
-        const centre = aiPaddle.y + aiPaddle.h / 2;
-        aiPaddle.h = PADDLE_H;
-        aiPaddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
-      }
     }
 
     function applyEffect(kind, rng = Math.random, hitBall = null) {
       if (!POWER_UP_KINDS[kind]) return null;
       if (kind === 'multiBall' && !window.PongMultiBallOn) return null;
-      if (kind === 'shrinkOpponent' && !window.PongShrinkOpponentPaddleOn) return null;
       const duration = powerUpPacing.effectDurationsS[kind];
       const existing = findEffect(kind);
       if (existing) {
@@ -1221,10 +1189,6 @@
         const centre = playerPaddle.y + playerPaddle.h / 2;
         playerPaddle.h = Math.round(PADDLE_H * BIG_PADDLE_FACTOR);
         playerPaddle.y = clamp(centre - playerPaddle.h / 2, 0, CANVAS_H - playerPaddle.h);
-      } else if (kind === 'shrinkOpponent') {
-        const centre = aiPaddle.y + aiPaddle.h / 2;
-        aiPaddle.h = window.PongShrinkOpponentPaddleOn.shrunkHeight(PADDLE_H);
-        aiPaddle.y = clamp(centre - aiPaddle.h / 2, 0, CANVAS_H - aiPaddle.h);
       } else if (kind === 'ghostBall') {
         effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
         effect.rerollIn = GHOST_REROLL_S;
@@ -2670,9 +2634,7 @@
 
       // Balls (only when playing; extra balls only in 'multiBall' mode)
       if (game.phase === 'playing') {
-        ctx.globalAlpha = ballAlpha();
         [ball].concat(game.extraBalls).filter((b) => !b.out).forEach((b) => ctx.fillRect(b.x, b.y, b.w, b.h));
-        ctx.globalAlpha = 1;
       }
 
       // 'Get ready…' hint during the inter-point pause

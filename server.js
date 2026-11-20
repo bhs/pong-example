@@ -70,7 +70,7 @@
  *                                 lib/fun-button-placements/control-panel-button.js and
  *                                 lib/mode-announcements/splash-then-badge.js — and the Power-Ups
  *                                 pickup pacing and effect badge placement —
- *                                 see lib/pickup-pacing.js and
+ *                                 see lib/pickup-pacings/steady.js and
  *                                 lib/effect-badge-placement.js).
  *   POST   /api/scores           Create or update the logged-in user's high
  *                                 score. Requires an authenticated Google
@@ -128,15 +128,15 @@ const engagement     = require('./lib/engagement');
 const engagementConfig = require('./lib/engagement-config');
 const controlPanelButton = require('./lib/fun-button-placements/control-panel-button');
 const splashThenBadgeOption = require('./lib/mode-announcements/splash-then-badge');
-const { pickupPacing } = require('./lib/pickup-pacing');
+const steadyPacing = require('./lib/pickup-pacings/steady');
 const { effectBadgePlacement } = require('./lib/effect-badge-placement');
 const originalFourSet = require('./lib/power-up-sets/original-four');
 const { slowMo } = require('./lib/slow-mo');
-const { ghostBall } = require('./lib/ghost-ball');
+const ghostBallOff = require('./lib/ghost-balls/off');
 const { bigPaddleBurst } = require('./lib/big-paddle-burst');
-const { freezeAi } = require('./lib/freeze-ai');
+const freezeAiOff = require('./lib/freeze-ais/off');
 const { multiBall } = require('./lib/multi-ball');
-const { shrinkOpponentPaddle } = require('./lib/shrink-opponent-paddle');
+const shrinkOpponentPaddleOff = require('./lib/shrink-opponent-paddles/off');
 const { addRandomObstructionsToTheGameArea } = require('./lib/add-random-obstructions-to-the-game-area');
 
 // Longest nickname the Settings modal accepts (see PATCH /api/user/nickname
@@ -541,9 +541,9 @@ function createApp(prisma = defaultPrisma, options = {}) {
       leaderboard: modalFromAButton.clientConfig(),
       funMode: Object.assign({}, controlPanelButton.clientConfig(), splashThenBadgeOption.clientConfig()),
       // Power-Ups fun mode: pickup pacing and where the effect badge sits
-      // and which pickups are offered (lib/pickup-pacing.js,
-      // lib/effect-badge-placement.js, lib/power-up-sets/original-four.js, lib/slow-mo.js, lib/ghost-ball.js, lib/big-paddle-burst.js, lib/freeze-ai.js, lib/multi-ball.js, lib/shrink-opponent-paddle.js, lib/add-random-obstructions-to-the-game-area.js).
-      powerUps: { pacing: pickupPacing(), badge: effectBadgePlacement(), set: addRandomObstructionsToTheGameArea(shrinkOpponentPaddle(multiBall(freezeAi(bigPaddleBurst(ghostBall(slowMo(originalFourSet.clientConfig()))))))) },
+      // and which pickups are offered (lib/pickup-pacings/steady.js,
+      // lib/effect-badge-placement.js, lib/power-up-sets/original-four.js, lib/slow-mo.js, lib/ghost-balls/off.js, lib/big-paddle-burst.js, lib/freeze-ais/off.js, lib/multi-ball.js, lib/shrink-opponent-paddles/off.js, lib/add-random-obstructions-to-the-game-area.js).
+      powerUps: { pacing: steadyPacing.clientConfig(), badge: effectBadgePlacement(), set: addRandomObstructionsToTheGameArea(shrinkOpponentPaddleOff.applyTo(multiBall(freezeAiOff.applyTo(bigPaddleBurst(ghostBallOff.applyTo(slowMo(originalFourSet.clientConfig()))))))) },
     });
   });
 

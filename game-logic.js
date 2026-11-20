@@ -2,9 +2,7 @@
 
 const steadyPacing = require('./lib/pickup-pacings/steady');
 const originalFourSet = require('./lib/power-up-sets/original-four');
-const ghostBallOn = require('./lib/ghost-balls/on');
 const multiBallOn = require('./lib/multi-balls/on');
-const shrinkOpponentPaddleOn = require('./lib/shrink-opponent-paddles/on');
 const obstructionsOn = require('./lib/add-random-obstructions-to-the-game-areas/on');
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -30,14 +28,13 @@ const SLOW_MO_FACTOR    = 0.5;    // ball time scale while Slow-Mo is active
 const GHOST_NOISE       = 140;    // px, max offset of the AI's ghost target
 const GHOST_REROLL_S    = 0.6;    // seconds the AI's ghost target stays stale before re-rolling
 
-// The 'powerUps' mode's timed pickups (multiBall and shrinkOpponent only spawn when their Traits are on). `colour` is the pickup and chip colour.
+// The 'powerUps' mode's timed pickups (multiBall only spawns when its Trait is on). `colour` is the pickup and chip colour.
 const POWER_UP_KINDS = {
   slowMo:    { name: 'Slow-Mo',     colour: '#4fc3f7' },
   ghostBall: { name: 'Ghost Ball',  colour: '#ce93d8' },
   bigPaddle: { name: 'Big Paddle',  colour: '#81c784' },
   freezeAi:  { name: 'Freeze AI',   colour: '#ffffff' },
   multiBall: { name: 'Multi-ball',  colour: '#ffb74d' },
-  shrinkOpponent: { name: 'Shrink Opponent', colour: '#ef5350' },
 };
 const POWER_UP_KEYS = Object.keys(POWER_UP_KINDS);
 
@@ -182,15 +179,6 @@ function ballTimeScale(game) {
   return findEffect(game, 'slowMo') ? SLOW_MO_FACTOR : 1;
 }
 
-/**
- * Opacity the balls are drawn at: Ghost Ball makes them semi-transparent and
- * flickering (lib/ghost-balls/on.js). Drawing only; collisions are untouched.
- */
-function ballAlpha(game) {
-  const ghost = findEffect(game, 'ghostBall');
-  return ghost ? ghostBallOn.ballAlpha(ghost.remaining) : 1;
-}
-
 /** True while Freeze AI is active: the AI paddle does not move. */
 function isAiFrozen(game) {
   return findEffect(game, 'freezeAi') !== null;
@@ -229,7 +217,7 @@ function collectPickup(game, ball) {
 }
 
 /**
- * Undo one effect's side effect: Big Paddle and Shrink Opponent restore the
+ * Undo one effect's side effect: Big Paddle restores the
  * paddle height, Multi-ball removes the extra ball it added (if still in play).
  */
 function endEffect(state, effect) {
@@ -239,12 +227,6 @@ function endEffect(state, effect) {
   if (effect.kind === 'bigPaddle') {
     const paddle = state.playerPaddle;
     const centre = paddle.y + paddle.h / 2;
-    paddle.h = PADDLE_H;
-    paddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
-  }
-  if (effect.kind === 'shrinkOpponent') {
-    const paddle = state.aiPaddle;
-    const centre = paddle.y + paddleHeight(paddle) / 2;
     paddle.h = PADDLE_H;
     paddle.y = clamp(centre - PADDLE_H / 2, 0, CANVAS_H - PADDLE_H);
   }
@@ -273,11 +255,6 @@ function applyEffect(state, kind, rng = Math.random, pacing = DEFAULT_PACING, ba
     const paddle = state.playerPaddle;
     const centre = paddle.y + paddle.h / 2;
     paddle.h = Math.round(PADDLE_H * BIG_PADDLE_FACTOR);
-    paddle.y = clamp(centre - paddle.h / 2, 0, CANVAS_H - paddle.h);
-  } else if (kind === 'shrinkOpponent') {
-    const paddle = state.aiPaddle;
-    const centre = paddle.y + paddleHeight(paddle) / 2;
-    paddle.h = shrinkOpponentPaddleOn.shrunkHeight(PADDLE_H);
     paddle.y = clamp(centre - paddle.h / 2, 0, CANVAS_H - paddle.h);
   } else if (kind === 'ghostBall') {
     effect.offset = (rng() * 2 - 1) * GHOST_NOISE;
@@ -810,7 +787,7 @@ module.exports = {
 
   // Power-Ups
   spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps, resolveBonusBall,
-  updatePowerUps, ballTimeScale, ballAlpha, isAiFrozen,
+  updatePowerUps, ballTimeScale, isAiFrozen,
 
   // Factory functions
   makeBall,

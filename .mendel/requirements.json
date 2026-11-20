@@ -41,24 +41,6 @@
     },
     {
       "kind": "trait",
-      "name": "pickup-pacing",
-      "description": "How fast Power-Ups pickups spawn and how long their effects last: chaotic, fair or dull is only judged by playing it.",
-      "env": "PICKUP_PACING",
-      "dispatch": "lib/pickup-pacing.js:pickupPacing",
-      "default": "steady",
-      "options": [
-        {
-          "value": "steady",
-          "path": "lib/pickup-pacings/steady.js"
-        },
-        {
-          "value": "rare-and-long",
-          "path": "lib/pickup-pacings/rare-and-long.js"
-        }
-      ]
-    },
-    {
-      "kind": "trait",
       "name": "where-the-effect-badge-sits",
       "description": "Where the active Power-Ups effects and their countdowns are shown without covering the ball or the mode badge at bottom-left.",
       "env": "WHERE_THE_EFFECT_BADGE_SITS",
@@ -68,10 +50,6 @@
         {
           "value": "bottom-right-corner",
           "path": "lib/effect-badge-placements/bottom-right-corner.js"
-        },
-        {
-          "value": "top-centre",
-          "path": "lib/effect-badge-placements/top-centre.js"
         },
         {
           "value": "beside-player-paddle",
@@ -99,24 +77,6 @@
     },
     {
       "kind": "trait",
-      "name": "ghost-ball",
-      "description": "Whether the Ghost Ball pickup (makes the ball semi-transparent and flicker for a few seconds while still colliding normally) is among the pickups in the Power-Ups fun mode.",
-      "env": "GHOST_BALL",
-      "dispatch": "lib/ghost-ball.js:ghostBall",
-      "default": "off",
-      "options": [
-        {
-          "value": "on",
-          "path": "lib/ghost-balls/on.js"
-        },
-        {
-          "value": "off",
-          "path": "lib/ghost-balls/off.js"
-        }
-      ]
-    },
-    {
-      "kind": "trait",
       "name": "big-paddle-burst",
       "description": "Whether the Big Paddle pickup (enlarges the player paddle by about 50% for a few seconds, then returns it to normal size) is among the pickups in the Power-Ups fun mode.",
       "env": "BIG_PADDLE_BURST",
@@ -135,29 +95,11 @@
     },
     {
       "kind": "trait",
-      "name": "freeze-ai",
-      "description": "Whether the Freeze AI pickup (stops the AI paddle from moving for a short time) is among the pickups in the Power-Ups fun mode.",
-      "env": "FREEZE_AI",
-      "dispatch": "lib/freeze-ai.js:freezeAi",
-      "default": "off",
-      "options": [
-        {
-          "value": "on",
-          "path": "lib/freeze-ais/on.js"
-        },
-        {
-          "value": "off",
-          "path": "lib/freeze-ais/off.js"
-        }
-      ]
-    },
-    {
-      "kind": "trait",
       "name": "multi-ball",
       "description": "Whether the Multi-ball pickup (spawns an extra ball for a few seconds; the point continues until all balls are resolved) is among the pickups in the Power-Ups fun mode.",
       "env": "MULTI_BALL",
       "dispatch": "lib/multi-ball.js:multiBall",
-      "default": "off",
+      "default": "on",
       "options": [
         {
           "value": "off",
@@ -166,24 +108,6 @@
         {
           "value": "on",
           "path": "lib/multi-balls/on.js"
-        }
-      ]
-    },
-    {
-      "kind": "trait",
-      "name": "shrink-opponent-paddle",
-      "description": "Whether the Shrink opponent paddle pickup (shrinks the AI paddle by about a third for a few seconds) is among the pickups in the Power-Ups fun mode.",
-      "env": "SHRINK_OPPONENT_PADDLE",
-      "dispatch": "lib/shrink-opponent-paddle.js:shrinkOpponentPaddle",
-      "default": "off",
-      "options": [
-        {
-          "value": "off",
-          "path": "lib/shrink-opponent-paddles/off.js"
-        },
-        {
-          "value": "on",
-          "path": "lib/shrink-opponent-paddles/on.js"
         }
       ]
     },
