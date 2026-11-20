@@ -10,17 +10,43 @@
 
 const fs   = require('fs');
 const path = require('path');
+const http = require('http');
 
 const {
-  CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT,
+  CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT, SCORE_WIN,
   BARRIER_LAYOUT, MODES, FUN_MODE_KEYS, SPLASH_MS,
   pickFunMode, applyMode, serveBalls, splashThenBadge,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
   moveAiPaddle, updateBall, updateBalls, bounceOffBarriers, pickAiTarget,
+  POWER_UP_KEYS, PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, DEFAULT_PACING, DEFAULT_POWER_UP_SET,
+  spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps, updatePowerUps,
+  ballTimeScale, isAiFrozen,
 } = require('../game-logic');
 
+const { createApp } = require('../server');
+const { createFakePrisma } = require('./helpers/fakePrisma');
 const controlPanelButton = require('../lib/fun-button-placements/control-panel-button');
 const splashThenBadgeOption = require('../lib/mode-announcements/splash-then-badge');
+const steadyPacing = require('../lib/pickup-pacings/steady');
+const bottomRightCorner = require('../lib/effect-badge-placements/bottom-right-corner');
+const besidePlayerPaddle = require('../lib/effect-badge-placements/beside-player-paddle');
+const originalFourSet = require('../lib/power-up-sets/original-four');
+const slowMoOn = require('../lib/slow-mos/on');
+const slowMoOff = require('../lib/slow-mos/off');
+const { slowMo } = require('../lib/slow-mo');
+const ghostBallOff = require('../lib/ghost-balls/off');
+const bigPaddleBurstOn = require('../lib/big-paddle-bursts/on');
+const bigPaddleBurstOff = require('../lib/big-paddle-bursts/off');
+const { bigPaddleBurst } = require('../lib/big-paddle-burst');
+const freezeAiOff = require('../lib/freeze-ais/off');
+const multiBallOn = require('../lib/multi-balls/on');
+const multiBallOff = require('../lib/multi-balls/off');
+const { multiBall } = require('../lib/multi-ball');
+const shrinkOpponentPaddleOff = require('../lib/shrink-opponent-paddles/off');
+const obstructionsOn = require('../lib/add-random-obstructions-to-the-game-areas/on');
+const obstructionsOff = require('../lib/add-random-obstructions-to-the-game-areas/off');
+const { addRandomObstructionsToTheGameArea } = require('../lib/add-random-obstructions-to-the-game-area');
+const { effectBadgePlacement } = require('../lib/effect-badge-placement');
 
 function newState() {
   return { game: makeGame(), playerPaddle: makePlayerPaddle(), aiPaddle: makeAiPaddle() };
@@ -32,14 +58,21 @@ function ballAt(x, y, vx, vy) {
 }
 
 describe('pickFunMode', () => {
-  test('only picks one of the three fun modes, never normal', () => {
-    expect(FUN_MODE_KEYS).toEqual(['bigPaddle', 'multiBall', 'bouncyBarriers']);
+  test('only picks one of the four fun modes, never normal', () => {
+    expect(FUN_MODE_KEYS).toEqual(['bigPaddle', 'multiBall', 'bouncyBarriers', 'powerUps']);
   });
 
   test('uses the injected random source', () => {
     expect(pickFunMode(() => 0)).toBe('bigPaddle');
-    expect(pickFunMode(() => 0.5)).toBe('multiBall');
-    expect(pickFunMode(() => 0.99)).toBe('bouncyBarriers');
+    expect(pickFunMode(() => 0.3)).toBe('multiBall');
+    expect(pickFunMode(() => 0.6)).toBe('bouncyBarriers');
+    expect(pickFunMode(() => 0.99)).toBe('powerUps');
+  });
+
+  test('every fun mode is reachable across the [0, 1) range', () => {
+    const seen = new Set();
+    for (let i = 0; i < 100; i++) seen.add(pickFunMode(() => i / 100));
+    expect([...seen].sort()).toEqual([...FUN_MODE_KEYS].sort());
   });
 
   test('a random source returning 1 still picks a valid mode', () => {
@@ -57,6 +90,8 @@ describe('modes', () => {
     expect(game.mode).toBe('normal');
     expect(game.extraBalls).toEqual([]);
     expect(game.barriers).toEqual([]);
+    expect(game.pickups).toEqual([]);
+    expect(game.effects).toEqual([]);
     expect(playerPaddle.h).toBe(PADDLE_H);
   });
 
@@ -85,7 +120,10 @@ describe('modes', () => {
       expect(state.game.mode).toBe('normal');
       expect(state.game.extraBalls).toEqual([]);
       expect(state.game.barriers).toEqual([]);
+      expect(state.game.pickups).toEqual([]);
+      expect(state.game.effects).toEqual([]);
       expect(state.playerPaddle.h).toBe(PADDLE_H);
+      expect(state.aiPaddle.h).toBe(PADDLE_H);
     }
   });
 
@@ -141,28 +179,131 @@ describe('big paddle', () => {
 });
 
 describe('multi-ball', () => {
-  test('a ball leaving the field scores once and ends the play phase', () => {
-    const state = newState();
-    applyMode(state, 'multiBall');
-    state.game.phase = 'playing';
-    const ball = ballAt(CANVAS_W + 5, 300, 100, 0);
-    state.game.extraBalls = [ballAt(CANVAS_W + 5, 200, 100, 0), ballAt(CANVAS_W + 5, 400, 100, 0)];
-
-    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
-    expect(state.playerPaddle.score).toBe(1);
-    expect(state.aiPaddle.score).toBe(0);
-    expect(state.game.phase).toBe('scored');
-  });
-
-  test('an extra ball leaving the field scores too', () => {
+  // Three balls in play: primary at the centre, extras parked mid-field.
+  function threeBalls() {
     const state = newState();
     applyMode(state, 'multiBall');
     state.game.phase = 'playing';
     const ball = ballAt(400, 300, 0, 0);
-    state.game.extraBalls = [ballAt(-BALL_SIZE - 5, 200, -100, 0), ballAt(400, 400, 0, 0)];
+    state.game.extraBalls = [ballAt(400, 200, 0, 0), ballAt(400, 400, 0, 0)];
+    return { state, ball, balls: [ball].concat(state.game.extraBalls) };
+  }
+  const step = (t) => updateBalls(t.ball, t.state.playerPaddle, t.state.aiPaddle, t.state.game, 1 / 60, t.rally || (t.rally = makeRally()));
+  const exitLeft = (b) => { b.x = -BALL_SIZE - 5; b.vx = -100; };
+  const exitRight = (b) => { b.x = CANVAS_W + 5; b.vx = 100; };
 
-    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
-    expect(state.aiPaddle.score).toBe(1);
+  test('the first miss removes that ball without a point or ending the play phase', () => {
+    const t = threeBalls();
+    exitRight(t.balls[1]);
+    step(t);
+    expect(t.balls[1].out).toBeTruthy();
+    expect(t.state.playerPaddle.score).toBe(0);
+    expect(t.state.aiPaddle.score).toBe(0);
+    expect(t.state.game.phase).toBe('playing');
+    expect(t.rally.flashFrames).toBe(0);
+  });
+
+  test('a removed ball stays gone while the rest keep playing', () => {
+    const t = threeBalls();
+    exitLeft(t.balls[2]);
+    step(t);
+    const gone = t.balls[2];
+    gone.vx = 100;
+    const x = gone.x;
+    step(t);
+    expect(gone.x).toBe(x);
+    expect(t.state.game.phase).toBe('playing');
+  });
+
+  test('the last ball leaving ends the point; missing it on the left scores for the AI', () => {
+    const t = threeBalls();
+    exitLeft(t.balls[1]); step(t);
+    exitLeft(t.balls[2]); step(t);
+    expect(t.state.game.phase).toBe('playing');
+    exitLeft(t.ball); step(t);
+    expect(t.state.aiPaddle.score).toBe(1);
+    expect(t.state.playerPaddle.score).toBe(0);
+    expect(t.state.game.phase).toBe('scored');
+    expect(t.state.game.pauseTimer).toBe(1.2);
+    expect(t.rally.flashFrames).toBeGreaterThan(0);
+  });
+
+  test('the last ball leaving on the right scores for the player', () => {
+    const t = threeBalls();
+    exitRight(t.balls[2]); step(t);
+    exitRight(t.balls[1]); step(t);
+    exitRight(t.ball); step(t);
+    expect(t.state.playerPaddle.score).toBe(1);
+    expect(t.state.aiPaddle.score).toBe(0);
+    expect(t.state.game.phase).toBe('scored');
+  });
+
+  test('an extra ball may be the last one to leave', () => {
+    const t = threeBalls();
+    exitLeft(t.ball); step(t);
+    exitLeft(t.balls[1]); step(t);
+    exitRight(t.balls[2]); step(t);
+    expect(t.state.playerPaddle.score).toBe(1);
+    expect(t.state.aiPaddle.score).toBe(0);
+  });
+
+  test('mixed-side misses: only the last ball decides the scorer', () => {
+    const t = threeBalls();
+    exitRight(t.balls[1]); step(t);     // AI missed: no point for the player
+    exitRight(t.ball); step(t);         // AI missed again: still no point
+    expect(t.state.playerPaddle.score).toBe(0);
+    exitLeft(t.balls[2]); step(t);      // player misses the last ball
+    expect(t.state.aiPaddle.score).toBe(1);
+    expect(t.state.playerPaddle.score).toBe(0);
+
+    const u = threeBalls();
+    exitLeft(u.balls[1]); step(u);
+    exitLeft(u.ball); step(u);
+    exitRight(u.balls[2]); step(u);     // AI misses the last ball
+    expect(u.state.playerPaddle.score).toBe(1);
+    expect(u.state.aiPaddle.score).toBe(0);
+  });
+
+  test('the last miss can win the game and clears power-ups', () => {
+    const t = threeBalls();
+    t.state.playerPaddle.score = SCORE_WIN - 1;
+    t.state.game.pickups = [{ kind: 'slowMo', x: 0, y: 0, w: 10, h: 10, ttl: 5 }];
+    exitRight(t.balls[1]); step(t);
+    exitRight(t.balls[2]); step(t);
+    expect(t.state.game.phase).toBe('playing');
+    exitRight(t.ball); step(t);
+    expect(t.state.playerPaddle.score).toBe(SCORE_WIN);
+    expect(t.state.game.phase).toBe('won');
+    expect(t.state.game.winner).toBe('player');
+    expect(t.state.game.pickups).toEqual([]);
+    expect(t.state.game.effects).toEqual([]);
+  });
+
+  test('the next serve brings every removed ball back to the centre', () => {
+    const t = threeBalls();
+    exitLeft(t.ball); exitRight(t.balls[1]); exitLeft(t.balls[2]);
+    step(t); step(t);
+    expect(t.ball.out).toBeTruthy();
+    serveBalls(t.ball, t.state.game, 1);
+    expect(t.state.game.extraBalls).toHaveLength(EXTRA_BALL_COUNT);
+    [t.ball].concat(t.state.game.extraBalls).forEach((b) => {
+      expect(b.out).toBeFalsy();
+      expect(b.x).toBe(CANVAS_W / 2 - BALL_SIZE / 2);
+      expect(b.vx).toBeGreaterThan(0);
+    });
+  });
+
+  test('the AI ignores removed balls and chases the ones that remain', () => {
+    const gone = ballAt(700, 100, 100, 0);
+    gone.out = 'right';
+    const left = ballAt(300, 500, 100, 0);
+    const other = ballAt(200, 50, -100, 0);
+    expect(pickAiTarget(gone, [left, other])).toBe(left);
+    expect(pickAiTarget(gone, [other])).toBe(other);
+    const primary = ballAt(300, 200, -100, 0);
+    const out = ballAt(700, 100, 100, 0);
+    out.out = 'right';
+    expect(pickAiTarget(primary, [out])).toBe(primary);
   });
 
   test('serving resets every ball to the centre', () => {
@@ -235,6 +376,661 @@ describe('bouncy barriers', () => {
   });
 });
 
+describe('power-ups mode', () => {
+  // rng that walks through a fixed list of values, then repeats the last.
+  const seq = (...vals) => { let i = 0; return () => vals[Math.min(i++, vals.length - 1)]; };
+
+  function powerUpState() {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    return state;
+  }
+
+  test('is registered as a named fun mode with the four pickups', () => {
+    expect(MODES.powerUps.name).toBe('Power-Ups');
+    expect(MODES.powerUps.fun).toBe(true);
+    expect(POWER_UP_KEYS).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi', 'multiBall']);
+    expect(splashThenBadge('powerUps')).toEqual({
+      splashText: 'Power-Ups', splashMs: 1500, badgeText: 'Power-Ups',
+    });
+  });
+
+  test('setup creates an empty field and arms the spawn timer', () => {
+    const { game } = powerUpState();
+    expect(game.mode).toBe('powerUps');
+    expect(game.pickups).toEqual([]);
+    expect(game.effects).toEqual([]);
+    expect(game.pickupTimer).toBe(DEFAULT_PACING.spawnIntervalS);
+  });
+
+  test('spawnPickup picks each kind from the rng and keeps at most one on the field', () => {
+    DEFAULT_POWER_UP_SET.kinds.forEach((kind, i) => {
+      const { game } = powerUpState();
+      const p = spawnPickup(game, () => (i + 0.5) / DEFAULT_POWER_UP_SET.kinds.length);
+      expect(p.kind).toBe(kind);
+      expect(p.ttl).toBe(DEFAULT_PACING.pickupLifetimeS);
+      expect(p.x).toBeGreaterThanOrEqual(200);
+      expect(p.x + PICKUP_SIZE).toBeLessThanOrEqual(CANVAS_W - 200);
+      expect(p.y).toBeGreaterThanOrEqual(0);
+      expect(p.y + PICKUP_SIZE).toBeLessThanOrEqual(CANVAS_H);
+      expect(spawnPickup(game, () => 0)).toBeNull();
+      expect(game.pickups).toHaveLength(1);
+    });
+  });
+
+  test('collectPickup removes a pickup the ball overlaps and ignores a miss', () => {
+    const { game } = powerUpState();
+    const p = spawnPickup(game, () => 0.1);
+    expect(collectPickup(game, ballAt(p.x + 30, p.y + 30, 0, 0))).toBeNull();
+    expect(game.pickups).toHaveLength(1);
+    expect(collectPickup(game, ballAt(p.x + 2, p.y + 2, 0, 0))).toBe(p);
+    expect(game.pickups).toEqual([]);
+  });
+
+  test('Slow-Mo scales ball speed, then expires after its duration', () => {
+    const state = powerUpState();
+    applyEffect(state, 'slowMo');
+    expect(ballTimeScale(state.game)).toBe(SLOW_MO_FACTOR);
+
+    state.game.phase = 'playing';
+    const ball = ballAt(300, 300, 200, 0);
+    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1, makeRally());
+    expect(ball.x).toBeCloseTo(300 + 200 * SLOW_MO_FACTOR);
+
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.slowMo - 0.1);
+    expect(state.game.effects).toHaveLength(1);
+    tickEffects(state, 0.2);
+    expect(state.game.effects).toEqual([]);
+    expect(ballTimeScale(state.game)).toBe(1);
+  });
+
+  test('Ghost Ball gives the AI a noisy, stale target that re-rolls over time', () => {
+    const state = powerUpState();
+    const ball = ballAt(400, 300, 100, 0);
+    expect(pickAiTarget(ball, [], state.game)).toBe(ball);
+
+    applyEffect(state, 'ghostBall', () => 1);        // offset = +GHOST_NOISE
+    const ghost = pickAiTarget(ball, [], state.game);
+    expect(ghost.y).toBeCloseTo(300 + GHOST_NOISE);
+    expect(ball.y).toBe(300);                          // the real ball is untouched
+
+    tickEffects(state, 0.1, () => 0);                  // still stale
+    expect(pickAiTarget(ball, [], state.game).y).toBeCloseTo(300 + GHOST_NOISE);
+    tickEffects(state, 1, () => 0);                    // re-rolled to -GHOST_NOISE
+    expect(pickAiTarget(ball, [], state.game).y).toBeCloseTo(300 - GHOST_NOISE);
+
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.ghostBall);
+    expect(pickAiTarget(ball, [], state.game)).toBe(ball);
+  });
+
+  test('Big Paddle raises only the player paddle, then restores it on expiry', () => {
+    const state = powerUpState();
+    applyEffect(state, 'bigPaddle');
+    expect(state.playerPaddle.h).toBe(Math.round(PADDLE_H * BIG_PADDLE_FACTOR));
+    expect(state.aiPaddle.h).toBe(PADDLE_H);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.bigPaddle + 0.1);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('Big Paddle at the screen edge stays on the field when it ends', () => {
+    const state = powerUpState();
+    state.playerPaddle.y = CANVAS_H - PADDLE_H;
+    applyEffect(state, 'bigPaddle');
+    expect(state.playerPaddle.y + state.playerPaddle.h).toBeLessThanOrEqual(CANVAS_H);
+    tickEffects(state, 10);
+    expect(state.playerPaddle.y + PADDLE_H).toBeLessThanOrEqual(CANVAS_H);
+  });
+
+  test('Freeze AI stops the AI paddle for about 2 seconds', () => {
+    const state = powerUpState();
+    const target = ballAt(600, 500, 100, 0);
+    applyEffect(state, 'freezeAi');
+    expect(isAiFrozen(state.game)).toBe(true);
+    const y0 = state.aiPaddle.y;
+    moveAiPaddle(state.aiPaddle, target, 0.1, 0, state.game);
+    expect(state.aiPaddle.y).toBe(y0);
+
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.freezeAi + 0.1);
+    expect(isAiFrozen(state.game)).toBe(false);
+    moveAiPaddle(state.aiPaddle, target, 0.1, 0, state.game);
+    expect(state.aiPaddle.y).toBeGreaterThan(y0);
+  });
+
+  test('every effect uses its steady-pacing duration and re-collecting refreshes it', () => {
+    expect(DEFAULT_PACING).toEqual(steadyPacing.clientConfig());
+    const state = powerUpState();
+    POWER_UP_KEYS.forEach((kind) => {
+      expect(applyEffect(state, kind).remaining).toBe(steadyPacing.EFFECT_DURATIONS_S[kind]);
+    });
+    tickEffects(state, 1);
+    applyEffect(state, 'slowMo');
+    expect(state.game.effects.filter((e) => e.kind === 'slowMo')).toHaveLength(1);
+    expect(state.game.effects.find((e) => e.kind === 'slowMo').remaining).toBe(5);
+    expect(applyEffect(state, 'nope')).toBeNull();
+  });
+
+  test('updatePowerUps spawns a pickup every ~6s, expires it after ~8s, and applies a hit', () => {
+    const state = powerUpState();
+    const far = ballAt(10, 10, 0, 0);
+    updatePowerUps(state, [far], 5.9, () => 0.1);
+    expect(state.game.pickups).toHaveLength(0);
+    updatePowerUps(state, [far], 0.2, () => 0.1);
+    expect(state.game.pickups).toHaveLength(1);
+    // A long spawn interval keeps the next pickup away while the first expires.
+    const slowSpawn = Object.assign({}, DEFAULT_PACING, { spawnIntervalS: 100 });
+    state.game.pickupTimer = 100;
+    updatePowerUps(state, [far], 7.7, () => 0.1, slowSpawn);
+    expect(state.game.pickups).toHaveLength(1);
+    updatePowerUps(state, [far], 0.4, () => 0.1, slowSpawn);
+    expect(state.game.pickups).toHaveLength(0);
+
+    const p = spawnPickup(state.game, () => 0.6);       // bigPaddle (index 2)
+    updatePowerUps(state, [ballAt(p.x, p.y, 0, 0)], 0.01, () => 0.1);
+    expect(state.game.pickups).toEqual([]);
+    expect(state.game.effects.map((e) => e.kind)).toEqual(['bigPaddle']);
+  });
+
+  function stateWithEverythingActive() {
+    const state = powerUpState();
+    POWER_UP_KEYS.forEach((kind) => applyEffect(state, kind));
+    spawnPickup(state.game, () => 0);
+    return state;
+  }
+
+  test('a scored point clears every pickup and effect and restores the paddle', () => {
+    const state = stateWithEverythingActive();
+    state.game.phase = 'playing';
+    const ball = ballAt(CANVAS_W + 5, 300, 100, 0);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('scored');
+    expect(state.game.pickups).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+    expect(state.game.pickupTimer).toBe(DEFAULT_PACING.spawnIntervalS);
+  });
+
+  test('the winning point clears them too (game over)', () => {
+    const state = stateWithEverythingActive();
+    state.game.phase = 'playing';
+    state.aiPaddle.score = 6;
+    const ball = ballAt(-BALL_SIZE - 5, 300, -100, 0);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('won');
+    expect(state.game.pickups).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+  });
+
+  test('leaving the mode (any applyMode) tears everything down', () => {
+    for (const next of ['normal', 'bigPaddle', 'multiBall', 'bouncyBarriers']) {
+      const state = stateWithEverythingActive();
+      applyMode(state, next);
+      expect(state.game.pickups).toEqual([]);
+      expect(state.game.effects).toEqual([]);
+      expect(ballTimeScale(state.game)).toBe(1);
+      expect(isAiFrozen(state.game)).toBe(false);
+      expect(state.aiPaddle.h).toBe(PADDLE_H);
+      expect(state.playerPaddle.h).toBe(next === 'bigPaddle' ? Math.round(PADDLE_H * BIG_PADDLE_FACTOR) : PADDLE_H);
+    }
+  });
+
+  test('clearPowerUps is harmless in other modes', () => {
+    const state = newState();
+    applyMode(state, 'bigPaddle');
+    clearPowerUps(state);
+    expect(state.playerPaddle.h).toBe(Math.round(PADDLE_H * BIG_PADDLE_FACTOR));
+  });
+
+  test('Normal play ignores power-ups: full speed, AI moves, no pickups', () => {
+    const state = newState();
+    state.game.phase = 'playing';
+    expect(ballTimeScale(state.game)).toBe(1);
+    expect(isAiFrozen(state.game)).toBe(false);
+    const ball = ballAt(300, 300, 200, 0);
+    updateBalls(ball, state.playerPaddle, state.aiPaddle, state.game, 1, makeRally());
+    expect(ball.x).toBeCloseTo(500);
+    const y0 = state.aiPaddle.y;
+    moveAiPaddle(state.aiPaddle, ballAt(600, 500, 100, 0), 0.1, 0, state.game);
+    expect(state.aiPaddle.y).toBeGreaterThan(y0);
+  });
+});
+
+describe('pickup-pacing and where-the-effect-badge-sits options', () => {
+  test('steady pacing: one pickup per 6s, 8s on the field, 5/5/5/2s effects', () => {
+    expect(steadyPacing.clientConfig()).toEqual({
+      pacing: 'steady',
+      spawnIntervalS: 6,
+      pickupLifetimeS: 8,
+      effectDurationsS: { slowMo: 5, ghostBall: 5, bigPaddle: 5, freezeAi: 2, multiBall: 5 },
+    });
+  });
+
+  test('bottom-right-corner placement', () => {
+    expect(bottomRightCorner.clientConfig()).toEqual({ placement: 'bottom-right-corner' });
+  });
+
+  describe('beside-player-paddle placement', () => {
+    const kinds = { slowMo: { name: 'Slow-Mo', colour: '#4fc3f7' }, freezeAi: { name: 'Freeze AI', colour: '#fff' } };
+    const durations = { slowMo: 5, freezeAi: 2 };
+    const paddle = { x: 30, y: 100, w: 12, h: 80 };
+
+    test('its config names the placement', () => {
+      expect(besidePlayerPaddle.clientConfig()).toEqual({ placement: 'beside-player-paddle' });
+    });
+
+    test('chips sit to the right of the paddle, stacked from its top, with the seconds left', () => {
+      const chips = besidePlayerPaddle.layoutChips(
+        [{ kind: 'slowMo', remaining: 2.5 }, { kind: 'freezeAi', remaining: 2 }], paddle, kinds, durations, 600);
+      expect(chips).toHaveLength(2);
+      expect(chips[0].x).toBeGreaterThan(paddle.x + paddle.w);
+      expect(chips[0].y).toBe(100);
+      expect(chips[1].y).toBe(100 + besidePlayerPaddle.CHIP_H + besidePlayerPaddle.CHIP_GAP);
+      expect(chips[0].label).toBe('Slow-Mo 3s');
+      expect(chips[0].colour).toBe('#4fc3f7');
+    });
+
+    test('the chips follow the paddle and stay on the canvas', () => {
+      const effects = [{ kind: 'slowMo', remaining: 1 }, { kind: 'freezeAi', remaining: 1 }];
+      const moved = besidePlayerPaddle.layoutChips(effects, { ...paddle, y: 300 }, kinds, durations, 600);
+      expect(moved[0].y).toBe(300);
+      const low = besidePlayerPaddle.layoutChips(effects, { ...paddle, y: 590 }, kinds, durations, 600);
+      const last = low[low.length - 1];
+      expect(last.y + last.h).toBeLessThanOrEqual(600);
+    });
+
+    test('the countdown bar shrinks with the time left and is clamped to 0..1', () => {
+      const frac = (remaining) =>
+        besidePlayerPaddle.layoutChips([{ kind: 'slowMo', remaining }], paddle, kinds, durations, 600)[0].fraction;
+      expect(frac(5)).toBe(1);
+      expect(frac(2.5)).toBeCloseTo(0.5);
+      expect(frac(0)).toBe(0);
+      expect(frac(9)).toBe(1);
+    });
+
+    test('no effects means no chips and nothing drawn', () => {
+      const ctx = { save: jest.fn(), restore: jest.fn() };
+      expect(besidePlayerPaddle.layoutChips([], paddle, kinds, durations, 600)).toEqual([]);
+      expect(besidePlayerPaddle.drawChips(ctx, [], paddle, kinds, durations, 600)).toEqual([]);
+      expect(ctx.save).not.toHaveBeenCalled();
+    });
+
+    test('drawChips paints a chip and a bar per effect and restores the context', () => {
+      const ctx = {
+        save: jest.fn(), restore: jest.fn(), setLineDash: jest.fn(),
+        fillRect: jest.fn(), fillText: jest.fn(),
+      };
+      besidePlayerPaddle.drawChips(ctx, [{ kind: 'slowMo', remaining: 2 }], paddle, kinds, durations, 600);
+      expect(ctx.fillRect).toHaveBeenCalledTimes(3);
+      expect(ctx.fillText).toHaveBeenCalledWith('Slow-Mo 2s', expect.any(Number), expect.any(Number));
+      expect(ctx.restore).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test('the badge dispatcher and the pacing return a well-formed config', () => {
+    expect(steadyPacing.clientConfig().spawnIntervalS).toBeGreaterThan(0);
+    expect(Object.keys(steadyPacing.clientConfig().effectDurationsS).sort()).toEqual([...POWER_UP_KEYS].sort());
+    expect(typeof effectBadgePlacement().placement).toBe('string');
+  });
+});
+
+describe('original-four power-up set option', () => {
+  test('offers Slow-Mo, Ghost Ball, Big Paddle and Freeze AI', () => {
+    expect(originalFourSet.clientConfig()).toEqual({
+      set: 'original-four',
+      kinds: ['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi'],
+    });
+  });
+
+  test('is the set game-logic uses by default and every kind can spawn', () => {
+    expect(DEFAULT_POWER_UP_SET).toEqual(originalFourSet.clientConfig());
+    const seen = new Set();
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      seen.add(spawnPickup(game, () => r).kind);
+    }
+    expect([...seen].sort()).toEqual([...DEFAULT_POWER_UP_SET.kinds].sort());
+  });
+
+  test('a set of one kind only spawns that kind', () => {
+    const game = { pickups: [] };
+    const p = spawnPickup(game, Math.random, undefined, { set: 'x', kinds: ['freezeAi'] });
+    expect(p.kind).toBe('freezeAi');
+  });
+
+  test('every kind it offers is a known power-up', () => {
+    for (const k of originalFourSet.KINDS) expect(POWER_UP_KEYS).toContain(k);
+  });
+});
+
+describe('slow-mo options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on keeps Slow-Mo in the set and its effect slows the ball, then restores it', () => {
+    const set = slowMoOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    const game = { pickups: [] };
+    expect(spawnPickup(game, () => 0, undefined, set).kind).toBe('slowMo');
+    const state = newState();
+    applyEffect(state, 'slowMo');
+    expect(ballTimeScale(state.game)).toBe(SLOW_MO_FACTOR);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.slowMo + 0.1);
+    expect(ballTimeScale(state.game)).toBe(1);
+  });
+
+  test('off leaves Slow-Mo out and the other pickups in', () => {
+    const set = slowMoOff.applyTo(full());
+    expect(set.kinds).toEqual(['ghostBall', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('slowMo');
+    }
+    expect(full().kinds).toContain('slowMo');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(slowMo(full(), {})).toEqual(slowMoOn.applyTo(full()));
+    expect(slowMo(full(), {}).kinds).toContain('slowMo');
+  });
+});
+
+describe('ghost-ball off', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('off leaves Ghost Ball out and the other pickups in', () => {
+    const set = ghostBallOff.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('ghostBall');
+    }
+    expect(full().kinds).toContain('ghostBall');   // the input is not mutated
+  });
+});
+
+describe('big-paddle-burst options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on keeps Big Paddle in the set', () => {
+    const set = bigPaddleBurstOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    const game = { pickups: [] };
+    expect(spawnPickup(game, () => 0.6, undefined, set).kind).toBe('bigPaddle');
+  });
+
+  test('on enlarges the player paddle while the effect runs, then returns it to normal size', () => {
+    const state = newState();
+    const normal = state.playerPaddle.h;
+    applyEffect(state, 'bigPaddle');
+    expect(state.playerPaddle.h).toBeGreaterThan(normal * 1.4);
+    expect(state.playerPaddle.h).toBeLessThan(normal * 1.7);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.bigPaddle + 0.1);
+    expect(state.playerPaddle.h).toBe(normal);
+  });
+
+  test('off leaves Big Paddle out and the other pickups in', () => {
+    const set = bigPaddleBurstOff.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('bigPaddle');
+    }
+    expect(full().kinds).toContain('bigPaddle');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(bigPaddleBurst(full(), {})).toEqual(bigPaddleBurstOn.applyTo(full()));
+    expect(bigPaddleBurst(full(), {}).kinds).toContain('bigPaddle');
+  });
+});
+
+describe('freeze-ai off', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('off leaves Freeze AI out and the other pickups in', () => {
+    const set = freezeAiOff.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      const game = { pickups: [] };
+      expect(spawnPickup(game, () => r, undefined, set).kind).not.toBe('freezeAi');
+    }
+    expect(full().kinds).toContain('freezeAi');   // the input is not mutated
+  });
+});
+
+describe('multi-ball options', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('on adds Multi-ball to the set once, without mutating the input', () => {
+    const set = multiBallOn.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi', 'multiBall']);
+    expect(multiBallOn.applyTo(set).kinds).toEqual(set.kinds);
+    expect(full().kinds).not.toContain('multiBall');
+    expect(spawnPickup({ pickups: [] }, () => 0.99, undefined, set).kind).toBe('multiBall');
+  });
+
+  test('on: hitting it spawns an extra ball for a few seconds, then removes it', () => {
+    const state = newState();
+    state.game.mode = 'powerUps';
+    const primary = ballAt(400, 300, 300, 0);
+    const effect = applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, primary);
+    expect(effect.remaining).toBe(DEFAULT_PACING.effectDurationsS.multiBall);
+    expect(state.game.extraBalls).toHaveLength(1);
+    const extra = state.game.extraBalls[0];
+    expect(extra.bonus).toBe(true);
+    expect(extra.x).toBe(primary.x);
+    expect(extra.angle).toBeCloseTo(primary.angle + multiBallOn.BONUS_ANGLE);
+    expect(extra.vy).not.toBe(0);
+    // re-collecting refreshes the timer without adding another ball
+    tickEffects(state, 1);
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, primary);
+    expect(state.game.extraBalls).toHaveLength(1);
+    expect(state.game.effects[0].remaining).toBe(DEFAULT_PACING.effectDurationsS.multiBall);
+    tickEffects(state, DEFAULT_PACING.effectDurationsS.multiBall + 0.1);
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('on: the extra ball leaving the field scores nothing and the point continues', () => {
+    const state = newState();
+    state.game.phase = 'playing';
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, ballAt(400, 300, 300, 0));
+    const extra = state.game.extraBalls[0];
+    extra.x = CANVAS_W + 5; extra.vx = 100; extra.vy = 0;
+    const primary = ballAt(400, 300, 100, 0);
+    updateBalls(primary, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('playing');
+    expect(state.playerPaddle.score).toBe(0);
+    expect(state.aiPaddle.score).toBe(0);
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('on: the point ends when the primary ball leaves, clearing the extra ball', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    state.game.phase = 'playing';
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, ballAt(400, 300, 300, 0));
+    const primary = ballAt(CANVAS_W + 5, 300, 100, 0);
+    updateBalls(primary, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('scored');
+    expect(state.playerPaddle.score).toBe(1);
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('on: a mode change removes the extra ball', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    applyEffect(state, 'multiBall', Math.random, DEFAULT_PACING, ballAt(400, 300, 300, 0));
+    applyMode(state, 'normal');
+    expect(state.game.extraBalls).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+  });
+
+  test('off leaves Multi-ball out and the other pickups in', () => {
+    const withIt = multiBallOn.applyTo(full());
+    const set = multiBallOff.applyTo(withIt);
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      expect(spawnPickup({ pickups: [] }, () => r, undefined, set).kind).not.toBe('multiBall');
+    }
+    expect(withIt.kinds).toContain('multiBall');   // the input is not mutated
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(multiBall(full(), {})).toEqual(multiBallOn.applyTo(full()));
+    expect(multiBall(full(), {}).kinds).toContain('multiBall');
+  });
+});
+
+describe('shrink-opponent-paddle off', () => {
+  const full = () => originalFourSet.clientConfig();
+
+  test('off leaves Shrink Opponent out and the other pickups in', () => {
+    const set = shrinkOpponentPaddleOff.applyTo(full());
+    expect(set.kinds).toEqual(['slowMo', 'ghostBall', 'bigPaddle', 'freezeAi']);
+    for (const r of [0, 0.3, 0.6, 0.99]) {
+      expect(spawnPickup({ pickups: [] }, () => r, undefined, set).kind).not.toBe('shrinkOpponent');
+    }
+    expect(set.kinds).not.toContain('shrinkOpponent');
+  });
+});
+
+describe('add-random-obstructions-to-the-game-area options', () => {
+  const full = () => originalFourSet.clientConfig();
+  // A deterministic rng cycling through fixed values.
+  const seq = (...vals) => { let i = 0; return () => vals[i++ % vals.length]; };
+
+  test('on switches obstructions on without touching the pickups or the input', () => {
+    const set = obstructionsOn.applyTo(full());
+    expect(set.obstructions).toBe(true);
+    expect(set.kinds).toEqual(full().kinds);
+    expect(full().obstructions).toBeUndefined();
+  });
+
+  test('on: makes paddle-sized obstructions at assorted angles, clear of the serve point', () => {
+    const list = obstructionsOn.makeObstructions(seq(0.1, 0.9, 0.3, 0.8, 0.2, 0.6, 0.5, 0.15, 0.7, 0.95, 0.4, 0.25));
+    expect(list.length).toBe(obstructionsOn.OBSTRUCTION_COUNT);
+    for (const o of list) {
+      expect(o.w).toBe(obstructionsOn.OBSTRUCTION_LENGTH);
+      expect(o.h).toBe(obstructionsOn.OBSTRUCTION_THICKNESS);
+      expect(Math.hypot(o.cx - CANVAS_W / 2, o.cy - CANVAS_H / 2)).toBeGreaterThanOrEqual(90);
+    }
+    const angles = new Set(list.map((o) => o.angle.toFixed(3)));
+    expect(angles.size).toBeGreaterThan(1);
+    expect(list.some((o) => o.angle % (Math.PI / 2) > 0.01)).toBe(true);   // not all axis-aligned
+  });
+
+  test('on: the ball bounces off a flat face with equal angle in and out, speed unchanged', () => {
+    const bar = { cx: 400, cy: 300, w: 80, h: 12, angle: 0 };
+    const ball = ballAt(395, 300 - 6 - BALL_SIZE + 3, 120, 200);   // moving down into the top face
+    expect(obstructionsOn.bounceOffObstructions(ball, [bar])).toBe(true);
+    expect(ball.vx).toBeCloseTo(120);
+    expect(ball.vy).toBeCloseTo(-200);
+    expect(Math.hypot(ball.vx, ball.vy)).toBeCloseTo(Math.hypot(120, 200));
+    expect(ball.angle).toBeCloseTo(Math.atan2(-200, 120));
+  });
+
+  test('on: the ball bounces off a tilted obstruction by mirroring about its normal', () => {
+    const angle = Math.PI / 4;
+    const bar = { cx: 400, cy: 300, w: 80, h: 12, angle };
+    // Heading straight down onto a bar tilted 45°: the normal is (sin45, -cos45)-ish, so it leaves sideways.
+    const nx = Math.sin(angle);
+    const ny = -Math.cos(angle);
+    const ball = ballAt(400 + nx * 10 - 6, 300 + ny * 10 - 6, 0, 300);
+    const speedBefore = Math.hypot(ball.vx, ball.vy);
+    expect(obstructionsOn.bounceOffObstructions(ball, [bar])).toBe(true);
+    expect(ball.vx).toBeCloseTo(-2 * (300 * ny) * nx);
+    expect(ball.vy).toBeCloseTo(300 - 2 * (300 * ny) * ny);
+    expect(Math.hypot(ball.vx, ball.vy)).toBeCloseTo(speedBefore);
+    expect(Math.abs(ball.vx)).toBeGreaterThan(100);   // no longer vertical
+  });
+
+  test('on: a ball moving away from an obstruction, or missing it, is left alone', () => {
+    const bar = { cx: 400, cy: 300, w: 80, h: 12, angle: 0 };
+    const away = ballAt(395, 289, 0, -200);
+    expect(obstructionsOn.bounceOffObstructions(away, [bar])).toBe(false);
+    expect(away.vy).toBe(-200);
+    const miss = ballAt(100, 100, 200, 0);
+    expect(obstructionsOn.bounceOffObstructions(miss, [bar])).toBe(false);
+    expect(obstructionsOn.bounceOffObstructions(miss, [])).toBe(false);
+  });
+
+  test('on: updateBall bounces off the point\'s obstructions', () => {
+    const state = newState();
+    state.game.phase = 'playing';
+    state.game.obstructions = [{ cx: 400, cy: 300, w: 80, h: 12, angle: 0 }];
+    const ball = ballAt(395, 288, 0, 200);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(ball.vy).toBeLessThan(0);
+  });
+
+  test('on: updatePowerUps places them once per point and clearing removes them', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    const set = obstructionsOn.applyTo(full());
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions.length).toBe(obstructionsOn.OBSTRUCTION_COUNT);
+    const first = state.game.obstructions;
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions).toBe(first);   // not re-rolled mid-point
+    clearPowerUps(state);
+    expect(state.game.obstructions).toEqual([]);
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions.length).toBe(obstructionsOn.OBSTRUCTION_COUNT);
+    applyMode(state, 'normal');
+    expect(state.game.obstructions).toEqual([]);
+  });
+
+  test('on: a point ending clears the obstructions', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, obstructionsOn.applyTo(full()));
+    state.game.phase = 'playing';
+    const ball = ballAt(CANVAS_W + 5, 20, 300, 0);
+    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 1 / 60, makeRally());
+    expect(state.game.phase).toBe('scored');
+    expect(state.game.obstructions).toEqual([]);
+  });
+
+  test('off leaves obstructions out, and the default set places none', () => {
+    const withIt = obstructionsOn.applyTo(full());
+    const set = obstructionsOff.applyTo(withIt);
+    expect(set.obstructions).toBe(false);
+    expect(set.kinds).toEqual(full().kinds);
+    expect(withIt.obstructions).toBe(true);   // the input is not mutated
+    const state = newState();
+    applyMode(state, 'powerUps');
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, set);
+    expect(state.game.obstructions).toEqual([]);
+    updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING);
+    expect(state.game.obstructions).toEqual([]);
+  });
+
+  test('the dispatch takes the default option (on) when nothing chooses one', () => {
+    expect(addRandomObstructionsToTheGameArea(full(), {})).toEqual(obstructionsOn.applyTo(full()));
+    expect(addRandomObstructionsToTheGameArea(full(), {}).obstructions).toBe(true);
+  });
+});
+
+describe('GET /api/config for Power-Ups', () => {
+  test('serves the pickup pacing and the effect badge placement', async () => {
+    const app = createApp(createFakePrisma(), { logWrite: () => {} });
+    const body = await new Promise((resolve, reject) => {
+      const server = http.createServer(app);
+      server.listen(0, '127.0.0.1', () => {
+        http.get({ host: '127.0.0.1', port: server.address().port, path: '/api/config' }, (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => { server.close(); resolve(JSON.parse(Buffer.concat(chunks).toString())); });
+        }).on('error', (err) => { server.close(); reject(err); });
+      });
+    });
+    expect(body.powerUps).toEqual({ pacing: steadyPacing.clientConfig(), badge: effectBadgePlacement(), set: addRandomObstructionsToTheGameArea(shrinkOpponentPaddleOff.applyTo(multiBall(freezeAiOff.applyTo(bigPaddleBurst(ghostBallOff.applyTo(slowMo(originalFourSet.clientConfig()))))))) });
+  });
+});
+
 describe('splash-then-badge option', () => {
   test('its own code shows the name for 1.5 seconds then keeps a badge', () => {
     expect(SPLASH_MS).toBe(1500);
@@ -271,6 +1067,32 @@ describe('index.html wiring', () => {
     for (const key of Object.keys(MODES)) {
       expect(html).toMatch(new RegExp(`\\b${key}: \\{\\s*name: '${MODES[key].name}'`));
     }
+  });
+
+  test('Power-Ups is mirrored in the page: mode, effect badge, clearing at point end', () => {
+    expect(html).toMatch(/<div id="pong-effect-badge"[^>]*\bhidden\b/);
+    expect(html).toMatch(/#pong-effect-badge \{[^}]*right:[^}]*bottom:/);
+    expect(html).toMatch(/#pong-effect-badge\[data-placement="beside-player-paddle"\] \{ display: none; \}/);
+    expect(html).toContain('/lib/effect-badge-placements/beside-player-paddle.js');
+    expect(html).toMatch(/powerUps: \{\s*name: 'Power-Ups'/);
+    expect((html.match(/clearPowerUps\(\);/g) || []).length).toBeGreaterThanOrEqual(3);
+    for (const key of POWER_UP_KEYS) expect(html).toContain(`${key}:`);
+  });
+
+  test('Multi-Ball is mirrored in the page: only the last ball ends the point', () => {
+    expect(html).toContain("b.out = exited;");
+    expect(html).toContain('function scorePoint(side)');
+    expect(html).toContain('if (b.out && allBalls.every((x) => x.out)) scorePoint(b.out);');
+    expect(html).toContain('delete b.out;');
+    expect(html).toContain('.filter((b) => !b.out)');
+  });
+
+  test('random obstructions are mirrored in the page: script, placement, bounce, drawing, clearing', () => {
+    expect(html).toContain('/lib/add-random-obstructions-to-the-game-areas/on.js');
+    expect(html).toMatch(/PongAddRandomObstructionsOn\.makeObstructions\(\)/);
+    expect(html).toMatch(/PongAddRandomObstructionsOn\.bounceOffObstructions\(b, game\.obstructions\)/);
+    expect(html).toMatch(/game\.obstructions = \[\];\s*game\.obstructionsPlaced = false;/);
+    expect(html).toMatch(/game\.obstructions\.forEach/);
   });
 
   test('announces the mode and reports fun_mode_started with the mode name', () => {

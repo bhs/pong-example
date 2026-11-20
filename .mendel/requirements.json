@@ -38,6 +38,96 @@
       "instructions": "Add {{deploy_url}}/auth/google/callback to Authorized redirect URIs for the OAuth client.",
       "console_url": "https://console.cloud.google.com/apis/credentials",
       "unread_with_stub": "google-sign-in"
+    },
+    {
+      "kind": "trait",
+      "name": "where-the-effect-badge-sits",
+      "description": "Where the active Power-Ups effects and their countdowns are shown without covering the ball or the mode badge at bottom-left.",
+      "env": "WHERE_THE_EFFECT_BADGE_SITS",
+      "dispatch": "lib/effect-badge-placement.js:effectBadgePlacement",
+      "default": "bottom-right-corner",
+      "options": [
+        {
+          "value": "bottom-right-corner",
+          "path": "lib/effect-badge-placements/bottom-right-corner.js"
+        },
+        {
+          "value": "beside-player-paddle",
+          "path": "lib/effect-badge-placements/beside-player-paddle.js"
+        }
+      ]
+    },
+    {
+      "kind": "trait",
+      "name": "slow-mo",
+      "description": "Whether the Slow-Mo pickup (slows the ball to about half speed for a few seconds) is among the pickups in the Power-Ups fun mode.",
+      "env": "SLOW_MO",
+      "dispatch": "lib/slow-mo.js:slowMo",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/slow-mos/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/slow-mos/off.js"
+        }
+      ]
+    },
+    {
+      "kind": "trait",
+      "name": "big-paddle-burst",
+      "description": "Whether the Big Paddle pickup (enlarges the player paddle by about 50% for a few seconds, then returns it to normal size) is among the pickups in the Power-Ups fun mode.",
+      "env": "BIG_PADDLE_BURST",
+      "dispatch": "lib/big-paddle-burst.js:bigPaddleBurst",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/big-paddle-bursts/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/big-paddle-bursts/off.js"
+        }
+      ]
+    },
+    {
+      "kind": "trait",
+      "name": "multi-ball",
+      "description": "Whether the Multi-ball pickup (spawns an extra ball for a few seconds; the point continues until all balls are resolved) is among the pickups in the Power-Ups fun mode.",
+      "env": "MULTI_BALL",
+      "dispatch": "lib/multi-ball.js:multiBall",
+      "default": "on",
+      "options": [
+        {
+          "value": "off",
+          "path": "lib/multi-balls/off.js"
+        },
+        {
+          "value": "on",
+          "path": "lib/multi-balls/on.js"
+        }
+      ]
+    },
+    {
+      "kind": "trait",
+      "name": "add-random-obstructions-to-the-game-area",
+      "description": "Whether random obstructions (roughly paddle-sized bars, not necessarily parallel or perpendicular, that the ball bounces off with equal angle in and out) are added to the game area of the Power-Ups fun mode; one of the switches of which pickups are in the game.",
+      "env": "ADD_RANDOM_OBSTRUCTIONS_TO_THE_GAME_AREA",
+      "dispatch": "lib/add-random-obstructions-to-the-game-area.js:addRandomObstructionsToTheGameArea",
+      "default": "on",
+      "options": [
+        {
+          "value": "on",
+          "path": "lib/add-random-obstructions-to-the-game-areas/on.js"
+        },
+        {
+          "value": "off",
+          "path": "lib/add-random-obstructions-to-the-game-areas/off.js"
+        }
+      ]
     }
   ]
 }
