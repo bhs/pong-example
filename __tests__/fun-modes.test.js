@@ -3,9 +3,9 @@
 /**
  * __tests__/fun-modes.test.js
  *
- * The random fun mode button: mode registry and picking, bigger paddle hit
- * box, multi-ball scoring, bouncy barriers, return to Normal, the splash +
- * badge announcement plan, and the code of the kept options.
+ * The fun button: it always starts Power-Ups (the only fun mode), the bigger
+ * paddle hit box, return to Normal, the splash + badge announcement plan, and
+ * the code of the kept options.
  */
 
 const fs   = require('fs');
@@ -13,11 +13,11 @@ const path = require('path');
 const http = require('http');
 
 const {
-  CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT, SCORE_WIN,
-  BARRIER_LAYOUT, MODES, FUN_MODE_KEYS, SPLASH_MS,
-  pickFunMode, applyMode, serveBalls, splashThenBadge,
+  CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR,
+  MODES, FUN_MODE_KEYS, SPLASH_MS,
+  pickFunMode, applyMode, splashThenBadge,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
-  moveAiPaddle, updateBall, updateBalls, bounceOffBarriers, pickAiTarget,
+  moveAiPaddle, updateBall, updateBalls, pickAiTarget,
   POWER_UP_KEYS, PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, DEFAULT_PACING, DEFAULT_POWER_UP_SET,
   spawnPickup, collectPickup, applyEffect, tickEffects, clearPowerUps, updatePowerUps,
   ballTimeScale, isAiFrozen,
@@ -58,25 +58,18 @@ function ballAt(x, y, vx, vy) {
 }
 
 describe('pickFunMode', () => {
-  test('only picks one of the four fun modes, never normal', () => {
-    expect(FUN_MODE_KEYS).toEqual(['bigPaddle', 'multiBall', 'bouncyBarriers', 'powerUps']);
+  test('the only fun mode is powerUps, and the removed standalone modes are gone', () => {
+    expect(FUN_MODE_KEYS).toEqual(['powerUps']);
+    expect(Object.keys(MODES).sort()).toEqual(['normal', 'powerUps']);
+    for (const key of ['bigPaddle', 'multiBall', 'bouncyBarriers']) {
+      expect(MODES).not.toHaveProperty(key);
+    }
   });
 
-  test('uses the injected random source', () => {
-    expect(pickFunMode(() => 0)).toBe('bigPaddle');
-    expect(pickFunMode(() => 0.3)).toBe('multiBall');
-    expect(pickFunMode(() => 0.6)).toBe('bouncyBarriers');
-    expect(pickFunMode(() => 0.99)).toBe('powerUps');
-  });
-
-  test('every fun mode is reachable across the [0, 1) range', () => {
-    const seen = new Set();
-    for (let i = 0; i < 100; i++) seen.add(pickFunMode(() => i / 100));
-    expect([...seen].sort()).toEqual([...FUN_MODE_KEYS].sort());
-  });
-
-  test('a random source returning 1 still picks a valid mode', () => {
-    expect(FUN_MODE_KEYS).toContain(pickFunMode(() => 1));
+  test('always returns powerUps, whatever the random source gives', () => {
+    for (let i = 0; i <= 100; i++) expect(pickFunMode(() => i / 100)).toBe('powerUps');
+    expect(pickFunMode(() => 1)).toBe('powerUps');
+    expect(pickFunMode()).toBe('powerUps');
   });
 
   test('every pick is a fun mode when using Math.random', () => {
@@ -89,27 +82,9 @@ describe('modes', () => {
     const { game, playerPaddle } = newState();
     expect(game.mode).toBe('normal');
     expect(game.extraBalls).toEqual([]);
-    expect(game.barriers).toEqual([]);
     expect(game.pickups).toEqual([]);
     expect(game.effects).toEqual([]);
     expect(playerPaddle.h).toBe(PADDLE_H);
-  });
-
-  test('bigPaddle makes only the player paddle taller, centred', () => {
-    const state = newState();
-    applyMode(state, 'bigPaddle');
-    expect(state.playerPaddle.h).toBe(Math.round(PADDLE_H * BIG_PADDLE_FACTOR));
-    expect(state.aiPaddle.h).toBe(PADDLE_H);
-    expect(state.playerPaddle.y + state.playerPaddle.h / 2).toBe(CANVAS_H / 2);
-  });
-
-  test('multiBall adds extra balls and bouncyBarriers adds barriers', () => {
-    const state = newState();
-    applyMode(state, 'multiBall');
-    expect(state.game.extraBalls).toHaveLength(EXTRA_BALL_COUNT);
-    applyMode(state, 'bouncyBarriers');
-    expect(state.game.extraBalls).toEqual([]);
-    expect(state.game.barriers).toHaveLength(BARRIER_LAYOUT.length);
   });
 
   test('applying Normal removes every effect (Play Again / Space / fresh start)', () => {
@@ -119,7 +94,6 @@ describe('modes', () => {
       applyMode(state, 'normal');
       expect(state.game.mode).toBe('normal');
       expect(state.game.extraBalls).toEqual([]);
-      expect(state.game.barriers).toEqual([]);
       expect(state.game.pickups).toEqual([]);
       expect(state.game.effects).toEqual([]);
       expect(state.playerPaddle.h).toBe(PADDLE_H);
@@ -129,19 +103,11 @@ describe('modes', () => {
 
   test('an unknown mode falls back to Normal', () => {
     const state = newState();
-    applyMode(state, 'bigPaddle');
+    applyMode(state, 'powerUps');
+    applyEffect(state, 'bigPaddle');
     applyMode(state, 'nope');
     expect(state.game.mode).toBe('normal');
     expect(state.playerPaddle.h).toBe(PADDLE_H);
-  });
-
-  test('every barrier leaves the centre spawn clear', () => {
-    const cx = CANVAS_W / 2 - BALL_SIZE / 2;
-    const cy = CANVAS_H / 2 - BALL_SIZE / 2;
-    for (const b of BARRIER_LAYOUT) {
-      const hit = cx < b.x + b.w && cx + BALL_SIZE > b.x && cy < b.y + b.h && cy + BALL_SIZE > b.y;
-      expect(hit).toBe(false);
-    }
   });
 });
 
@@ -178,201 +144,13 @@ describe('big paddle', () => {
   });
 });
 
-describe('multi-ball', () => {
-  // Three balls in play: primary at the centre, extras parked mid-field.
-  function threeBalls() {
-    const state = newState();
-    applyMode(state, 'multiBall');
-    state.game.phase = 'playing';
-    const ball = ballAt(400, 300, 0, 0);
-    state.game.extraBalls = [ballAt(400, 200, 0, 0), ballAt(400, 400, 0, 0)];
-    return { state, ball, balls: [ball].concat(state.game.extraBalls) };
-  }
-  const step = (t) => updateBalls(t.ball, t.state.playerPaddle, t.state.aiPaddle, t.state.game, 1 / 60, t.rally || (t.rally = makeRally()));
-  const exitLeft = (b) => { b.x = -BALL_SIZE - 5; b.vx = -100; };
-  const exitRight = (b) => { b.x = CANVAS_W + 5; b.vx = 100; };
-
-  test('the first miss removes that ball without a point or ending the play phase', () => {
-    const t = threeBalls();
-    exitRight(t.balls[1]);
-    step(t);
-    expect(t.balls[1].out).toBeTruthy();
-    expect(t.state.playerPaddle.score).toBe(0);
-    expect(t.state.aiPaddle.score).toBe(0);
-    expect(t.state.game.phase).toBe('playing');
-    expect(t.rally.flashFrames).toBe(0);
-  });
-
-  test('a removed ball stays gone while the rest keep playing', () => {
-    const t = threeBalls();
-    exitLeft(t.balls[2]);
-    step(t);
-    const gone = t.balls[2];
-    gone.vx = 100;
-    const x = gone.x;
-    step(t);
-    expect(gone.x).toBe(x);
-    expect(t.state.game.phase).toBe('playing');
-  });
-
-  test('the last ball leaving ends the point; missing it on the left scores for the AI', () => {
-    const t = threeBalls();
-    exitLeft(t.balls[1]); step(t);
-    exitLeft(t.balls[2]); step(t);
-    expect(t.state.game.phase).toBe('playing');
-    exitLeft(t.ball); step(t);
-    expect(t.state.aiPaddle.score).toBe(1);
-    expect(t.state.playerPaddle.score).toBe(0);
-    expect(t.state.game.phase).toBe('scored');
-    expect(t.state.game.pauseTimer).toBe(1.2);
-    expect(t.rally.flashFrames).toBeGreaterThan(0);
-  });
-
-  test('the last ball leaving on the right scores for the player', () => {
-    const t = threeBalls();
-    exitRight(t.balls[2]); step(t);
-    exitRight(t.balls[1]); step(t);
-    exitRight(t.ball); step(t);
-    expect(t.state.playerPaddle.score).toBe(1);
-    expect(t.state.aiPaddle.score).toBe(0);
-    expect(t.state.game.phase).toBe('scored');
-  });
-
-  test('an extra ball may be the last one to leave', () => {
-    const t = threeBalls();
-    exitLeft(t.ball); step(t);
-    exitLeft(t.balls[1]); step(t);
-    exitRight(t.balls[2]); step(t);
-    expect(t.state.playerPaddle.score).toBe(1);
-    expect(t.state.aiPaddle.score).toBe(0);
-  });
-
-  test('mixed-side misses: only the last ball decides the scorer', () => {
-    const t = threeBalls();
-    exitRight(t.balls[1]); step(t);     // AI missed: no point for the player
-    exitRight(t.ball); step(t);         // AI missed again: still no point
-    expect(t.state.playerPaddle.score).toBe(0);
-    exitLeft(t.balls[2]); step(t);      // player misses the last ball
-    expect(t.state.aiPaddle.score).toBe(1);
-    expect(t.state.playerPaddle.score).toBe(0);
-
-    const u = threeBalls();
-    exitLeft(u.balls[1]); step(u);
-    exitLeft(u.ball); step(u);
-    exitRight(u.balls[2]); step(u);     // AI misses the last ball
-    expect(u.state.playerPaddle.score).toBe(1);
-    expect(u.state.aiPaddle.score).toBe(0);
-  });
-
-  test('the last miss can win the game and clears power-ups', () => {
-    const t = threeBalls();
-    t.state.playerPaddle.score = SCORE_WIN - 1;
-    t.state.game.pickups = [{ kind: 'slowMo', x: 0, y: 0, w: 10, h: 10, ttl: 5 }];
-    exitRight(t.balls[1]); step(t);
-    exitRight(t.balls[2]); step(t);
-    expect(t.state.game.phase).toBe('playing');
-    exitRight(t.ball); step(t);
-    expect(t.state.playerPaddle.score).toBe(SCORE_WIN);
-    expect(t.state.game.phase).toBe('won');
-    expect(t.state.game.winner).toBe('player');
-    expect(t.state.game.pickups).toEqual([]);
-    expect(t.state.game.effects).toEqual([]);
-  });
-
-  test('the next serve brings every removed ball back to the centre', () => {
-    const t = threeBalls();
-    exitLeft(t.ball); exitRight(t.balls[1]); exitLeft(t.balls[2]);
-    step(t); step(t);
-    expect(t.ball.out).toBeTruthy();
-    serveBalls(t.ball, t.state.game, 1);
-    expect(t.state.game.extraBalls).toHaveLength(EXTRA_BALL_COUNT);
-    [t.ball].concat(t.state.game.extraBalls).forEach((b) => {
-      expect(b.out).toBeFalsy();
-      expect(b.x).toBe(CANVAS_W / 2 - BALL_SIZE / 2);
-      expect(b.vx).toBeGreaterThan(0);
-    });
-  });
-
-  test('the AI ignores removed balls and chases the ones that remain', () => {
-    const gone = ballAt(700, 100, 100, 0);
-    gone.out = 'right';
-    const left = ballAt(300, 500, 100, 0);
-    const other = ballAt(200, 50, -100, 0);
-    expect(pickAiTarget(gone, [left, other])).toBe(left);
-    expect(pickAiTarget(gone, [other])).toBe(other);
-    const primary = ballAt(300, 200, -100, 0);
-    const out = ballAt(700, 100, 100, 0);
-    out.out = 'right';
-    expect(pickAiTarget(primary, [out])).toBe(primary);
-  });
-
-  test('serving resets every ball to the centre', () => {
-    const state = newState();
-    applyMode(state, 'multiBall');
-    const ball = ballAt(10, 10, -50, 0);
-    state.game.extraBalls.forEach((b) => { b.x = 0; });
-    serveBalls(ball, state.game, 1);
-    expect(state.game.extraBalls).toHaveLength(EXTRA_BALL_COUNT);
-    [ball].concat(state.game.extraBalls).forEach((b) => {
-      expect(b.x).toBe(CANVAS_W / 2 - BALL_SIZE / 2);
-      expect(b.vx).toBeGreaterThan(0);
-    });
-  });
-
+describe('AI target', () => {
   test('the AI chases the incoming ball nearest to it', () => {
     const near = ballAt(600, 100, 100, 0);
     const far = ballAt(300, 500, 100, 0);
     const away = ballAt(700, 50, -100, 0);
     expect(pickAiTarget(far, [near, away])).toBe(near);
     expect(pickAiTarget(away, [])).toBe(away);
-  });
-});
-
-describe('bouncy barriers', () => {
-  const barrier = { x: 380, y: 120, w: 40, h: 110 };
-
-  test('reflects off the side face', () => {
-    const ball = ballAt(barrier.x - BALL_SIZE + 2, 150, 200, 0);
-    expect(bounceOffBarriers(ball, [barrier])).toBe(true);
-    expect(ball.vx).toBeLessThan(0);
-    expect(ball.x + ball.w).toBeLessThanOrEqual(barrier.x);
-  });
-
-  test('reflects off the top face', () => {
-    const ball = ballAt(395, barrier.y - BALL_SIZE + 2, 0, 200);
-    bounceOffBarriers(ball, [barrier]);
-    expect(ball.vy).toBeLessThan(0);
-  });
-
-  test('leaves a ball already moving away alone', () => {
-    const ball = ballAt(barrier.x - BALL_SIZE + 2, 150, -200, 0);
-    expect(bounceOffBarriers(ball, [barrier])).toBe(false);
-    expect(ball.vx).toBe(-200);
-  });
-
-  test('does nothing with no barriers (Normal)', () => {
-    const ball = ballAt(390, 150, 200, 0);
-    expect(bounceOffBarriers(ball, [])).toBe(false);
-    expect(bounceOffBarriers(ball, undefined)).toBe(false);
-  });
-
-  test('updateBall bounces off the game\'s barriers', () => {
-    const state = newState();
-    applyMode(state, 'bouncyBarriers');
-    state.game.phase = 'playing';
-    const b = state.game.barriers[0];
-    const ball = ballAt(b.x - BALL_SIZE - 1, b.y + 50, 300, 0);
-    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 0.01, makeRally());
-    expect(ball.vx).toBeLessThan(0);
-  });
-
-  test('a ball in Normal flies straight through the barrier area', () => {
-    const state = newState();
-    state.game.phase = 'playing';
-    const b = BARRIER_LAYOUT[0];
-    const ball = ballAt(b.x - BALL_SIZE - 1, b.y + 50, 300, 0);
-    updateBall(ball, state.playerPaddle, state.aiPaddle, state.game, 0.01, makeRally());
-    expect(ball.vx).toBeGreaterThan(0);
   });
 });
 
@@ -562,24 +340,22 @@ describe('power-ups mode', () => {
     expect(state.playerPaddle.h).toBe(PADDLE_H);
   });
 
-  test('leaving the mode (any applyMode) tears everything down', () => {
-    for (const next of ['normal', 'bigPaddle', 'multiBall', 'bouncyBarriers']) {
-      const state = stateWithEverythingActive();
-      applyMode(state, next);
-      expect(state.game.pickups).toEqual([]);
-      expect(state.game.effects).toEqual([]);
-      expect(ballTimeScale(state.game)).toBe(1);
-      expect(isAiFrozen(state.game)).toBe(false);
-      expect(state.aiPaddle.h).toBe(PADDLE_H);
-      expect(state.playerPaddle.h).toBe(next === 'bigPaddle' ? Math.round(PADDLE_H * BIG_PADDLE_FACTOR) : PADDLE_H);
-    }
+  test('leaving the mode (applyMode normal) tears everything down', () => {
+    const state = stateWithEverythingActive();
+    applyMode(state, 'normal');
+    expect(state.game.pickups).toEqual([]);
+    expect(state.game.effects).toEqual([]);
+    expect(ballTimeScale(state.game)).toBe(1);
+    expect(isAiFrozen(state.game)).toBe(false);
+    expect(state.aiPaddle.h).toBe(PADDLE_H);
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
   });
 
-  test('clearPowerUps is harmless in other modes', () => {
+  test('clearPowerUps is harmless in Normal', () => {
     const state = newState();
-    applyMode(state, 'bigPaddle');
     clearPowerUps(state);
-    expect(state.playerPaddle.h).toBe(Math.round(PADDLE_H * BIG_PADDLE_FACTOR));
+    expect(state.playerPaddle.h).toBe(PADDLE_H);
+    expect(state.game.effects).toEqual([]);
   });
 
   test('Normal play ignores power-ups: full speed, AI moves, no pickups', () => {
@@ -1034,8 +810,8 @@ describe('GET /api/config for Power-Ups', () => {
 describe('splash-then-badge option', () => {
   test('its own code shows the name for 1.5 seconds then keeps a badge', () => {
     expect(SPLASH_MS).toBe(1500);
-    expect(splashThenBadge('multiBall')).toEqual({
-      splashText: 'Multi-Ball', splashMs: 1500, badgeText: 'Multi-Ball',
+    expect(splashThenBadge('powerUps')).toEqual({
+      splashText: 'Power-Ups', splashMs: 1500, badgeText: 'Power-Ups',
     });
   });
 
@@ -1067,6 +843,15 @@ describe('index.html wiring', () => {
     for (const key of Object.keys(MODES)) {
       expect(html).toMatch(new RegExp(`\\b${key}: \\{\\s*name: '${MODES[key].name}'`));
     }
+    // The page's MODES block holds exactly the modes game-logic has.
+    const block = html.slice(html.indexOf('const MODES = {'), html.indexOf('function pickFunMode'));
+    const declared = [...block.matchAll(/^      (\w+): \{$/gm)].map((m) => m[1]);
+    expect(declared.sort()).toEqual(Object.keys(MODES).sort());
+    for (const key of ['bigPaddle', 'multiBall', 'bouncyBarriers']) {
+      expect(block).not.toMatch(new RegExp(`\\b${key}: \\{\\s*name:`));
+    }
+    expect(html).not.toContain('BARRIER_LAYOUT');
+    expect(html).toMatch(/function pickFunMode\(\) \{\s*return 'powerUps';/);
   });
 
   test('Power-Ups is mirrored in the page: mode, effect badge, clearing at point end', () => {
@@ -1079,12 +864,11 @@ describe('index.html wiring', () => {
     for (const key of POWER_UP_KEYS) expect(html).toContain(`${key}:`);
   });
 
-  test('Multi-Ball is mirrored in the page: only the last ball ends the point', () => {
-    expect(html).toContain("b.out = exited;");
-    expect(html).toContain('function scorePoint(side)');
-    expect(html).toContain('if (b.out && allBalls.every((x) => x.out)) scorePoint(b.out);');
-    expect(html).toContain('delete b.out;');
-    expect(html).toContain('.filter((b) => !b.out)');
+  test('Multi-ball stays in the page as a pickup, with no standalone mode', () => {
+    expect(html).toContain("multiBall: { name: 'Multi-ball'");
+    expect(html).toContain('PongMultiBallOn.makeBonusBall');
+    expect(html).not.toContain('b.out');
+    expect(html).not.toContain('game.barriers');
   });
 
   test('random obstructions are mirrored in the page: script, placement, bounce, drawing, clearing', () => {
