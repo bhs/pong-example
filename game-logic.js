@@ -20,9 +20,7 @@ const AI_LERP_RALLY_INC = 0.15;   // added to AI lerp per rally hit (difficulty 
 const MAX_DEFLECT_ANGLE = Math.PI * 75 / 180;  // 75° max deflection at paddle edge
 const SCORE_WIN         = 7;      // first to this wins
 const FLASH_FRAMES      = 3;      // number of frames for score-flash effect
-const BIG_PADDLE_FACTOR = 1.6;    // player paddle height multiplier in 'bigPaddle' mode
-const EXTRA_BALL_COUNT  = 2;      // balls added to the primary one in 'multiBall' mode
-const EXTRA_BALL_SPREAD = 40;     // px between stacked balls at serve in 'multiBall' mode
+const BIG_PADDLE_FACTOR = 1.6;    // player paddle height multiplier while the Big Paddle pickup is active
 const PICKUP_SIZE       = 24;     // px, side of a 'powerUps' pickup square
 const SLOW_MO_FACTOR    = 0.5;    // ball time scale while Slow-Mo is active
 const GHOST_NOISE       = 140;    // px, max offset of the AI's ghost target
@@ -45,15 +43,6 @@ const DEFAULT_PACING = steadyPacing.clientConfig();
 // Which pickups can spawn: the default (original-four) set. A set config of the
 // same shape can be passed to spawnPickup and updatePowerUps.
 const DEFAULT_POWER_UP_SET = originalFourSet.clientConfig();
-
-// Fixed rectangles in the middle of the field for 'bouncyBarriers' mode. They
-// leave the centre spawn point clear.
-const BARRIER_LAYOUT = [
-  { x: 380, y: 120, w: 40, h: 110 },
-  { x: 380, y: 370, w: 40, h: 110 },
-  { x: 250, y: 270, w: 20, h: 60 },
-  { x: 530, y: 270, w: 20, h: 60 },
-];
 
 /**
  * Returns a random float in [min, max).
@@ -142,8 +131,7 @@ function makeGame() {
     winner:     null,
     pauseTimer: 1.2,
     mode:       'normal',   // key of MODES
-    extraBalls: [],         // balls besides the primary one ('multiBall')
-    barriers:   [],         // rectangles the ball bounces off ('bouncyBarriers')
+    extraBalls: [],         // balls besides the primary one (Multi-ball pickup)
     pickups:    [],         // pickups on the field ('powerUps')
     effects:    [],         // active timed effects ('powerUps')
     pickupTimer: 0,         // seconds until the next pickup spawns ('powerUps')
@@ -158,10 +146,6 @@ function makeGame() {
 // setup / teardown pair that act on a state object { game, playerPaddle,
 // aiPaddle }. applyMode() always tears the previous mode down first, so any
 // effect a mode adds is removed again when the next game starts in Normal.
-
-function centrePaddle(paddle) {
-  paddle.y = clamp(CANVAS_H / 2 - paddle.h / 2, 0, CANVAS_H - paddle.h);
-}
 
 // ── Power-Ups: pickups and timed effects ───────────────────────────────────
 //
@@ -354,24 +338,6 @@ const MODES = {
     setup() {},
     teardown() {},
   },
-  bigPaddle: {
-    name: 'Big Paddle',
-    fun:  true,
-    setup(state)    { state.playerPaddle.h = Math.round(PADDLE_H * BIG_PADDLE_FACTOR); centrePaddle(state.playerPaddle); },
-    teardown(state) { state.playerPaddle.h = PADDLE_H; centrePaddle(state.playerPaddle); },
-  },
-  multiBall: {
-    name: 'Multi-Ball',
-    fun:  true,
-    setup(state)    { state.game.extraBalls = makeExtraBalls(EXTRA_BALL_COUNT, 1); },
-    teardown(state) { state.game.extraBalls = []; },
-  },
-  bouncyBarriers: {
-    name: 'Bouncy Barriers',
-    fun:  true,
-    setup(state)    { state.game.barriers = BARRIER_LAYOUT.map((b) => Object.assign({}, b)); },
-    teardown(state) { state.game.barriers = []; },
-  },
   powerUps: {
     name: 'Power-Ups',
     fun:  true,
@@ -388,12 +354,11 @@ const MODES = {
 const FUN_MODE_KEYS = Object.keys(MODES).filter((key) => MODES[key].fun);
 
 /**
- * Pick one fun mode key. `rng` returns a float in [0, 1) and is injectable so
- * tests can fix the pick.
+ * The fun button always starts Power-Ups, the only fun mode. `rng` is accepted
+ * for call compatibility and ignored.
  */
-function pickFunMode(rng = Math.random) {
-  const i = Math.floor(rng() * FUN_MODE_KEYS.length);
-  return FUN_MODE_KEYS[clamp(i, 0, FUN_MODE_KEYS.length - 1)];
+function pickFunMode() {
+  return 'powerUps';
 }
 
 const SPLASH_MS = 1500;   // how long the mode name is shown large at game start
@@ -422,26 +387,12 @@ function applyMode(state, modeKey) {
 }
 
 /**
- * Create `count` extra balls stacked vertically around the centre spawn.
- */
-function makeExtraBalls(count, dirSign = 1) {
-  const balls = [];
-  for (let i = 0; i < count; i++) {
-    const ball = makeBall(dirSign);
-    const step = Math.floor(i / 2) + 1;
-    ball.y += (i % 2 === 0 ? -1 : 1) * step * EXTRA_BALL_SPREAD;
-    balls.push(ball);
-  }
-  return balls;
-}
-
-/**
- * Serve: reset the primary ball and every extra ball to the centre.
+ * Serve: reset the primary ball to the centre. Extra balls only exist while a
+ * Multi-ball pickup is active, and none survive a point, so none are kept.
  */
 function serveBalls(ball, game, dirSign) {
   Object.assign(ball, makeBall(dirSign));
-  delete ball.out;   // a ball removed in Multi-Ball mode comes back
-  game.extraBalls = makeExtraBalls((game.extraBalls || []).length, dirSign);
+  game.extraBalls = [];
 }
 
 /**
@@ -560,44 +511,6 @@ function syncBallVelocity(ball) {
 }
 
 /**
- * Reflect the ball off any barrier it overlaps, along the axis of least
- * penetration, and push it back out. A ball already moving away from the
- * barrier face it penetrates is left alone so it cannot get stuck.
- * Returns true when a bounce happened.
- */
-function bounceOffBarriers(ball, barriers) {
-  let bounced = false;
-  for (const b of barriers || []) {
-    if (!aabbOverlap(ball.x, ball.y, ball.w, ball.h, b.x, b.y, b.w, b.h)) continue;
-
-    const fromLeft   = ball.x + ball.w - b.x;
-    const fromRight  = b.x + b.w - ball.x;
-    const fromTop    = ball.y + ball.h - b.y;
-    const fromBottom = b.y + b.h - ball.y;
-    const least      = Math.min(fromLeft, fromRight, fromTop, fromBottom);
-
-    if (least === fromLeft && ball.vx > 0) {
-      ball.x = b.x - ball.w;
-      ball.angle = Math.PI - ball.angle;
-    } else if (least === fromRight && ball.vx < 0) {
-      ball.x = b.x + b.w;
-      ball.angle = Math.PI - ball.angle;
-    } else if (least === fromTop && ball.vy > 0) {
-      ball.y = b.y - ball.h;
-      ball.angle = reflectAngleVertical(ball.angle);
-    } else if (least === fromBottom && ball.vy < 0) {
-      ball.y = b.y + b.h;
-      ball.angle = reflectAngleVertical(ball.angle);
-    } else {
-      continue;
-    }
-    syncBallVelocity(ball);
-    bounced = true;
-  }
-  return bounced;
-}
-
-/**
  * Advance the ball one tick and resolve wall + paddle collisions.
  * Also checks for left/right exits and updates scores / game phase.
  *
@@ -632,9 +545,6 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
     ball.angle = reflectAngleVertical(ball.angle);
     syncBallVelocity(ball);
   }
-
-  // ── Ball vs barriers (empty outside 'bouncyBarriers' mode) ────────────────
-  bounceOffBarriers(ball, game.barriers);
 
   // ── Ball vs random obstructions (empty unless 'powerUps' places them) ─────
   obstructionsOn.bounceOffObstructions(ball, game.obstructions);
@@ -686,12 +596,6 @@ function updateBall(ball, playerPaddle, aiPaddle, game, dt, rally) {
   const exited = ball.x + BALL_SIZE < 0 ? 'left' : (ball.x > CANVAS_W ? 'right' : null);
   if (!exited) return;
 
-  // Multi-Ball mode: the ball is only removed (flagged with the side it left
-  // by); updateBalls() ends the point once the last ball is gone.
-  if (game.mode === 'multiBall') {
-    ball.out = exited;
-    return;
-  }
   scorePoint(exited, playerPaddle, aiPaddle, game, rally);
 }
 
@@ -717,10 +621,9 @@ function scorePoint(side, playerPaddle, aiPaddle, game, rally) {
 }
 
 /**
- * Advance the primary ball and every extra ball one tick. In Multi-Ball mode a
- * ball that leaves the field is removed (flagged `out`) without a point; the
- * point ends only when the last ball is gone, and whoever missed that last
- * ball loses it. Removed balls stay out until serveBalls() resets them all.
+ * Advance the primary ball and every extra ball (Multi-ball pickup) one tick.
+ * An extra ball that leaves the field is resolved without a point; the point
+ * ends when the primary ball leaves.
  */
 function updateBalls(ball, playerPaddle, aiPaddle, game, dt, rally) {
   if (!rally) rally = makeRally();
@@ -728,25 +631,20 @@ function updateBalls(ball, playerPaddle, aiPaddle, game, dt, rally) {
   const ballDt = dt * ballTimeScale(game);   // Slow-Mo slows the balls only
   for (const b of balls) {
     if (game.phase !== 'playing') break;
-    if (b.out) continue;
     updateBall(b, playerPaddle, aiPaddle, game, ballDt, rally);
-    if (b.out && balls.every((x) => x.out)) {
-      scorePoint(b.out, playerPaddle, aiPaddle, game, rally);
-    }
   }
 }
 
 /**
  * The ball the AI should chase: the incoming ball closest to its paddle, or
- * the primary ball when none is heading its way. Removed (`out`) balls are
- * ignored: the AI chases whichever balls remain.
+ * the primary ball when none is heading its way.
  */
 function pickAiTarget(ball, extraBalls, game = null) {
-  const live = [ball].concat(extraBalls || []).filter((b) => !b.out);   // removed balls are ignored
+  const live = [ball].concat(extraBalls || []);
   const incoming = live.filter((b) => b.vx > 0);
   const target = incoming.length > 0
     ? incoming.reduce((best, b) => (b.x > best.x ? b : best))
-    : (ball.out ? (live[0] || ball) : ball);
+    : ball;
   // Ghost Ball: the AI chases a stale, offset copy of the ball's position.
   const ghost = findEffect(game, 'ghostBall');
   if (!ghost) return target;
@@ -773,7 +671,7 @@ module.exports = {
   MAX_DEFLECT_ANGLE,
   SCORE_WIN,
   FLASH_FRAMES,
-  BIG_PADDLE_FACTOR, EXTRA_BALL_COUNT, BARRIER_LAYOUT,
+  BIG_PADDLE_FACTOR,
   PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, GHOST_REROLL_S,
   POWER_UP_KINDS, POWER_UP_KEYS, DEFAULT_PACING, DEFAULT_POWER_UP_SET,
 
@@ -782,7 +680,6 @@ module.exports = {
   splashThenBadge,
   pickFunMode,
   applyMode,
-  makeExtraBalls,
   serveBalls,
 
   // Power-Ups
@@ -810,7 +707,6 @@ module.exports = {
   moveAiPaddle,
   updateBall,
   updateBalls,
-  bounceOffBarriers,
   pickAiTarget,
   tickPause,
   tickFlash,
