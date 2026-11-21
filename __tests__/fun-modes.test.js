@@ -15,7 +15,7 @@ const http = require('http');
 const {
   CANVAS_W, CANVAS_H, PADDLE_H, BALL_SIZE, BIG_PADDLE_FACTOR,
   MODES, FUN_MODE_KEYS, SPLASH_MS,
-  pickFunMode, applyMode, splashThenBadge,
+  pickFunMode, funOptions, pickFunOption, applyMode, splashThenBadge,
   makeBall, makeGame, makePlayerPaddle, makeAiPaddle, makeRally,
   moveAiPaddle, updateBall, updateBalls, pickAiTarget,
   POWER_UP_KEYS, PICKUP_SIZE, SLOW_MO_FACTOR, GHOST_NOISE, DEFAULT_PACING, DEFAULT_POWER_UP_SET,
@@ -74,6 +74,87 @@ describe('pickFunMode', () => {
 
   test('every pick is a fun mode when using Math.random', () => {
     for (let i = 0; i < 50; i++) expect(MODES[pickFunMode()].fun).toBe(true);
+  });
+});
+
+describe('the fun button chooses among the enabled options', () => {
+  // What the server offers with the default Traits: three pickups and the obstructions.
+  const SET = { set: 'original-four', kinds: ['slowMo', 'bigPaddle', 'multiBall'], obstructions: true };
+  const ALL = ['obstructions', 'slowMo', 'bigPaddle', 'multiBall'];
+
+  // One press: pick the mode and the option, then start the game with them.
+  function press(rng) {
+    const state = newState();
+    applyMode(state, pickFunMode(), pickFunOption(SET, rng));
+    return state;
+  }
+
+  // Play 60 seconds of one point and report what the game showed.
+  function observe(state) {
+    state.game.phase = 'playing';
+    const seen = { obstructions: false, kinds: new Set() };
+    for (let t = 0; t < 600; t++) {
+      updatePowerUps(state, [], 0.1, Math.random, DEFAULT_PACING, SET);
+      if (state.game.obstructions.length > 0) seen.obstructions = true;
+      state.game.pickups.forEach((p) => seen.kinds.add(p.kind));
+    }
+    return seen;
+  }
+
+  test('funOptions lists the obstructions and every offered pickup', () => {
+    expect(funOptions(SET)).toEqual(ALL);
+    expect(funOptions({ kinds: SET.kinds, obstructions: false })).toEqual(['slowMo', 'bigPaddle', 'multiBall']);
+  });
+
+  test('every enabled option is reachable by some press', () => {
+    const picked = new Set();
+    for (let i = 0; i < 100; i++) picked.add(pickFunOption(SET, () => i / 100));
+    expect([...picked].sort()).toEqual(ALL.slice().sort());
+    expect(pickFunOption(SET, () => 1)).toBe('multiBall');
+  });
+
+  test('repeated presses start games with different enabled options', () => {
+    const started = new Set();
+    for (let i = 0; i < 50; i++) started.add(press(Math.random).game.funOption);
+    expect(started.size).toBeGreaterThan(1);
+  });
+
+  test('a press that chose the obstructions places them and spawns no pickups', () => {
+    const seen = observe(press(() => 0));
+    expect(seen.obstructions).toBe(true);
+    expect(seen.kinds.size).toBe(0);
+  });
+
+  test('a press that chose a pickup spawns only that pickup, with no obstructions', () => {
+    for (const kind of SET.kinds) {
+      const idx = ALL.indexOf(kind);
+      const seen = observe(press(() => idx / ALL.length));
+      expect(seen.obstructions).toBe(false);
+      expect([...seen.kinds]).toEqual([kind]);
+    }
+  });
+
+  test('the choice is dropped when the game returns to Normal', () => {
+    const state = press(() => 0);
+    applyMode(state, 'normal');
+    expect(state.game.funOption).toBeNull();
+  });
+
+  test('without a choice every enabled option stays in play', () => {
+    const state = newState();
+    applyMode(state, 'powerUps');
+    const seen = observe(state);
+    expect(seen.obstructions).toBe(true);
+    expect(seen.kinds.size).toBeGreaterThan(1);
+  });
+
+  test('index.html mirrors the choice', () => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    expect(html).toContain('function pickFunOption(');
+    expect(html).toContain('function funOptions(');
+    expect(html).toMatch(/function applyMode\(modeKey, funOption = null\)/);
+    expect(html).toContain("game.funOption === 'obstructions'");
+    expect(html).toContain('kinds.filter((k) => k === game.funOption)');
   });
 });
 
@@ -835,7 +916,7 @@ describe('index.html wiring', () => {
 
   test('Play Again and Space start a Normal game; the panel button starts a fun one', () => {
     expect(html).toMatch(/function startNewGame\(\) \{[^}]*beginGame\('normal'\)/);
-    expect(html).toMatch(/function startFunGame\(\) \{\s*beginGame\(pickFunMode\(\)\)/);
+    expect(html).toMatch(/function startFunGame\(\) \{\s*beginGame\(pickFunMode\(\), pickFunOption\(\)\)/);
     expect(html).toMatch(/getElementById\('pong-panel-button'\)/);
   });
 
