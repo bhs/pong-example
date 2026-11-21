@@ -137,6 +137,7 @@ function makeGame() {
     pickupTimer: 0,         // seconds until the next pickup spawns ('powerUps')
     obstructions: [],       // angled bars the ball bounces off ('powerUps' with random obstructions on)
     obstructionsPlaced: false,   // true once this point's obstructions have been placed
+    funOption:  null,       // the option the fun button chose ('obstructions' or a pickup kind); null = every enabled option
   };
 }
 
@@ -175,7 +176,8 @@ function isAiFrozen(game) {
 function spawnPickup(game, rng = Math.random, pacing = DEFAULT_PACING, set = DEFAULT_POWER_UP_SET) {
   if (!game.pickups) game.pickups = [];
   if (game.pickups.length > 0) return null;
-  const kinds = set.kinds.filter((k) => POWER_UP_KINDS[k]);
+  let kinds = set.kinds.filter((k) => POWER_UP_KINDS[k]);
+  if (game.funOption) kinds = kinds.filter((k) => k === game.funOption);
   if (kinds.length === 0) return null;
   const pick = clamp(Math.floor(rng() * kinds.length), 0, kinds.length - 1);
   const pickup = {
@@ -311,7 +313,7 @@ function updatePowerUps(state, balls, dt, rng = Math.random, pacing = DEFAULT_PA
   const game = state.game;
 
   // Random obstructions (when that option is on): placed once at the start of each point.
-  if (set.obstructions && !game.obstructionsPlaced) {
+  if (set.obstructions && (!game.funOption || game.funOption === 'obstructions') && !game.obstructionsPlaced) {
     game.obstructions = obstructionsOn.makeObstructions(rng);
     game.obstructionsPlaced = true;
   }
@@ -341,8 +343,12 @@ const MODES = {
   powerUps: {
     name: 'Power-Ups',
     fun:  true,
-    setup(state)    { clearPowerUps(state); },
+    setup(state, funOption = null) {
+      state.game.funOption = funOption;
+      clearPowerUps(state);
+    },
     teardown(state) {
+      state.game.funOption = null;
       clearPowerUps(state);
       // Belt and braces: both paddles are back to full-size defaults.
       state.playerPaddle.h = PADDLE_H;
@@ -361,6 +367,26 @@ function pickFunMode() {
   return 'powerUps';
 }
 
+/**
+ * Every option of the Power-Ups mode that is enabled in `set`: the random
+ * obstructions (when on) and each pickup kind the set offers.
+ */
+function funOptions(set = DEFAULT_POWER_UP_SET) {
+  const options = set.kinds.filter((k) => POWER_UP_KINDS[k]);
+  if (set.obstructions) options.unshift('obstructions');
+  return options;
+}
+
+/**
+ * The option one press of the fun button starts the game with: one of the
+ * enabled options, chosen with `rng` (a float in [0, 1)). Null when none is.
+ */
+function pickFunOption(set = DEFAULT_POWER_UP_SET, rng = Math.random) {
+  const options = funOptions(set);
+  if (options.length === 0) return null;
+  return options[clamp(Math.floor(rng() * options.length), 0, options.length - 1)];
+}
+
 const SPLASH_MS = 1500;   // how long the mode name is shown large at game start
 
 /**
@@ -376,13 +402,14 @@ function splashThenBadge(modeKey) {
 
 /**
  * Switch the game to `modeKey` (unknown keys fall back to 'normal'): tear down
- * the current mode, then set up the new one. Mutates and returns state.game.
+ * the current mode, then set up the new one (Power-Ups starts with `funOption`
+ * only, or every enabled option when none is given). Mutates and returns state.game.
  */
-function applyMode(state, modeKey) {
+function applyMode(state, modeKey, funOption = null) {
   const next = MODES[modeKey] ? modeKey : 'normal';
   MODES[state.game.mode || 'normal'].teardown(state);
   state.game.mode = next;
-  MODES[next].setup(state);
+  MODES[next].setup(state, funOption);
   return state.game;
 }
 
@@ -678,7 +705,7 @@ module.exports = {
   // Game modes
   MODES, FUN_MODE_KEYS, SPLASH_MS,
   splashThenBadge,
-  pickFunMode,
+  pickFunMode, funOptions, pickFunOption,
   applyMode,
   serveBalls,
 

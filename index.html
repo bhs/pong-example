@@ -917,6 +917,7 @@
       pickupTimer: 0,         // seconds until the next pickup spawns ('powerUps' mode)
       obstructions: [],       // angled bars the ball bounces off ('powerUps' mode with random obstructions on)
       obstructionsPlaced: false,   // true once this point's obstructions have been placed
+      funOption:  null,       // the option the fun button chose ('obstructions' or a pickup kind); null = every enabled option
     };
 
     // Rally state — tracks consecutive paddle hits for difficulty escalation
@@ -1117,7 +1118,8 @@
 
     function spawnPickup(rng = Math.random) {
       if (game.pickups.length > 0) return null;
-      const kinds = powerUpSet.kinds.filter((k) => POWER_UP_KINDS[k]);
+      let kinds = powerUpSet.kinds.filter((k) => POWER_UP_KINDS[k]);
+      if (game.funOption) kinds = kinds.filter((k) => k === game.funOption);
       if (kinds.length === 0) return null;
       const pick = clamp(Math.floor(rng() * kinds.length), 0, kinds.length - 1);
       const pickup = {
@@ -1221,7 +1223,7 @@
     /** One tick of the Power-Ups mode while a point is being played. */
     function updatePowerUps(dt) {
       // Random obstructions (when that option is on): placed once at the start of each point.
-      if (powerUpSet.obstructions && window.PongAddRandomObstructionsOn && !game.obstructionsPlaced) {
+      if (powerUpSet.obstructions && (!game.funOption || game.funOption === 'obstructions') && window.PongAddRandomObstructionsOn && !game.obstructionsPlaced) {
         game.obstructions = window.PongAddRandomObstructionsOn.makeObstructions();
         game.obstructionsPlaced = true;
       }
@@ -1270,8 +1272,12 @@
       powerUps: {
         name: 'Power-Ups',
         fun:  true,
-        setup()    { clearPowerUps(); },
+        setup(funOption = null) {
+          game.funOption = funOption;
+          clearPowerUps();
+        },
         teardown() {
+          game.funOption = null;
           clearPowerUps();
           playerPaddle.h = PADDLE_H;
           aiPaddle.h     = PADDLE_H;
@@ -1287,14 +1293,34 @@
     }
 
     /**
+     * Every option of the Power-Ups mode that is enabled: the random
+     * obstructions (when on) and each pickup kind the set offers.
+     */
+    function funOptions() {
+      const options = powerUpSet.kinds.filter((k) => POWER_UP_KINDS[k]);
+      if (powerUpSet.obstructions) options.unshift('obstructions');
+      return options;
+    }
+
+    /**
+     * The option one press of the fun button starts the game with: one of the
+     * enabled options, chosen at random. Null when none is enabled.
+     */
+    function pickFunOption(rng = Math.random) {
+      const options = funOptions();
+      if (options.length === 0) return null;
+      return options[clamp(Math.floor(rng() * options.length), 0, options.length - 1)];
+    }
+
+    /**
      * Switch to `modeKey` (unknown keys fall back to 'normal'): tear down the
      * current mode, then set up the new one.
      */
-    function applyMode(modeKey) {
+    function applyMode(modeKey, funOption = null) {
       const next = MODES[modeKey] ? modeKey : 'normal';
       MODES[game.mode].teardown();
       game.mode = next;
-      MODES[next].setup();
+      MODES[next].setup(funOption);
     }
 
     /**
@@ -2244,14 +2270,14 @@
      * Tear down the current overlay, reset all state to `modeKey`, announce the
      * mode and restart the animation loop. Safe in any game phase.
      */
-    function beginGame(modeKey) {
+    function beginGame(modeKey, funOption = null) {
       if (game.phase === 'gameover') {
         try { sessionStorage.removeItem(MENDEL_GAME_OVER_FLAG); } catch (err) { /* ignore */ }
       }
       removeGameOverOverlay();
       clearBestRallyDisplay();
       resetGame();
-      applyMode(modeKey);
+      applyMode(modeKey, funOption);
       announceSplashThenBadge(modeKey);
       sendMendelEvent('game_started');
       if (MODES[modeKey].fun) sendMendelEvent('fun_mode_started', { mode: modeKey });
@@ -2279,7 +2305,7 @@
      * Start a fresh game in a random fun mode (the control panel button).
      */
     function startFunGame() {
-      beginGame(pickFunMode());
+      beginGame(pickFunMode(), pickFunOption());
     }
 
     // ── Update ────────────────────────────────────────────────────────────────
